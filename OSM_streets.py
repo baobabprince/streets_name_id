@@ -1,0 +1,92 @@
+import osmnx as ox
+import pandas as pd
+import geopandas as gpd
+from shapely.geometry import LineString
+
+# הגדרת אזור העניין (ישראל ופלסטין)
+# ניתן להשתמש בשם גיאוגרפי או בתיבת גבולות (bounding box)
+# השם הגיאוגרפי "Israel, Palestine" משמש כקירוב נוח
+place_name = "Israel, Palestine" 
+
+def fetch_osm_street_data(place):
+    """
+    מוריד את גרף הרחובות של האזור הנתון וממיר אותו
+    ל-GeoDataFrame של קטעי רחובות (Ways/Edges).
+    """
+    print(f"מתחיל בשליפת גרף הרחובות של {place} מ-OSM...")
+    
+    # 1. הורדת גרף הרחובות
+    # 'drive' מציין שאנו רוצים את רשת הדרכים הניתנת לנסיעה
+    try:
+        G = ox.graph_from_place(place, network_type="drive", simplify=False)
+    except Exception as e:
+        print(f"שגיאה בשליפת גרף מ-OSM: {e}")
+        print("נסה לשנות את place_name לתיבת גבולות (bbox) אם השגיאה נמשכת.")
+        return None
+
+    # 2. המרת קטעי הדרך (Edges) ל-GeoDataFrame
+    osm_gdf = ox.graph_to_gdfs(G, nodes=False, edges=True)
+    
+    # 3. ניקוי ועיבוד ראשוני של ה-GeoDataFrame:
+    # שמירת עמודות רלוונטיות, במיוחד שמות הרחובות (name)
+    
+    # oxmnx משתמש ב-u, v, key כמזהה של כל קטע. ניצור osm_id פשוט לשם נוחות.
+    osm_gdf = osm_gdf.reset_index()
+    osm_gdf['osm_id'] = osm_gdf.apply(lambda row: f"{row['u']}-{row['v']}-{row['key']}", axis=1)
+    
+    # נבחר את השדות החיוניים להמשך העבודה
+    osm_gdf = osm_gdf[['osm_id', 'name', 'highway', 'geometry']].copy()
+    
+    # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
+    osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
+    
+    # ב-OSM, שם הרחוב (name) יכול להיות מחרוזת בודדת או רשימה של שמות.
+    # נטפל בכך כדי לקבל מחרוזת אחידה (או נשאיר את הרשימה כטקסט מופרד)
+    osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(lambda x: x[0] if isinstance(x, list) else x)
+
+    # 4. כיווץ ה-GeoDataFrame לדרכים בלבד (נאבד חלק מהתכונות של הגרף, אך זה מתאים למיפוי)
+    print(f"נשלפו {len(osm_gdf)} קטעי דרך מ-OSM.")
+    return osm_gdf
+
+# טעינת נתוני OSM (יכול לקחת מספר דקות!)
+# osm_gdf = fetch_osm_street_data(place_name)
+# if osm_gdf is not None:
+#     print("\n--- נתוני OSM ששולפו ---")
+#     print(osm_gdf.head())
+#     print(f"מערכת קואורדינטות (CRS): {osm_gdf.crs}")
+
+
+if __name__ == "__main__":
+    # ---
+    # הדמיה (Mock Data) אם השליפה נכשלת או לצורך בדיקה מהירה:
+    # ---
+    if 'osm_gdf' not in locals():
+        print("יצירת GeoDataFrame מדומה עבור OSM...")
+        from shapely.geometry import LineString
+        data_osm = {
+            'osm_id': ['5001-A', '5002-B', '5003-C', '5004-D'],
+            'osm_name': ['שדרות רוטשילד', 'אבא הלל', 'הרצל', 'הרב סילבר'],
+            'highway': ['primary', 'residential', 'primary', 'residential'],
+            'geometry': [
+                LineString([(0, 0), (1, 0)]), 
+                LineString([(1, 0), (1, 1)]), 
+                LineString([(1, 1), (2, 1)]),
+                LineString([(1, 0), (2, 0)]) # קטע חדש המשיק ל-5001-A ו-5002-B
+            ]
+        }
+        osm_gdf = gpd.GeoDataFrame(data_osm, crs="EPSG:4326")
+        # נוסיף עמודת עיר כרגע באופן ידני, נצטרך למפות אותה בהמשך
+        osm_gdf['city'] = ['תל אביב-יפו', 'רמת גן', 'רמת גן', 'רמת גן']
+
+
+    # ודא שהנתונים של הלמ"ס נשלפים (מהקוד הקודם)
+    # lams_data = fetch_all_lams_data() # (יש להריץ את הפונקציה שהוגדרה קודם)
+    if 'lams_df' not in locals():
+        print("שימוש בנתוני הלמ\"ס מדומה...")
+        data_lams = {
+            '_id': [1001, 1002, 1003, 1004],
+            'שם_ישוב': ['תל אביב-יפו', 'רמת גן', 'רמת גן', 'רמת גן'],
+            'שם_רחוב': ['שד. רוטשילד', 'הרב סילבר', 'הרצל רח\'', 'אבא הלל סילבר'],
+        }
+        lams_df = pd.DataFrame(data_lams)
+        lams_df.rename(columns={'_id': 'lams_id', 'שם_ישוב': 'city', 'שם_רחוב': 'lams_name'}, inplace=True)
