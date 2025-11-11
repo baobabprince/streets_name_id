@@ -7,6 +7,9 @@ import requests
 import time
 import json
 from fuzzywuzzy import fuzz
+import re
+import datetime
+import sys
 
 # --- הגדרות API ---
 # קריאה למפתח ה-API ממשתנה הסביבה GEMINI_API_KEY
@@ -69,6 +72,56 @@ def get_ai_resolution(prompt, osm_id):
 # יבוא פונקציות לשליפת נתוני הלמ"ס ו-OSM המוגדרות בקבצים הפרוייקט
 from lamas_streets import fetch_all_lams_data
 from OSM_streets import fetch_osm_street_data, place_name as OSM_PLACE_NAME
+
+# Caching settings
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "data")
+os.makedirs(CACHE_DIR, exist_ok=True)
+LAMS_CACHE = os.path.join(CACHE_DIR, "lams_data.pkl")
+OSM_CACHE_TEMPLATE = os.path.join(CACHE_DIR, "osm_data_{place}.pkl")
+SIX_MONTHS_DAYS = 182
+
+def _is_fresh(path, max_age_days=SIX_MONTHS_DAYS):
+    if not os.path.exists(path):
+        return False
+    age_days = (datetime.datetime.now() - datetime.datetime.fromtimestamp(os.path.getmtime(path))).days
+    return age_days <= max_age_days
+
+def _safe_place_name(place: str) -> str:
+    # convert place to a filesystem-safe token
+    return re.sub(r'[^0-9A-Za-z_-]', '_', place)
+
+def load_or_fetch_lams(force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
+    """Load LAMS data from cache if fresh, otherwise fetch and cache it."""
+    if not force_refresh and _is_fresh(LAMS_CACHE, max_age_days):
+        try:
+            return pd.read_pickle(LAMS_CACHE)
+        except Exception:
+            pass
+
+    df = fetch_all_lams_data()
+    try:
+        df.to_pickle(LAMS_CACHE)
+    except Exception:
+        pass
+    return df
+
+def load_or_fetch_osm(place: str, force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
+    """Load OSM GeoDataFrame from cache if fresh, otherwise fetch and cache it."""
+    safe = _safe_place_name(place)
+    cache_path = OSM_CACHE_TEMPLATE.format(place=safe)
+    if not force_refresh and _is_fresh(cache_path, max_age_days):
+        try:
+            return pd.read_pickle(cache_path)
+        except Exception:
+            pass
+
+    gdf = fetch_osm_street_data(place)
+    try:
+        # GeoDataFrame is a subclass of DataFrame; pickle preserves geometry
+        gdf.to_pickle(cache_path)
+    except Exception:
+        pass
+    return gdf
 
 # --- 2. פונקציות הנרמול (normalization.py) ---
 def normalize_street_name(name):
@@ -191,22 +244,55 @@ def find_fuzzy_candidates(osm_df, lams_df):
 #                                 ORCHESTRATION START
 # ----------------------------------------------------------------------------------
 
-def run_pipeline():
+def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: bool = False):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
     """
     print("--- Starting Street Mapping Orchestrator ---")
     if not API_KEY:
-        print("\n*** WARNING: GEMINI_API_KEY environment variable not set. AI resolution will be skipped. ***")
+        print("\n*** WARNING: GEMINI_API_KEY environment variable not set. AI resolution will be skipped. ***)")
 
-
-    # STEP 1: Data Acquisition
+    if not use_ai:
+        print("\n*** INFO: AI resolution is disabled for this run (use_ai=False). ***")
+    # STEP 1: Data Acquisition (with caching)
     try:
-        # כאן יש להטמיע את הייבוא: from lamas_streets import fetch_all_lams_data
-        # ו- from OSM_streets import fetch_osm_street_data
-        lams_df = fetch_all_lams_data() # מחזיר נתונים אמיתיים
-        # fetch_osm_street_data expects a 'place' argument; use the module's default place name
-        osm_gdf = fetch_osm_street_data(OSM_PLACE_NAME)
+        chosen_place = place or OSM_PLACE_NAME or "Tel Aviv-Yafo, Israel"
+        print(f"Using place: {chosen_place}")
+        lams_df = load_or_fetch_lams(force_refresh=force_refresh)
+        osm_gdf = load_or_fetch_osm(chosen_place, force_refresh=force_refresh)
+
+        # Normalize/standardize LAMS DataFrame column names if they come in Hebrew/raw form
+        def _normalize_lams_columns(df: pd.DataFrame) -> pd.DataFrame:
+            mapping = {}
+            if '_id' in df.columns and 'lams_id' not in df.columns:
+                mapping['_id'] = 'lams_id'
+            if 'שם_רחוב' in df.columns and 'lams_name' not in df.columns:
+                mapping['שם_רחוב'] = 'lams_name'
+            if 'שם_ישוב' in df.columns and 'city' not in df.columns:
+                mapping['שם_ישוב'] = 'city'
+            if mapping:
+                df = df.rename(columns=mapping)
+            return df
+
+        lams_df = _normalize_lams_columns(lams_df)
+
+        # If OSM doesn't include a 'city' column, populate it from the place string
+        if 'city' not in osm_gdf.columns:
+            city_label = chosen_place.split(',')[0].strip()
+            osm_gdf['city'] = city_label
+
+        # Normalize city name formatting in both dataframes (strip, normalize dashes/spaces)
+        def _normalize_city(col: pd.Series) -> pd.Series:
+            return (
+                col.astype(str)
+                .str.replace(r'[\u2010\u2011\u2012\u2013\u2014\-]', ' ', regex=True)  # various dashes -> space
+                .str.replace(r'\s+', ' ', regex=True)
+                .str.strip()
+            )
+
+        if 'city' in lams_df.columns:
+            lams_df['city'] = _normalize_city(lams_df['city'])
+        osm_gdf['city'] = _normalize_city(osm_gdf['city'])
     except Exception as e:
         print(f"FATAL ERROR during Data Acquisition: {e}")
         return
@@ -228,28 +314,30 @@ def run_pipeline():
     candidates_df = find_fuzzy_candidates(osm_gdf, lams_df)
 
     # STEP 5: AI Resolution (CREATES ai_decisions_df)
-    print("\n[Step 5/6] Invoking Real AI for ambiguous cases (This will take time)...")
-    ai_candidates_to_process = candidates_df[candidates_df['status'] == 'NEEDS_AI'].copy()
-    
+    print("\n[Step 5/6] (Optional) Invoking Real AI for ambiguous cases — skipped unless enabled and API key present.")
     ai_results = []
-    
-    # הלולאה הזו מבצעת קריאות API אמיתיות וממתינה להכרעת ה-AI
-    for _, row in ai_candidates_to_process.iterrows():
-        osm_id = row['osm_id']
-        
-        # בניית הפרומפט המלא (כולל קונטקסט טופולוגי)
-        osm_street_name = osm_gdf[osm_gdf['osm_id'] == osm_id]['normalized_name'].iloc[0]
-        adjacent_names = osm_gdf[osm_gdf['osm_id'].isin(map_of_adjacents.get(osm_id, []))]['normalized_name'].tolist()
 
-        prompt = (f"OSM Street Name: '{osm_street_name}'. "
-                  f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
-                  f"LAMS Candidates: {row['all_candidates']}. Choose the best LAMS ID (number only or 'None').")
-        
-        ai_decision_id = get_ai_resolution(prompt, osm_id)
-        
-        ai_results.append({'osm_id': osm_id, 'ai_lams_id': ai_decision_id})
+    if use_ai and API_KEY:
+        ai_candidates_to_process = candidates_df[candidates_df['status'] == 'NEEDS_AI'].copy()
+        for _, row in ai_candidates_to_process.iterrows():
+            osm_id = row['osm_id']
 
-    ai_decisions_df = pd.DataFrame(ai_results)
+            # בניית הפרומפט המלא (כולל קונטקסט טופולוגי)
+            osm_street_name = osm_gdf[osm_gdf['osm_id'] == osm_id]['normalized_name'].iloc[0]
+            adjacent_names = osm_gdf[osm_gdf['osm_id'].isin(map_of_adjacents.get(osm_id, []))]['normalized_name'].tolist()
+
+            prompt = (f"OSM Street Name: '{osm_street_name}'. "
+                      f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
+                      f"LAMS Candidates: {row['all_candidates']}. Choose the best LAMS ID (number only or 'None').")
+
+            ai_decision_id = get_ai_resolution(prompt, osm_id)
+            ai_results.append({'osm_id': osm_id, 'ai_lams_id': ai_decision_id})
+    else:
+        # AI disabled or missing API key — produce empty results
+        ai_results = []
+
+    # ensure DataFrame has expected columns even if empty
+    ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_lams_id'])
 
     # STEP 6: Final Merge and Mapping
     print("\n[Step 6/6] Merging results to create final mapping table...")
@@ -292,5 +380,26 @@ def run_pipeline():
     print("\n--- Final Mapping Result (OSM ID -> LAMS ID) ---")
     print(osm_gdf_final[['osm_id', 'osm_name', 'final_lams_id']].dropna())
 
+    # Export final mapping to CSV for inspection
+    try:
+        safe_place = _safe_place_name(chosen_place)
+        export_path = os.path.join(CACHE_DIR, f"final_mapping_{safe_place}.csv")
+        export_df = osm_gdf_final[['osm_id', 'osm_name', 'final_lams_id']].copy()
+        export_df.to_csv(export_path, index=False)
+        print(f"\nFinal mapping exported to: {export_path}")
+    except Exception as e:
+        print(f"Warning: failed to export final mapping CSV: {e}")
+
 if __name__ == "__main__":
-    run_pipeline()
+    # Allow optional CLI args: first arg = place, --refresh to force re-download
+    place_arg = None
+    force = False
+    no_ai = False
+    if len(sys.argv) > 1:
+        place_arg = sys.argv[1]
+    if "--refresh" in sys.argv:
+        force = True
+    if "--no-ai" in sys.argv:
+        no_ai = True
+
+    run_pipeline(place=place_arg, force_refresh=force, use_ai=(not no_ai))
