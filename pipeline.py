@@ -305,7 +305,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     _save_intermediate_df(diagnostic_df_full, "diagnostic_report", chosen_place)
     
     # Merge final mapping back into GeoDataFrame for visualization (Step 7)
-    osm_gdf_final = osm_gdf.merge(diagnostic_df_full[['osm_id', 'final_LAMAS_id']], on='osm_id', how='left')
+    osm_gdf_final = osm_gdf.merge(diagnostic_df_full[['osm_id', 'final_LAMAS_id', 'best_score']], on='osm_id', how='left')
 
     print("\n-----------------------------------------------------")
     print("                 PIPELINE COMPLETED                  ")
@@ -320,15 +320,15 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     print("\n--- Final Mapping Result Sample ---")
     print(osm_gdf_final[osm_gdf_final['final_LAMAS_id'].notna()][['osm_id', 'osm_name', 'final_LAMAS_id']].head(5))
 
-    # STEP 7: Generate SVG Visualization
-    print("\n[Step 7/7] Generating SVG visualization of all streets...")
+    # STEP 7: Generate HTML Visualization
+    print("\n[Step 7/7] Generating HTML visualization of all streets...")
     try:
-        from generate_svg import create_svg_from_gdf
-        os.makedirs("SVG", exist_ok=True)
+        from generate_html import create_html_from_gdf
+        os.makedirs("HTML", exist_ok=True)
         # Pass the GeoDataFrame that includes the final ID
-        create_svg_from_gdf(osm_gdf_final, chosen_place)
+        create_html_from_gdf(osm_gdf_final, chosen_place)
     except Exception as e:
-        print(f"Warning: failed to generate SVG visualization: {e}")
+        print(f"Warning: failed to generate HTML visualization: {e}")
 
 if __name__ == "__main__":
     place_arg = None
