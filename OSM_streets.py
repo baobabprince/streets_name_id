@@ -18,7 +18,7 @@ def fetch_osm_street_data(place):
     # 1. הורדת גרף הרחובות
     # 'drive' מציין שאנו רוצים את רשת הדרכים הניתנת לנסיעה
     try:
-        G = ox.graph_from_place(place, network_type="drive", simplify=False)
+        G = ox.graph_from_place(place, network_type="all", simplify=False)
     except Exception as e:
         print(f"שגיאה בשליפת גרף מ-OSM: {e}")
         print("נסה לשנות את place_name לתיבת גבולות (bbox) אם השגיאה נמשכת.")
@@ -80,13 +80,13 @@ if __name__ == "__main__":
 
 
     # ודא שהנתונים של הלמ"ס נשלפים (מהקוד הקודם)
-    # lams_data = fetch_all_lams_data() # (יש להריץ את הפונקציה שהוגדרה קודם)
-    if 'lams_df' not in locals():
+    # LAMAS_data = fetch_all_LAMAS_data() # (יש להריץ את הפונקציה שהוגדרה קודם)
+    if 'LAMAS_df' not in locals():
         print("שימוש בנתוני הלמ\"ס מדומה...")
-        data_lams = {
+        data_LAMAS = {
             '_id': [1001, 1002, 1003, 1004],
             'שם_ישוב': ['תל אביב-יפו', 'רמת גן', 'רמת גן', 'רמת גן'],
             'שם_רחוב': ['שד. רוטשילד', 'הרב סילבר', 'הרצל רח\'', 'אבא הלל סילבר'],
         }
-        lams_df = pd.DataFrame(data_lams)
-        lams_df.rename(columns={'_id': 'lams_id', 'שם_ישוב': 'city', 'שם_רחוב': 'lams_name'}, inplace=True)
+        LAMAS_df = pd.DataFrame(data_LAMAS)
+        LAMAS_df.rename(columns={'_id': 'LAMAS_id', 'שם_ישוב': 'city', 'שם_רחוב': 'LAMAS_name'}, inplace=True)
