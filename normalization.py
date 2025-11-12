@@ -42,12 +42,14 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
         osm_city = osm_row['city'] 
 
         # 2. סינון רחובות הלמ"ס לאותה עיר (חיסכון במשאבי חישוב)
-        LAMAS_subset = LAMAS_df[LAMAS_df['city'] == osm_city].copy() # שימוש ב-copy כדי למנוע SettingWithCopyWarning
+        # שימוש ב-copy כדי למנוע SettingWithCopyWarning
+        LAMAS_subset = LAMAS_df[LAMAS_df['city'] == osm_city].copy() 
         
         # 3. חישוב ציוני דמיון
         scores = []
         for _, LAMAS_row in LAMAS_subset.iterrows():
             LAMAS_id = LAMAS_row['LAMAS_id']
+            LAMAS_name_raw = LAMAS_row['LAMAS_name'] # נשמור את השם המקורי/לא מנורמל לצורך דיאגנוסטיקה
             LAMAS_name = LAMAS_row['normalized_name']
             
             # חישוב 3 מדדים שונים:
@@ -60,7 +62,7 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
 
             scores.append({
                 'LAMAS_id': LAMAS_id,
-                'LAMAS_name': LAMAS_name,
+                'LAMAS_name': LAMAS_name_raw, # שמירת השם הלא מנורמל לדיאגנוסטיקה טובה יותר
                 'weighted_score': weighted_score,
                 'token_set_score': token_set
             })
@@ -68,30 +70,36 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
         # 4. סינון וסיווג: בחירת המועמדים הטובים ביותר
         if not scores:
              candidates.append({
-                'osm_id': osm_id,
-                'status': 'MISSING',
-                'best_LAMAS_id': None,
-                'best_score': 0,
-                'all_candidates': None
-            })
+                 'osm_id': osm_id,
+                 'status': 'MISSING',
+                 'best_LAMAS_id': None,
+                 'best_LAMAS_name': None, # <-- ADDED
+                 'best_score': 0,
+                 'all_candidates': None
+             })
              continue
              
         scores_df = pd.DataFrame(scores).sort_values(by='weighted_score', ascending=False)
         
-        # התאמה ודאית: אם יש ציון גבוה מאוד (מעל 98, לדוגמה)
+        # התאמה ודאית: אם יש ציון גבוה מאוד (מעל 90)
         confident_match = scores_df[scores_df['weighted_score'] >= 90].head(1)
         if not confident_match.empty:
             candidates.append({
                 'osm_id': osm_id,
                 'status': 'CONFIDENT',
                 'best_LAMAS_id': confident_match.iloc[0]['LAMAS_id'],
+                'best_LAMAS_name': confident_match.iloc[0]['LAMAS_name'], # <-- ADDED
                 'best_score': confident_match.iloc[0]['weighted_score'],
                 'all_candidates': None
             })
             continue
 
         # מועמדים ל-AI: אם יש ציונים סבירים (בין 80 ל-98)
-        ai_candidates = scores_df[(scores_df['weighted_score'] >= 80) & (scores_df['weighted_score'] < 98)].head(5).copy() 
+        # שינוי קל: הוספת התנאי לחוסר התאמה ודאית כדי למנוע מצב בו הציון 90 נופל כאן
+        ai_candidates = scores_df[
+            (scores_df['weighted_score'] >= 80) & 
+            (scores_df['weighted_score'] < 90) # טווח ציון קשיח ל-NEEDS_AI
+        ].head(5).copy() 
         
         if not ai_candidates.empty:
             # איסוף פרטי המועמדים לטקסט
@@ -103,7 +111,8 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
             candidates.append({
                 'osm_id': osm_id,
                 'status': 'NEEDS_AI',
-                'best_LAMAS_id': None,
+                'best_LAMAS_id': ai_candidates.iloc[0]['LAMAS_id'], # שמירת ה-ID המוביל רק לדיאגנוסטיקה
+                'best_LAMAS_name': ai_candidates.iloc[0]['LAMAS_name'], # <-- ADDED (השם המוביל)
                 'best_score': ai_candidates.iloc[0]['weighted_score'],
                 'all_candidates': "\n".join(candidate_list)
             })
@@ -114,6 +123,7 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
                 'osm_id': osm_id,
                 'status': 'MISSING',
                 'best_LAMAS_id': None,
+                'best_LAMAS_name': None, # <-- ADDED
                 'best_score': scores_df.iloc[0]['weighted_score'] if not scores_df.empty else 0,
                 'all_candidates': None
             })
