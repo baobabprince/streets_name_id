@@ -1,6 +1,6 @@
 import random
 import pandas as pd
-# candidates_df, osm_gdf, map_of_adjacents, ו-lams_df טעונים
+# candidates_df, osm_gdf, map_of_adjacents, ו-LAMAS_df טעונים
 # ו-prepare_ai_prompt מוגדר כפי שהוסכם
 
 def simulate_ai_decision(prompt, ai_candidates_str):
@@ -9,7 +9,7 @@ def simulate_ai_decision(prompt, ai_candidates_str):
     בפועל, כאן תתרחש קריאת ה-API למודל AI (כגון OpenAI, Gemini וכו').
     """
     # 1. ניתוח: הוצאת ה-IDs והציונים (ה-Token Set Ratio הוא קריטי כאן)
-    # לצורך הסימולציה, נדמה שה-AI מעדיף את ה-lams_id עם הציון הגבוה ביותר
+    # לצורך הסימולציה, נדמה שה-AI מעדיף את ה-LAMAS_id עם הציון הגבוה ביותר
     # מתוך המועמדים שהוגשו בפרומפט.
 
     # פירוק המועמדים מהמחרוזת
@@ -20,13 +20,13 @@ def simulate_ai_decision(prompt, ai_candidates_str):
     for line in candidate_lines:
         try:
             # מניח שהמבנה הוא: ID: 1234, Name: 'Name' (Score: 92.50)
-            lams_id = int(line.split('ID: ')[1].split(',')[0])
+            LAMAS_id = int(line.split('ID: ')[1].split(',')[0])
             score = float(line.split('Score: ')[1].strip(')'))
             
             # לדמות החלטה: בחירת ה-ID עם הציון המשוקלל הגבוה ביותר
             if score > best_score:
                 best_score = score
-                best_candidate_id = lams_id
+                best_candidate_id = LAMAS_id
         except:
             continue
             
@@ -55,7 +55,7 @@ if __name__ == "__main__":
 
             ai_results.append({
                 'osm_id': osm_id,
-                'ai_lams_id': ai_decision_id
+                'ai_LAMAS_id': ai_decision_id
             })
 
         ai_decisions_df = pd.DataFrame(ai_results)

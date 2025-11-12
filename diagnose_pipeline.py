@@ -1,10 +1,11 @@
+# diagnose_pipeline.py
 """
 Diagnostic script for pipeline matching failures.
-Loads cached LAMS/OSM, shows schemas, normalization, and runs fuzzy candidate generation
+Loads cached LAMAS/OSM, shows schemas, normalization, and runs fuzzy candidate generation
 prints counts and examples so we can see why final mapping was empty.
 """
 from pipeline import (
-    load_or_fetch_lams,
+    load_or_fetch_LAMAS,
     load_or_fetch_osm,
     normalize_street_name,
     find_fuzzy_candidates,
@@ -12,15 +13,15 @@ from pipeline import (
 )
 import pandas as pd
 
-PLACE = "בית שאן, Israel"
+PLACE = "טבריה"
 
-print("Loading cached LAMS and OSM (no refresh)...")
-lams_df = load_or_fetch_lams()
+print("Loading cached LAMAS and OSM (no refresh)...")
+LAMAS_df = load_or_fetch_LAMAS()
 osm_gdf = load_or_fetch_osm(PLACE)
 
-print('\nLAMS columns:', lams_df.columns.tolist())
-print('LAMS sample (head):')
-print(lams_df.head(5))
+print('\nLAMAS columns:', LAMAS_df.columns.tolist())
+print('LAMAS sample (head):')
+print(LAMAS_df.head(5))
 
 print('\nOSM columns:', osm_gdf.columns.tolist())
 print('OSM sample (head):')
@@ -32,47 +33,47 @@ print(osm_gdf[['osm_id','osm_name','city']].head(10))
 
 # Normalize
 print('\nApplying normalization to name columns (sample).')
-# Normalize LAMS columns if they are present in Hebrew/raw format
-if 'lams_name' not in lams_df.columns:
+# Normalize LAMAS columns if they are present in Hebrew/raw format
+if 'LAMAS_name' not in LAMAS_df.columns:
     mapping = {}
-    if '_id' in lams_df.columns:
-        mapping['_id'] = 'lams_id'
-    if 'שם_רחוב' in lams_df.columns:
-        mapping['שם_רחוב'] = 'lams_name'
-    if 'שם_ישוב' in lams_df.columns:
+    if '_id' in LAMAS_df.columns:
+        mapping['_id'] = 'LAMAS_id'
+    if 'שם_רחוב' in LAMAS_df.columns:
+        mapping['שם_רחוב'] = 'LAMAS_name'
+    if 'שם_ישוב' in LAMAS_df.columns:
         mapping['שם_ישוב'] = 'city'
     if mapping:
-        lams_df = lams_df.rename(columns=mapping)
+        LAMAS_df = LAMAS_df.rename(columns=mapping)
 
-if 'lams_name' in lams_df.columns:
-    lams_df['normalized_name'] = lams_df['lams_name'].apply(normalize_street_name)
+if 'LAMAS_name' in LAMAS_df.columns:
+    LAMAS_df['normalized_name'] = LAMAS_df['LAMAS_name'].apply(normalize_street_name)
 else:
-    print('No lams_name column found')
+    print('No LAMAS_name column found')
 
 if 'osm_name' in osm_gdf.columns:
     osm_gdf['normalized_name'] = osm_gdf['osm_name'].apply(normalize_street_name)
 else:
     print('No osm_name column found')
 
-print('\nLAMS normalized sample:')
-print(lams_df[['lams_id','lams_name','normalized_name']].head(10))
+print('\nLAMAS normalized sample:')
+print(LAMAS_df[['LAMAS_id','LAMAS_name','normalized_name']].head(10))
 print('\nOSM normalized sample:')
 print(osm_gdf[['osm_id','osm_name','normalized_name']].head(10))
 
-# How many LAMS rows per city (few cities)
-print('\nTop 10 cities in LAMS data:')
-print(lams_df['city'].value_counts().head(10))
+# How many LAMAS rows per city (few cities)
+print('\nTop 10 cities in LAMAS data:')
+print(LAMAS_df['city'].value_counts().head(10))
 
 # How many OSM segments per city
 print('\nTop 10 cities in OSM data:')
 print(osm_gdf['city'].value_counts().head(10))
 
-# Filter LAMS to the OSM city label
+# Filter LAMAS to the OSM city label
 osm_city_label = osm_gdf['city'].iloc[0]
-print(f"\nFiltering LAMS to city label used by OSM: '{osm_city_label}'")
-lams_subset = lams_df[lams_df['city'] == osm_city_label]
-print('LAMS in that city:', len(lams_subset))
-print(lams_subset[['lams_id','lams_name']].head(10))
+print(f"\nFiltering LAMAS to city label used by OSM: '{osm_city_label}'")
+LAMAS_subset = LAMAS_df[LAMAS_df['city'] == osm_city_label]
+print('LAMAS in that city:', len(LAMAS_subset))
+print(LAMAS_subset[['LAMAS_id','LAMAS_name']].head(10))
 
 # Run fuzzy candidates on a small sample of OSM rows (first 20) to inspect the results
 print('\nRunning fuzzy candidate generation for first 20 OSM streets (in-city filter applied)')
@@ -80,7 +81,7 @@ mini_osm = osm_gdf.head(20).copy()
 # Ensure city exists
 mini_osm['city'] = mini_osm['city'].fillna(osm_city_label)
 
-candidates_df = find_fuzzy_candidates(mini_osm, lams_subset if not lams_subset.empty else lams_df)
+candidates_df = find_fuzzy_candidates(mini_osm, LAMAS_subset if not LAMAS_subset.empty else LAMAS_df)
 
 print('\nCandidates status counts:')
 print(candidates_df['status'].value_counts(dropna=False))
