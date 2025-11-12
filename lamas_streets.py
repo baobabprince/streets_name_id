@@ -2,19 +2,19 @@ import requests
 import pandas as pd
 
 LAMS_API_URL = "https://data.gov.il/api/3/action/datastore_search"
-RESOURCE_ID = "9ad3862c-8391-4b2f-84a4-2d4c68625f4b"
+RESOURCE_ID = "bf185c7f-1a4e-4662-88c5-fa118a244bda"
 LIMIT = 1000  # גודל דף מקסימלי, עדיף להתחיל גבוה
 
 def fetch_all_lams_data():
     """
     שולף את כל נתוני הרחובות של הלמ"ס (דרך ה-API)
-    ומחזיר אותם כ-DataFrame.
+    ומחזיר אותם כ-DataFrame, כולל טיפול בשמות רחובות נרדפים.
     """
     all_records = []
     offset = 0
     total = None
     
-    print("מתחיל בשליפת נתוני הלמ\"ס המלאים...")
+    print("מתחיל בשליפת נתוני הלמ\"ס המלאים (כולל שמות נרדפים)...")
 
     while True:
         params = {
@@ -46,17 +46,23 @@ def fetch_all_lams_data():
             print(f"שגיאה במהלך שליפת ה-API ב-offset {offset}: {e}")
             break # יציאה מהלולאה במקרה של שגיאה
 
-    # המרת הנתונים ל-DataFrame
     if all_records:
-        lams_df = pd.DataFrame(all_records)
+        lams_raw_df = pd.DataFrame(all_records)
         
-        # נשמור רק את העמודות הרלוונטיות כפי שמוצג בצילום המסך שלך:
-        # 'שם_רחוב', 'שם_ישוב', '_id' (מזהה הלמ"ס הייחודי)
-        # ישנם שדות נוספים כמו 'סמל_רחוב' ו'סמל_ישוב' ששימושיים להתאמה
+        # ניקוי רווחים משמות העמודות
+        lams_raw_df.columns = lams_raw_df.columns.str.strip()
+
+        # יצירת DataFrame חדש עם העמודות הרצויות
+        # עבור שמות רחובות רשמיים ושמות נרדפים, ה-lams_id יהיה ה-official_code
+        lams_df = pd.DataFrame({
+            'lams_id': lams_raw_df['official_code'].astype(str).str.strip(),
+            'lams_name': lams_raw_df['street_name'].str.strip(),
+            'city': lams_raw_df['city_name'].str.strip()
+        })
         
-        # ניקוי ושמות עמודות בעברית (לצורך נוחות: נשתמש בעמודות המקוריות כרגע)
-        # lams_df = lams_df[['_id', 'שם_ישוב', 'שם_רחוב', 'סמל_ישוב', 'סמל_רחוב']].copy()
-        
+        # הסרת כפילויות שנוצרות אם אותו שם רחוב מופיע מספר פעמים עבור אותו official_code באותה עיר
+        lams_df.drop_duplicates(subset=['lams_id', 'lams_name', 'city'], inplace=True)
+
         return lams_df
     else:
         print("לא נשלפו נתונים.")

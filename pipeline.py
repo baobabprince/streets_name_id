@@ -72,6 +72,8 @@ def get_ai_resolution(prompt, osm_id):
 # יבוא פונקציות לשליפת נתוני הלמ"ס ו-OSM המוגדרות בקבצים הפרוייקט
 from lamas_streets import fetch_all_lams_data
 from OSM_streets import fetch_osm_street_data, place_name as OSM_PLACE_NAME
+from map_of_adjacents import build_adjacency_map
+from normalization import normalize_street_name, find_fuzzy_candidates
 
 # Caching settings
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -88,7 +90,7 @@ def _is_fresh(path, max_age_days=SIX_MONTHS_DAYS):
 
 def _safe_place_name(place: str) -> str:
     # convert place to a filesystem-safe token
-    return re.sub(r'[^0-9A-Za-z_-]', '_', place)
+    return re.sub(r'[^0-9A-Za-z_\-\u0590-\u05FF]', '_', place)
 
 def load_or_fetch_lams(force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
     """Load LAMS data from cache if fresh, otherwise fetch and cache it."""
@@ -122,123 +124,7 @@ def load_or_fetch_osm(place: str, force_refresh: bool = False, max_age_days: int
     except Exception:
         pass
     return gdf
-
-# --- 2. פונקציות הנרמול (normalization.py) ---
-def normalize_street_name(name):
-    """הפונקציה מנרמלת את שמות הרחובות (מטפלת בקיצורים, פיסוק ורווחים)."""
-    if pd.isna(name) or name is None: return None
-    name = str(name).strip()
-    replacements = {r'\bשד[\'|\.]': 'שדרות', r'\bרח[\'|\.]': 'רחוב'}
-    for old, new in replacements.items():
-        name = name.replace(old, new).replace("'", "").replace(".", "")
-    name = name.replace('-', ' ').strip()
-    return name
-
-# --- 3. טופולוגיה (map_of_adjacents.py) ---
-def build_adjacency_map(osm_gdf):
-    """מייצר מפת סמיכות של מזהי OSM (מי משיק למי)."""
-    print("Building Adjacency Map (Topology)...")
-    # בפועל, זו תהיה לוגיקה גיאומטרית מורכבת על ה-GeoDataFrame
-    return {
-        '5001-A': [],
-        '5002-B': ['5003-C'], 
-        '5003-C': ['5002-B', '5005-E'],
-        '5004-D': [],
-        '5005-E': ['5003-C']
-    }
-
-# --- 4. התאמת מועמדים (find_fuzzy_candidates) ---
-def find_fuzzy_candidates(osm_df, lams_df):
-    """
-    מבצע Fuzzy Matching מתוחכם ובוחר את המועמדים המובילים לכל רחוב ב-OSM.
-    """
-    print("Executing Fuzzy Matching and Candidate Selection...")
-    candidates = []
-    
-    # 1. איטרציה על כל רחוב ב-OSM
-    for _, osm_row in osm_df.iterrows():
-        osm_id = osm_row['osm_id']
-        osm_name = osm_row['normalized_name']
-        osm_city = osm_row['city'] 
-
-        # 2. סינון רחובות הלמ"ס לאותה עיר (חיסכון במשאבי חישוב)
-        lams_subset = lams_df[lams_df['city'] == osm_city].copy() # שימוש ב-copy כדי למנוע SettingWithCopyWarning
-        
-        # 3. חישוב ציוני דמיון
-        scores = []
-        for _, lams_row in lams_subset.iterrows():
-            lams_id = lams_row['lams_id']
-            lams_name = lams_row['normalized_name']
-            
-            # חישוב 3 מדדים שונים:
-            ratio = fuzz.ratio(osm_name, lams_name)
-            token_sort = fuzz.token_sort_ratio(osm_name, lams_name)
-            token_set = fuzz.token_set_ratio(osm_name, lams_name) # הכי חשוב לשמות חלקיים
-            
-            # ניקוד ממוצע משוקלל
-            weighted_score = np.average([ratio, token_sort, token_set], weights=[0.2, 0.3, 0.5])
-
-            scores.append({
-                'lams_id': lams_id,
-                'lams_name': lams_name,
-                'weighted_score': weighted_score,
-                'token_set_score': token_set
-            })
-
-        # 4. סינון וסיווג: בחירת המועמדים הטובים ביותר
-        if not scores:
-             candidates.append({
-                'osm_id': osm_id,
-                'status': 'MISSING',
-                'best_lams_id': None,
-                'best_score': 0,
-                'all_candidates': None
-            })
-             continue
-             
-        scores_df = pd.DataFrame(scores).sort_values(by='weighted_score', ascending=False)
-        
-        # התאמה ודאית: אם יש ציון גבוה מאוד (מעל 98, לדוגמה)
-        confident_match = scores_df[scores_df['weighted_score'] >= 98].head(1)
-        if not confident_match.empty:
-            candidates.append({
-                'osm_id': osm_id,
-                'status': 'CONFIDENT',
-                'best_lams_id': confident_match.iloc[0]['lams_id'],
-                'best_score': confident_match.iloc[0]['weighted_score'],
-                'all_candidates': None
-            })
-            continue
-
-        # מועמדים ל-AI: אם יש ציונים סבירים (בין 80 ל-98)
-        ai_candidates = scores_df[(scores_df['weighted_score'] >= 80) & (scores_df['weighted_score'] < 98)].head(5).copy() 
-        
-        if not ai_candidates.empty:
-            # איסוף פרטי המועמדים לטקסט
-            candidate_list = ai_candidates.apply(
-                lambda r: f"ID: {r['lams_id']}, Name: '{r['lams_name']}' (Score: {r['weighted_score']:.2f})", 
-                axis=1
-            ).tolist()
-            
-            candidates.append({
-                'osm_id': osm_id,
-                'status': 'NEEDS_AI',
-                'best_lams_id': None,
-                'best_score': ai_candidates.iloc[0]['weighted_score'],
-                'all_candidates': "\n".join(candidate_list)
-            })
-        
-        # רחובות ללא התאמה: יטופלו כ-Missing later
-        else:
-            candidates.append({
-                'osm_id': osm_id,
-                'status': 'MISSING',
-                'best_lams_id': None,
-                'best_score': scores_df.iloc[0]['weighted_score'] if not scores_df.empty else 0,
-                'all_candidates': None
-            })
-
-    return pd.DataFrame(candidates)
+from normalization import normalize_street_name, find_fuzzy_candidates
 
 # ----------------------------------------------------------------------------------
 #                                 ORCHESTRATION START
@@ -261,20 +147,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
         lams_df = load_or_fetch_lams(force_refresh=force_refresh)
         osm_gdf = load_or_fetch_osm(chosen_place, force_refresh=force_refresh)
 
-        # Normalize/standardize LAMS DataFrame column names if they come in Hebrew/raw form
-        def _normalize_lams_columns(df: pd.DataFrame) -> pd.DataFrame:
-            mapping = {}
-            if '_id' in df.columns and 'lams_id' not in df.columns:
-                mapping['_id'] = 'lams_id'
-            if 'שם_רחוב' in df.columns and 'lams_name' not in df.columns:
-                mapping['שם_רחוב'] = 'lams_name'
-            if 'שם_ישוב' in df.columns and 'city' not in df.columns:
-                mapping['שם_ישוב'] = 'city'
-            if mapping:
-                df = df.rename(columns=mapping)
-            return df
 
-        lams_df = _normalize_lams_columns(lams_df)
 
         # If OSM doesn't include a 'city' column, populate it from the place string
         if 'city' not in osm_gdf.columns:

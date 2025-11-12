@@ -2,34 +2,7 @@ import unittest
 import re
 import pandas as pd
 
-# נגדיר מחדש את הפונקציה כדי שיהיה ניתן לבדוק אותה
-def normalize_street_name(name):
-    """
-    מנרמלת שם רחוב לצורך השוואה עקבית.
-    """
-    if pd.isna(name) or name is None:
-        return None
-    
-    name = str(name).strip()
-    
-    # 1. המרת קיצורים והחלפות נפוצות (רגיש לאותיות גדולות/קטנות)
-    replacements = {
-        r'\bשד[\'|\.]': 'שדרות',
-        r'\bרח[\'|\.]': 'רחוב',
-        r'\bכי[\'|\.]': 'כיכר',
-    }
-    for old, new in replacements.items():
-        # flags=re.I להתעלם מגודל אותיות, re.sub מחליף מופעים
-        name = re.sub(old, new, name, flags=re.I) 
-
-    # 2. הסרת סימני פיסוק מיותרים והחלפתם ברווח
-    # מטפל ב: ., -
-    name = re.sub(r'[.,-]', ' ', name)
-    
-    # 3. ניקוי רווחים כפולים
-    name = re.sub(r'\s+', ' ', name).strip()
-    
-    return name
+from normalization import normalize_street_name
 
 class TestNormalizeStreetName(unittest.TestCase):
 
@@ -37,6 +10,8 @@ class TestNormalizeStreetName(unittest.TestCase):
         # 1. קיצורים והרחבות
         self.assertEqual(normalize_street_name("רח' הנביאים"), "רחוב הנביאים")
         self.assertEqual(normalize_street_name("שד. רוטשילד"), "שדרות רוטשילד")
+        self.assertEqual(normalize_street_name("שד' העצמאות"), "שדרות העצמאות")
+        self.assertEqual(normalize_street_name("שד בן גוריון"), "שדרות בן גוריון")
         self.assertEqual(normalize_street_name("כי. המדינה"), "כיכר המדינה")
 
     def test_punctuation_and_spacing(self):
@@ -53,6 +28,14 @@ class TestNormalizeStreetName(unittest.TestCase):
         self.assertEqual(normalize_street_name("אבא הלל סילבר"), "אבא הלל סילבר")
         self.assertIsNone(normalize_street_name(None))
         self.assertIsNone(normalize_street_name(float('nan')))
+
+    def test_no_unnecessary_expansion(self):
+        """
+        Tests that the function does not expand words that are already in their full form.
+        """
+        self.assertEqual(normalize_street_name("שדרות רוטשילד"), "שדרות רוטשילד")
+        self.assertEqual(normalize_street_name("רחובות העיר"), "רחובות העיר") # "רחוב" is part of "רחובות"
+
 
 # # הרצת הבדיקות
 unittest.main(argv=['first-arg-is-ignored'], exit=False) 
