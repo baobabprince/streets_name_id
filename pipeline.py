@@ -17,6 +17,7 @@ from lamas_streets import fetch_all_LAMAS_data
 from OSM_streets import fetch_osm_street_data, place_name as OSM_PLACE_NAME
 from map_of_adjacents import build_adjacency_map
 from normalization import normalize_street_name, find_fuzzy_candidates
+from govmap_screenshot import take_govmap_screenshot
 
 
 # --- הגדרות API ---
@@ -222,34 +223,42 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     
     _save_intermediate_df(candidates_df, "step4_candidates", chosen_place)
 
-    # STEP 5: AI Resolution (CREATES ai_decisions_df)
-    print("\n[Step 5/7] (Optional) Invoking Real AI for ambiguous cases...")
+    # STEP 5: AI Resolution and Screenshot Generation
+    print("\n[Step 5/7] Identifying ambiguous cases and generating screenshots...")
     ai_results = []
 
+    # Filter candidates to the city being processed to avoid processing irrelevant streets
+    osm_city_label = osm_gdf['city'].iloc[0]
+    osm_gdf_in_city = osm_gdf[osm_gdf['city'] == osm_city_label]
+
+    # Identify all candidates that need AI, regardless of whether AI will be run
+    candidates_needing_ai = candidates_df[
+        (candidates_df['status'] == 'NEEDS_AI') &
+        (candidates_df['osm_id'].isin(osm_gdf_in_city['osm_id']))
+    ].copy()
+
+    # Generate screenshots for these candidates
+    if not candidates_needing_ai.empty:
+        print(f" -> Found {len(candidates_needing_ai)} streets needing review. Generating screenshots...")
+        for _, row in candidates_needing_ai.iterrows():
+            osm_id = row['osm_id']
+            geometry = osm_gdf_in_city[osm_gdf_in_city['osm_id'] == osm_id]['geometry'].iloc[0]
+            take_govmap_screenshot(geometry, osm_id)
+
+    # Now, invoke the actual AI if enabled
     if use_ai and API_KEY:
-        # Filter candidates to the city being processed to avoid processing irrelevant streets
-        osm_city_label = osm_gdf['city'].iloc[0]
-        osm_gdf_in_city = osm_gdf[osm_gdf['city'] == osm_city_label]
-        
-        ai_candidates_to_process = candidates_df[
-            (candidates_df['status'] == 'NEEDS_AI') & 
-            (candidates_df['osm_id'].isin(osm_gdf_in_city['osm_id']))
-        ].copy()
-        
-        # Make a set of OSM IDs to check against
+        print("\n[Step 5b/7] Invoking Real AI for ambiguous cases...")
         osm_id_set = set(osm_gdf_in_city['osm_id'])
         
-        for _, row in ai_candidates_to_process.iterrows():
+        for _, row in candidates_needing_ai.iterrows():
             osm_id = row['osm_id']
 
-            # Safety check: skip if osm_id is not in the current city (shouldn't happen with filter above)
+            # Safety check
             if osm_id not in osm_id_set:
                  continue
 
-            # Building the full prompt (including topological context)
+            # Building the prompt
             osm_street_name = osm_gdf_in_city[osm_gdf_in_city['osm_id'] == osm_id]['normalized_name'].iloc[0]
-            
-            # Find adjacent OSM IDs and look up their normalized names
             adjacent_osm_ids = map_of_adjacents.get(osm_id, [])
             adjacent_names = osm_gdf_in_city[osm_gdf_in_city['osm_id'].isin(adjacent_osm_ids)]['normalized_name'].tolist()
 
@@ -259,9 +268,6 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
 
             ai_decision_id = get_ai_resolution(prompt, osm_id)
             ai_results.append({'osm_id': osm_id, 'ai_LAMAS_id': ai_decision_id})
-    else:
-        # AI disabled or missing API key — produce empty results
-        ai_results = []
 
     # ensure DataFrame has expected columns even if empty
     ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id'])
