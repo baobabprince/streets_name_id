@@ -94,11 +94,10 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
             })
             continue
 
-        # מועמדים ל-AI: אם יש ציונים סבירים (בין 80 ל-98)
-        # שינוי קל: הוספת התנאי לחוסר התאמה ודאית כדי למנוע מצב בו הציון 90 נופל כאן
+        # מועמדים ל-AI: אם יש ציונים סבירים (בין 70 ל-90)
         ai_candidates = scores_df[
-            (scores_df['weighted_score'] >= 80) & 
-            (scores_df['weighted_score'] < 90) # טווח ציון קשיח ל-NEEDS_AI
+            (scores_df['weighted_score'] >= 70) &
+            (scores_df['weighted_score'] < 90)
         ].head(5).copy() 
         
         if not ai_candidates.empty:
