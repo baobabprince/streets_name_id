@@ -8,38 +8,29 @@ import re
 import colorsys
 
 # --- Import from existing project files ---
-from pipeline import load_or_fetch_osm, _safe_place_name
+from pipeline import _safe_place_name
 
 
 def score_to_color(score):
     """
-    Convert a confidence score (0-100) to an HSL color.
-    - 100: Green (hue=120)
-    - 90-99: Yellow-Green gradient
-    - 80-89: Orange-Red gradient
-    - <80: Red (hue=0)
+    Convert a confidence score (0-99) to a gradient of red.
+    - A lower score results in a lighter red.
+    - A higher score results in a darker red.
     
     Returns RGB hex color string.
     """
     if pd.isna(score):
-        return "#ff0000"  # Red for missing scores
+        score = 0  # Default score for missing values
     
-    score = float(score)
+    score = max(0, min(float(score), 99)) # Clamp score between 0 and 99
     
-    if score >= 100:
-        return "#000000"  # Black for perfect matches
-    elif score >= 90:
-        # Green (120°) to Yellow (60°) gradient
-        hue = 120 - ((100 - score) / 10) * 60  # 120 at score=100, 60 at score=90
-    elif score >= 80:
-        # Yellow (60°) to Orange-Red (30°) gradient
-        hue = 60 - ((90 - score) / 10) * 30  # 60 at score=90, 30 at score=80
-    else:
-        # Red for scores below 80
-        hue = 0
+    # Map score (0-99) to lightness (0.7 -> 0.4)
+    # Lower score = higher lightness (brighter color)
+    lightness = 0.7 - (score / 99.0) * 0.3
+
+    # Hue for red is 0. Saturation is high for a vivid color.
+    r, g, b = colorsys.hls_to_rgb(0, lightness, 0.9)
     
-    # Convert HSL to RGB (full saturation, medium lightness)
-    r, g, b = colorsys.hls_to_rgb(hue / 360, 0.5, 0.8)
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 
@@ -70,7 +61,8 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
     
     for idx, row in gdf.iterrows():
         geom = row['geometry']
-        osm_name = row.get('osm_name', 'Unknown')
+        osm_name_raw = row.get('osm_name', None)
+        osm_name = str(osm_name_raw).strip() if pd.notna(osm_name_raw) else ""
         
         # Get matching information
         is_matched = pd.notna(row.get('final_LAMAS_id')) and str(row.get('final_LAMAS_id')).lower() != 'none'
@@ -79,32 +71,44 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
         lamas_name = row.get('best_LAMAS_name', '')
         final_lamas_id = row.get('final_LAMAS_id', '')
         
-        # Determine color based on score
-        if is_matched and pd.notna(best_score):
-            stroke_color = score_to_color(best_score)
-            stroke_width = 2
-        elif is_matched:
-            stroke_color = "#000000"  # Black if matched but no score
-            stroke_width = 2
-        else:
-            stroke_color = "#ff0000"  # Red for unmatched
-            stroke_width = 3
+        # Determine color based on new rules
+        stroke_width = 4  # Default stroke width
+
+        if not osm_name:  # Street has no name
+            stroke_color = "#808080"  # Gray
+        else:  # Street has a name
+            if is_matched:
+                if pd.notna(best_score):
+                    if best_score >= 100:
+                        stroke_color = "#000000"  # Black for perfect match
+                    else:
+                        stroke_color = score_to_color(best_score)  # Red gradient
+                else:
+                    stroke_color = "#000000"  # Matched but no score -> Black
+            else:
+                # Has a name, but is not matched
+                stroke_color = "#AAAAAA"  # A different gray
         
         if isinstance(geom, LineString):
             # Convert LineString to SVG path data
             path_data = "M " + " L ".join(f"{x - minx},{maxy - y}" for x, y in geom.coords)
             
             # Build tooltip content
-            tooltip_lines = [f"OSM: {osm_name}"]
-            if is_matched:
-                if lamas_name:
-                    tooltip_lines.append(f"LAMAS: {lamas_name}")
-                if final_lamas_id:
-                    tooltip_lines.append(f"ID: {final_lamas_id}")
-                if pd.notna(best_score):
-                    tooltip_lines.append(f"Score: {best_score:.1f}")
+            tooltip_lines = []
+            if osm_name:
+                tooltip_lines.append(f"{osm_name}")
             else:
-                tooltip_lines.append(f"Status: {status}")
+                tooltip_lines.append("רחוב ללא שם")
+
+            if is_matched:
+                if lamas_name and lamas_name.strip() and lamas_name.strip() != osm_name:
+                    tooltip_lines[0] += f" -> {lamas_name}" # Append matched name
+                if pd.notna(best_score):
+                    tooltip_lines.append(f"ציון: {best_score:.1f}")
+                if final_lamas_id:
+                    tooltip_lines.append(f"מזהה: {final_lamas_id}")
+            elif osm_name: # Has a name but not matched
+                tooltip_lines.append("סטטוס: לא נמצאה התאמה")
             
             tooltip = "&#10;".join(tooltip_lines)  # &#10; is newline in HTML
             safe_tooltip = re.sub(r'[<>&"]', '', tooltip)
@@ -197,7 +201,7 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
         }}
         
         .street-path:hover {{
-            stroke-width: 5 !important;
+            stroke-width: 6 !important;
             filter: brightness(1.2);
         }}
         
@@ -235,23 +239,23 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
         <h1>מפת רחובות - {place_name}</h1>
         
         <div class="legend">
-            <div class="legend-title">מקרא צבעים (לפי ציון התאמה)</div>
+            <div class="legend-title">מקרא צבעים</div>
             <div class="legend-items">
                 <div class="legend-item">
                     <span class="legend-color" style="background: #000000;"></span>
-                    <span>התאמה מושלמת (100)</span>
+                    <span>התאמה מלאה (100)</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #00ff00;"></span>
-                    <span>התאמה גבוהה (90-99)</span>
+                    <span class="legend-color" style="background: linear-gradient(to left, #c06666, #ffcccc);"></span>
+                    <span>התאמה חלקית (0-99)</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #ffff00;"></span>
-                    <span>התאמה בינונית (80-89)</span>
+                    <span class="legend-color" style="background: #AAAAAA;"></span>
+                    <span>שם קיים, ללא התאמה</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #ff0000;"></span>
-                    <span>ללא התאמה (&lt;80)</span>
+                    <span class="legend-color" style="background: #808080;"></span>
+                    <span>ללא שם</span>
                 </div>
             </div>
         </div>
@@ -321,37 +325,60 @@ def main():
     try:
         safe_name = _safe_place_name(place_name)
         
-        # Load the OSM GeoDataFrame (has geometry)
-        osm_path = f"data/osm_data_{safe_name}.pkl"
-        if not os.path.exists(osm_path):
-            print(f"OSM data not found at {osm_path}")
-            print("Please run the pipeline first: python pipeline.py \"{place_name}\"")
-            return
-        
-        osm_gdf = pd.read_pickle(osm_path)
-        
-        # Load the diagnostic report CSV (has best_score, final_LAMAS_id, etc.)
+        # Load the diagnostic report which contains all necessary data
         report_path = f"data/diagnostic_report_{safe_name}.csv"
         if not os.path.exists(report_path):
             print(f"Diagnostic report not found at {report_path}")
-            print("Please run the pipeline first: python pipeline.py \"{place_name}\"")
+            print(f"Please run the pipeline first: python pipeline.py \"{place_name}\"")
             return
         
-        diagnostic_df = pd.read_csv(report_path, encoding='utf-8')
-        
-        # Merge diagnostic data with geometry from OSM
-        gdf = osm_gdf.merge(
-            diagnostic_df[['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'final_LAMAS_id']], 
-            on='osm_id', 
-            how='left'
-        )
-        
+        print(f"Loading diagnostic data from {report_path}")
+        # Use geopandas to read the CSV with geometry
+        try:
+            # geopandas can read WKT geometries directly from a CSV
+            df = pd.read_csv(report_path, encoding='utf-8')
+            from shapely import wkt
+            # Ensure the geometry column exists and is not empty before converting
+            if 'geometry' in df.columns and df['geometry'].notna().any():
+                 df['geometry'] = df['geometry'].apply(wkt.loads)
+                 gdf = gpd.GeoDataFrame(df, crs="EPSG:4326")
+            else:
+                # If no geometry, create a DataFrame that will be merged later
+                gdf = df
+
+        except Exception as e:
+            print(f"Error reading geometry from CSV, will fall back to OSM merge: {e}")
+            gdf = pd.read_csv(report_path, encoding='utf-8')
+
+        if 'geometry' not in gdf.columns or gdf.geometry.isnull().all():
+             # Fallback for CSVs without embedded geometry: Load OSM data and merge
+            print("Geometry not found in report, loading from OSM pickle.")
+            osm_path = f"data/osm_data_{safe_name}.pkl"
+            if not os.path.exists(osm_path):
+                print(f"OSM data not found at {osm_path} and geometry not in report. Aborting.")
+                return
+
+            osm_gdf = pd.read_pickle(osm_path)
+            diagnostic_df = pd.read_csv(report_path, encoding='utf-8')
+
+            # Ensure osm_id is of a consistent type for merging
+            osm_gdf['osm_id'] = osm_gdf['osm_id'].astype(str)
+            diagnostic_df['osm_id'] = diagnostic_df['osm_id'].astype(str)
+
+            gdf = osm_gdf.merge(
+                diagnostic_df.drop(columns=['geometry'], errors='ignore'),
+                on='osm_id',
+                how='left'
+            )
+
         if gdf is None or gdf.empty:
-            print(f"Could not load data for '{place_name}'. Aborting.")
+            print(f"Could not load or construct data for '{place_name}'. Aborting.")
             return
 
         # Generate the HTML
+        print("Generating HTML...")
         create_html_from_gdf(gdf, place_name)
+        print("HTML Generation Complete.")
         
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
