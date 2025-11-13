@@ -3,6 +3,28 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import LineString
 
+
+def check_place_exists_in_osm(place_query: str) -> bool:
+    """
+    Checks if a place name can be successfully geocoded using OSM Nominatim.
+
+    Args:
+        place_query: The name of the place to check.
+
+    Returns:
+        True if the place is found, False otherwise.
+    """
+    try:
+        # The geocode function will raise an exception if no results are found.
+        ox.geocoder.geocode(place_query)
+        print(f"  -> Successfully verified '{place_query}' exists in OSM.")
+        return True
+    except Exception:
+        # Could be InsufficientResponseError or others if the geocoder fails.
+        print(f"  -> WARNING: Could not find '{place_query}' in OSM. It will be skipped.")
+        return False
+
+
 # הגדרת אזור העניין (ישראל ופלסטין)
 # ניתן להשתמש בשם גיאוגרפי או בתיבת גבולות (bounding box)
 # השם הגיאוגרפי "Israel, Palestine" משמש כקירוב נוח
