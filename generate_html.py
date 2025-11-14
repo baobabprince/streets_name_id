@@ -95,18 +95,27 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
             
             # Build tooltip content
             tooltip_lines = []
-            if osm_name:
-                tooltip_lines.append(f"{osm_name}")
+            matched_osm_name = row.get('matched_osm_name', osm_name)
+
+            # Line 1: OSM Name -> LAMAS Name (if different)
+            if matched_osm_name:
+                tooltip_lines.append(f"OSM: {matched_osm_name}")
             else:
                 tooltip_lines.append("רחוב ללא שם")
 
             if is_matched:
-                if lamas_name and lamas_name.strip() and lamas_name.strip() != osm_name:
-                    tooltip_lines[0] += f" -> {lamas_name}" # Append matched name
+                if lamas_name and lamas_name.strip():
+                     tooltip_lines.append(f"למ\"ס: {lamas_name}")
+
+                # Line 2: Score and Source
+                source = "AI" if status == 'NEEDS_AI' else "Fuzzy"
                 if pd.notna(best_score):
-                    tooltip_lines.append(f"ציון: {best_score:.1f}")
+                    tooltip_lines.append(f"ציון: {best_score:.1f} ({source})")
+
+                # Line 3: Final LAMAS ID
                 if final_lamas_id:
                     tooltip_lines.append(f"מזהה: {final_lamas_id}")
+
             elif osm_name: # Has a name but not matched
                 tooltip_lines.append("סטטוס: לא נמצאה התאמה")
             
