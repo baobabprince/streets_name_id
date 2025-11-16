@@ -11,27 +11,52 @@ import colorsys
 from pipeline import _safe_place_name
 
 
-def score_to_color(score):
+def score_to_gradient(score, hue):
     """
-    Convert a confidence score (0-99) to a gradient of red.
-    - A lower score results in a lighter red.
-    - A higher score results in a darker red.
-    
-    Returns RGB hex color string.
+    Converts a score (0-100) to a color gradient based on a given hue.
+    - Lower score -> Lighter, less saturated color
+    - Higher score -> Darker, more saturated color
     """
-    if pd.isna(score):
-        score = 0  # Default score for missing values
+    if pd.isna(score) or not isinstance(score, (int, float)):
+        score = 0
+    score = max(0, min(float(score), 100))
     
-    score = max(0, min(float(score), 99)) # Clamp score between 0 and 99
+    # Map score (0-100) to lightness (0.8 -> 0.4) and saturation (0.7 -> 1.0)
+    lightness = 0.8 - (score / 100.0) * 0.4
+    saturation = 0.7 + (score / 100.0) * 0.3
     
-    # Map score (0-99) to lightness (0.7 -> 0.4)
-    # Lower score = higher lightness (brighter color)
-    lightness = 0.7 - (score / 99.0) * 0.3
-
-    # Hue for red is 0. Saturation is high for a vivid color.
-    r, g, b = colorsys.hls_to_rgb(0, lightness, 0.9)
-    
+    r, g, b = colorsys.hls_to_rgb(hue, lightness, saturation)
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+
+def get_fuzzy_match_color(score):
+    """Returns a color from yellow (low score) to orange (high score)."""
+    # Hue for yellow/orange is around 0.1 to 0.16
+    return score_to_gradient(score, 0.12)
+
+def get_ai_match_color(score):
+    """Returns a color from light blue (low score) to dark blue (high score)."""
+    # Hue for blue is around 0.6
+    return score_to_gradient(score, 0.6)
+
+def calculate_diagnostics(gdf):
+    """Calculates a summary of matching statistics from the GeoDataFrame."""
+    total_streets = len(gdf)
+    
+    # Fill NaN status for streets that didn't have candidates
+    gdf['status'] = gdf['status'].fillna('NO_CANDIDATES')
+
+    matched_df = gdf[gdf['final_LAMAS_id'].notna()].copy()
+    unmatched_df = gdf[gdf['final_LAMAS_id'].isna()].copy()
+
+    return {
+        "total_streets": total_streets,
+        "matched_total": len(matched_df),
+        "unmatched_total": len(unmatched_df),
+        "confident_matches": len(matched_df[matched_df['status'] == 'CONFIDENT']),
+        "ai_resolved_matches": len(matched_df[matched_df['status'] == 'NEEDS_AI']),
+        "missing_candidates": len(unmatched_df[unmatched_df['status'].isin(['MISSING', 'NO_CANDIDATES'])]),
+        "ai_rejected": len(unmatched_df[unmatched_df['status'] == 'NEEDS_AI'])
+    }
 
 
 def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
@@ -71,23 +96,24 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
         lamas_name = row.get('best_LAMAS_name', '')
         final_lamas_id = row.get('final_LAMAS_id', '')
         
-        # Determine color based on new rules
+        # Determine color and style based on the new scheme
         stroke_width = 4  # Default stroke width
+        stroke_color = "#6c757d"  # Default: dark gray for named but unmatched
 
-        if not osm_name:  # Street has no name
-            stroke_color = "#808080"  # Gray
-        else:  # Street has a name
-            if is_matched:
-                if pd.notna(best_score):
-                    if best_score >= 100:
-                        stroke_color = "#000000"  # Black for perfect match
-                    else:
-                        stroke_color = score_to_color(best_score)  # Red gradient
+        if not osm_name:
+            stroke_color = "#d3d3d3"  # Light gray
+            stroke_width = 2  # Thin line
+        elif is_matched:
+            source = "AI" if status == 'NEEDS_AI' else "Fuzzy"
+            if source == "AI":
+                stroke_color = get_ai_match_color(best_score)
+                stroke_width = 6  # Thick line for AI match
+            else: # Fuzzy Match
+                if best_score >= 98:
+                    stroke_color = "#28a745"  # Solid green for confident match
                 else:
-                    stroke_color = "#000000"  # Matched but no score -> Black
-            else:
-                # Has a name, but is not matched
-                stroke_color = "#AAAAAA"  # A different gray
+                    stroke_color = get_fuzzy_match_color(best_score)
+        # For named but not matched, the default dark gray is used
         
         if isinstance(geom, LineString):
             # Convert LineString to SVG path data
@@ -134,6 +160,9 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
             )
             
             svg_paths.append(path_element)
+
+    # Calculate diagnostics
+    diagnostics = calculate_diagnostics(gdf)
     
     # Build complete HTML document
     html_content = f"""<!DOCTYPE html>
@@ -241,6 +270,31 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
             border-radius: 5px;
             text-align: center;
         }}
+
+        .diagnostics {{
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 5px;
+        }}
+        .diagnostics h2 {{
+            text-align: center;
+            margin-top: 0;
+        }}
+        .diag-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }}
+        .diag-table th, .diag-table td {{
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            text-align: right;
+        }}
+        .diag-table th {{
+            background-color: #e9ecef;
+        }}
     </style>
 </head>
 <body>
@@ -251,19 +305,23 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
             <div class="legend-title">מקרא צבעים</div>
             <div class="legend-items">
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #000000;"></span>
-                    <span>התאמה מלאה (100)</span>
+                    <span class="legend-color" style="background: #28a745; height: 4px;"></span>
+                    <span>התאמה ודאית (Fuzzy)</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: linear-gradient(to left, #c06666, #ffcccc);"></span>
-                    <span>התאמה חלקית (0-99)</span>
+                    <span class="legend-color" style="background: linear-gradient(to left, #ffc107, #ff9800);"></span>
+                    <span>התאמה חלקית (Fuzzy)</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #AAAAAA;"></span>
+                    <span class="legend-color" style="background: linear-gradient(to left, #007bff, #00bfff); height: 6px;"></span>
+                    <span>התאמת AI</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #6c757d; height: 4px;"></span>
                     <span>שם קיים, ללא התאמה</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #808080;"></span>
+                    <span class="legend-color" style="background: #d3d3d3; height: 2px;"></span>
                     <span>ללא שם</span>
                 </div>
             </div>
@@ -276,6 +334,52 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
         
         <div class="stats">
             <strong>הוראות:</strong> העבר את העכבר מעל רחוב כדי לראות את שמו ופרטי ההתאמה
+        </div>
+
+        <div class="diagnostics">
+            <h2>ניתוח תוצאות</h2>
+            <table class="diag-table">
+                <tr>
+                    <th>מדד</th>
+                    <th>מספר רחובות</th>
+                    <th>אחוז</th>
+                </tr>
+                <tr>
+                    <td>סה"כ רחובות</td>
+                    <td>{diagnostics["total_streets"]}</td>
+                    <td>100%</td>
+                </tr>
+                <tr>
+                    <td>התאמות מוצלחות</td>
+                    <td>{diagnostics["matched_total"]}</td>
+                    <td>{diagnostics["matched_total"]/diagnostics["total_streets"]:.1%}</td>
+                </tr>
+                <tr>
+                    <td> - התאמות ודאיות</td>
+                    <td>{diagnostics["confident_matches"]}</td>
+                    <td>{diagnostics["confident_matches"]/diagnostics["total_streets"]:.1%}</td>
+                </tr>
+                <tr>
+                    <td> - התאמות AI</td>
+                    <td>{diagnostics["ai_resolved_matches"]}</td>
+                    <td>{diagnostics["ai_resolved_matches"]/diagnostics["total_streets"]:.1%}</td>
+                </tr>
+                <tr>
+                    <td>רחובות ללא התאמה</td>
+                    <td>{diagnostics["unmatched_total"]}</td>
+                    <td>{diagnostics["unmatched_total"]/diagnostics["total_streets"]:.1%}</td>
+                </tr>
+                <tr>
+                    <td> - חוסר במועמדים</td>
+                    <td>{diagnostics["missing_candidates"]}</td>
+                    <td>{diagnostics["missing_candidates"]/diagnostics["total_streets"]:.1%}</td>
+                </tr>
+                <tr>
+                    <td> - נדחה על ידי AI</td>
+                    <td>{diagnostics["ai_rejected"]}</td>
+                    <td>{diagnostics["ai_rejected"]/diagnostics["total_streets"]:.1%}</td>
+                </tr>
+            </table>
         </div>
     </div>
     
