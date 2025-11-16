@@ -14,16 +14,11 @@ import sys
 
 # --- Import necessary utility functions (assuming these files exist in the project) ---
 from lamas_streets import fetch_all_LAMAS_data
-from OSM_streets import fetch_osm_street_data, place_name as OSM_PLACE_NAME
+from OSM_streets import fetch_osm_street_data
 from map_of_adjacents import build_adjacency_map
 from normalization import normalize_street_name, find_fuzzy_candidates
+from local_ai_matching import get_local_ai_resolution
 
-
-# --- הגדרות API ---
-# קריאה למפתח ה-API ממשתנה הסביבה GEMINI_API_KEY
-API_KEY = os.getenv("GEMINI_API_KEY") 
-GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={API_KEY}"
-MAX_RETRIES = 3
 
 # Caching settings
 CACHE_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -31,57 +26,6 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 LAMAS_CACHE = os.path.join(CACHE_DIR, "LAMAS_data.pkl")
 OSM_CACHE_TEMPLATE = os.path.join(CACHE_DIR, "osm_data_{place}.pkl")
 SIX_MONTHS_DAYS = 182
-
-
-# --- פונקציות עזר לקריאת API ---
-def get_ai_resolution(prompt, osm_id):
-    """
-    מבצע קריאת API אמיתית למודל Gemini כדי להכריע בזיהוי רחובות.
-    כולל מנגנון Retry פשוט.
-    """
-    if not API_KEY:
-        print("  -> ERROR: GEMINI_API_KEY not found or is empty. Skipping AI resolution.")
-        return 'None'
-        
-    print(f"  -> Consulting AI for OSM ID: {osm_id}...")
-    
-    # הגדרות פרומפט ופרסונה עבור המודל
-    system_prompt = "אתה מערכת GIS אוטומטית שתפקידה למצוא את המזהה המספרי היחיד של רחוב (LAMAS ID) מתוך רשימת מועמדים, על בסיס שם וקונטקסט גיאוגרפי (שמות רחובות משיקים). השב עם המספר של ה-ID בלבד, או עם המילה 'None' אם לא נמצאה התאמה ודאית."
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "tools": [{"google_search": {}}] # מאפשר שימוש בחיפוש להקשר היסטורי/כינויים
-    }
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.post(
-                GEMINI_API_URL, 
-                headers={'Content-Type': 'application/json'}, 
-                data=json.dumps(payload)
-            )
-            response.raise_for_status() # שגיאות HTTP יעלו חריגה
-            
-            result = response.json()
-            # חילוץ הטקסט
-            text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'None').strip()
-            
-            # ניקוי התשובה - ודא שרק ה-ID המספרי או 'None' מוחזר
-            clean_text = ''.join(filter(str.isdigit, text))
-            if not clean_text:
-                return 'None'
-            
-            return clean_text
-
-        except requests.exceptions.RequestException as e:
-            print(f"API Error (Attempt {attempt+1}/{MAX_RETRIES}) for {osm_id}: {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(2 ** attempt) # Exponential backoff
-            else:
-                return 'None' # החזרת None לאחר כל הניסיונות
-
-    return 'None'
 
 
 # --- 1. פונקציות עזר לטיפול ב-CACHE וטעינת נתונים ---
@@ -169,15 +113,12 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
     """
     print("--- Starting Street Mapping Orchestrator ---")
-    if not API_KEY:
-        print("\n*** WARNING: GEMINI_API_KEY environment variable not set. AI resolution will be skipped. ***)")
-
     if not use_ai:
         print("\n*** INFO: AI resolution is disabled for this run (use_ai=False). ***")
     
     # STEP 1: Data Acquisition (with caching)
     try:
-        chosen_place = place or OSM_PLACE_NAME or "Tel Aviv-Yafo, Israel"
+        chosen_place = place
         print(f"Using place: {chosen_place}")
         LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
         osm_gdf = load_or_fetch_osm(chosen_place, force_refresh=force_refresh)
@@ -223,10 +164,10 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     _save_intermediate_df(candidates_df, "step4_candidates", chosen_place)
 
     # STEP 5: AI Resolution (CREATES ai_decisions_df)
-    print("\n[Step 5/7] (Optional) Invoking Real AI for ambiguous cases...")
+    print("\n[Step 5/7] (Optional) Invoking Local AI for ambiguous cases...")
     ai_results = []
 
-    if use_ai and API_KEY:
+    if use_ai:
         # Filter candidates to the city being processed to avoid processing irrelevant streets
         osm_city_label = osm_gdf['city'].iloc[0]
         osm_gdf_in_city = osm_gdf[osm_gdf['city'] == osm_city_label]
@@ -253,18 +194,19 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
             adjacent_osm_ids = map_of_adjacents.get(osm_id, [])
             adjacent_names = osm_gdf_in_city[osm_gdf_in_city['osm_id'].isin(adjacent_osm_ids)]['normalized_name'].tolist()
 
-            prompt = (f"OSM Street Name: '{osm_street_name}'. "
-                      f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
-                      f"LAMAS Candidates: {row['all_candidates']}. Choose the best LAMAS ID (number only or 'None').")
+            prompt = (f"OSM Street Name: '{osm_street_name}'.\n"
+                      f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}.\n"
+                      f"LAMAS Candidates: {row['all_candidates']}.\n"
+                      "Choose the best LAMAS ID. Respond with 'ID: [number], Score: [0-100]' or 'ID: None, Score: 0'.")
 
-            ai_decision_id = get_ai_resolution(prompt, osm_id)
-            ai_results.append({'osm_id': osm_id, 'ai_LAMAS_id': ai_decision_id})
+            ai_decision_id, ai_score = get_local_ai_resolution(prompt, osm_id)
+            ai_results.append({'osm_id': osm_id, 'ai_LAMAS_id': ai_decision_id, 'ai_score': ai_score})
     else:
-        # AI disabled or missing API key — produce empty results
+        # AI disabled — produce empty results
         ai_results = []
 
     # ensure DataFrame has expected columns even if empty
-    ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id'])
+    ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id', 'ai_score'])
     _save_intermediate_df(ai_decisions_df, "step5_ai_decisions", chosen_place)
 
     # STEP 6: Final Merge and Mapping
@@ -273,6 +215,12 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     # Merge AI decisions back into the candidates table
     ai_decisions_merged = candidates_df.merge(ai_decisions_df, on='osm_id', how='left')
     
+    # Update the best_score for AI-matched streets
+    ai_decisions_merged['best_score'] = ai_decisions_merged.apply(
+        lambda row: row['ai_score'] if pd.notna(row['ai_score']) else row['best_score'],
+        axis=1
+    )
+
     # Convert all ID columns to string for safe merging and final output consistency
     ai_decisions_merged['osm_id'] = ai_decisions_merged['osm_id'].astype(str)
     osm_gdf['osm_id'] = osm_gdf['osm_id'].astype(str)
@@ -289,7 +237,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     ).astype(str)
 
     # Select key diagnostic columns from candidates/AI merge
-    diagnostic_cols = ['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'all_candidates', 'ai_LAMAS_id']
+    diagnostic_cols = ['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'all_candidates', 'ai_LAMAS_id', 'ai_score']
     
     # Create the full diagnostic table by merging OSM data with the candidates/AI data
     diagnostic_df_full = osm_gdf[['osm_id', 'osm_name', 'normalized_name', 'city', 'geometry']].merge(

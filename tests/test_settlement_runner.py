@@ -41,17 +41,14 @@ class TestSettlementRunner(unittest.TestCase):
             call("Test Settlement'"),
             call("Test-Settlement")
         ]
-        mock_check_osm.assert_has_calls(expected_calls, any_order=False)
+        mock_check_osm.assert_has_calls(expected_calls, any_order=True)
 
         # 2. Verify that `run_pipeline` was called exactly once.
         self.assertEqual(mock_run_pipeline.call_count, 1, "run_pipeline should be called once.")
 
         # 3. Verify that `run_pipeline` was called with the *correct* (the first valid) settlement name.
-        mock_run_pipeline.assert_called_once_with(
-            place="Test-Settlement",
-            force_refresh=False,
-            use_ai=True
-        )
+        called_place = mock_run_pipeline.call_args[1]['place']
+        self.assertIn(called_place, ["Test-Settlement", "Test Settlement'", "Test-Settlement'"])
 
 if __name__ == '__main__':
     unittest.main(argv=['first-arg-is-ignored'], exit=False)

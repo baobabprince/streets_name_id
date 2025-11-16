@@ -3,11 +3,6 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import LineString
 
-# הגדרת אזור העניין (ישראל ופלסטין)
-# ניתן להשתמש בשם גיאוגרפי או בתיבת גבולות (bounding box)
-# השם הגיאוגרפי "Israel, Palestine" משמש כקירוב נוח
-place_name = "Israel, Palestine" 
-
 def fetch_osm_street_data(place):
     """
     מוריד את גרף הרחובות של האזור הנתון וממיר אותו
@@ -90,38 +85,3 @@ def check_place_exists_in_osm(place_name):
         print(f"Warning: Could not verify '{place_name}' in OSM due to an error: {e}. Skipping.")
         return False
 
-
-if __name__ == "__main__":
-    # ---
-    # הדמיה (Mock Data) אם השליפה נכשלת או לצורך בדיקה מהירה:
-    # ---
-    if 'osm_gdf' not in locals():
-        print("יצירת GeoDataFrame מדומה עבור OSM...")
-        from shapely.geometry import LineString
-        data_osm = {
-            'osm_id': ['5001-A', '5002-B', '5003-C', '5004-D'],
-            'osm_name': ['שדרות רוטשילד', 'אבא הלל', 'הרצל', 'הרב סילבר'],
-            'highway': ['primary', 'residential', 'primary', 'residential'],
-            'geometry': [
-                LineString([(0, 0), (1, 0)]), 
-                LineString([(1, 0), (1, 1)]), 
-                LineString([(1, 1), (2, 1)]),
-                LineString([(1, 0), (2, 0)]) # קטע חדש המשיק ל-5001-A ו-5002-B
-            ]
-        }
-        osm_gdf = gpd.GeoDataFrame(data_osm, crs="EPSG:4326")
-        # נוסיף עמודת עיר כרגע באופן ידני, נצטרך למפות אותה בהמשך
-        osm_gdf['city'] = ['תל אביב-יפו', 'רמת גן', 'רמת גן', 'רמת גן']
-
-
-    # ודא שהנתונים של הלמ"ס נשלפים (מהקוד הקודם)
-    # LAMAS_data = fetch_all_LAMAS_data() # (יש להריץ את הפונקציה שהוגדרה קודם)
-    if 'LAMAS_df' not in locals():
-        print("שימוש בנתוני הלמ\"ס מדומה...")
-        data_LAMAS = {
-            '_id': [1001, 1002, 1003, 1004],
-            'שם_ישוב': ['תל אביב-יפו', 'רמת גן', 'רמת גן', 'רמת גן'],
-            'שם_רחוב': ['שד. רוטשילד', 'הרב סילבר', 'הרצל רח\'', 'אבא הלל סילבר'],
-        }
-        LAMAS_df = pd.DataFrame(data_LAMAS)
-        LAMAS_df.rename(columns={'_id': 'LAMAS_id', 'שם_ישוב': 'city', 'שם_רחוב': 'LAMAS_name'}, inplace=True)
