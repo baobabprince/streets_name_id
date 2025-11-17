@@ -34,7 +34,54 @@ def score_to_color(score):
     return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 
-def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
+def _build_diagnostics_html(diagnostics: dict) -> str:
+    """Builds the HTML for the diagnostics section."""
+
+    unmatched_streets_html = ""
+    if diagnostics["unmatched_lamas_street_names"]:
+        street_list_items = "".join(f"<li>{name}</li>" for name in diagnostics["unmatched_lamas_street_names"])
+        unmatched_streets_html = f"""
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה ({diagnostics['unmatched_lamas_count']} - {diagnostics['unmatched_lamas_percentage']})</h3>
+            <ul>{street_list_items}</ul>
+        </div>
+        """
+
+    return f"""
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">{diagnostics.get('total_osm_streets', 'N/A')}</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">{diagnostics.get('total_lamas_streets', 'N/A')}</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">{diagnostics.get('confident_matches', 'N/A')}</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">{diagnostics.get('ai_resolved_matches', 'N/A')}</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">{diagnostics.get('total_matched', 'N/A')}</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">{diagnostics.get('unmatched_osm_streets', 'N/A')}</div>
+            </div>
+        </div>
+        {unmatched_streets_html}
+    </div>
+    """
+
+
+def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: dict = None):
     """
     Generates an interactive HTML visualization of a GeoDataFrame of roads.
     Streets are color-coded by confidence score and display tooltips on hover.
@@ -232,6 +279,57 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
             border-radius: 5px;
             text-align: center;
         }}
+        .diagnostics {{
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }}
+        .diagnostics h2 {{
+            text-align: center;
+            color: #333;
+            margin-top: 0;
+        }}
+        .diagnostics-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }}
+        .diagnostics-card {{
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }}
+        .diagnostics-card .label {{
+            font-weight: bold;
+            color: #555;
+        }}
+        .diagnostics-card .value {{
+            font-size: 1.5em;
+            color: #0056b3;
+        }}
+        .unmatched-list {{
+            margin-top: 20px;
+            padding: 15px;
+            background: #fff8f8;
+            border: 1px solid #f2dede;
+            border-radius: 5px;
+        }}
+        .unmatched-list h3 {{
+            margin-top: 0;
+            color: #a94442;
+        }}
+        .unmatched-list ul {{
+            columns: 3;
+            padding-right: 20px;
+            list-style-type: none;
+        }}
+        .unmatched-list li {{
+            margin-bottom: 5px;
+        }}
     </style>
 </head>
 <body>
@@ -268,6 +366,9 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
         <div class="stats">
             <strong>הוראות:</strong> העבר את העכבר מעל רחוב כדי לראות את שמו ופרטי ההתאמה
         </div>
+
+        {_build_diagnostics_html(diagnostics) if diagnostics else ""}
+
     </div>
     
     <div id="tooltip"></div>
