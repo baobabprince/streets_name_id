@@ -23,8 +23,25 @@ def normalize_street_name(name):
     # 2. הסרת סימני פיסוק מיותרים והחלפתם ברווח
     # מטפל ב: ., -
     name = re.sub(r'[.,-]', ' ', name)
-    
-    # 3. ניקוי רווחים כפולים
+
+    # 3. הסרת מילים נפוצות כמו "רחוב", "שדרות" וכו' אם הן מופיעות בתחילת או סוף המחרוזת
+    # This is done *after* expanding abbreviations so it catches both forms (e.g., "רח." and "רחוב")
+    words_to_remove = ['רחוב', 'שדרות', 'סמטת', 'סמטה', 'מבוא', 'כיכר']
+    # Create a regex pattern: (^word\s+|\s+word$)
+    # This looks for the word at the start of the string followed by a space
+    # OR a space followed by the word at the end of the string.
+    # The `\b` ensures we match whole words only.
+    for word in words_to_remove:
+        # Check if the name contains more than just the word itself (and maybe spaces)
+        # This prevents "שדרות" from becoming ""
+        if name.strip() != word:
+            # Regex to remove the word if it's a prefix or a suffix
+            # Handles cases like "רחוב הרצל" -> "הרצל" and "הרצל רחוב" -> "הרצל"
+            # but won't touch "הרצל" or "שדרות" (single-word names)
+            name = re.sub(r'^\b' + re.escape(word) + r'\b\s*', '', name, flags=re.I)
+            name = re.sub(r'\s*\b' + re.escape(word) + r'\b$', '', name, flags=re.I)
+
+    # 4. ניקוי רווחים כפולים
     name = re.sub(r'\s+', ' ', name).strip()
     return name
 
