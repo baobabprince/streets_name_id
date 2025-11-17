@@ -3,6 +3,7 @@ import argparse
 import pandas as pd
 from pipeline import run_pipeline, load_or_fetch_LAMAS
 from OSM_streets import check_place_exists_in_osm
+from settlement_name_variations import get_settlement_name_variations
 
 def main():
     """
@@ -39,12 +40,7 @@ def main():
 
         # --- 3. Find a valid OSM place name variant ---
         # Try different variations of the settlement name to find one that exists in OSM
-        variants = [
-            settlement,
-            settlement.replace("-", " "),
-            settlement.replace("'", ""),
-            settlement.replace("-", " ").replace("'", "")
-        ]
+        variants = get_settlement_name_variations(settlement)
 
         valid_place_name = None
         # Use dict.fromkeys to remove duplicates while preserving order
