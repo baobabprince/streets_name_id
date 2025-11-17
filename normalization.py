@@ -30,102 +30,111 @@ def normalize_street_name(name):
 
 def find_fuzzy_candidates(osm_df, LAMAS_df):
     """
-    מבצע Fuzzy Matching מתוחכם ובוחר את המועמדים המובילים לכל רחוב ב-OSM.
+    Performs sophisticated Fuzzy Matching using all available OSM names and selects the top candidates for each OSM street.
     """
     print("Executing Fuzzy Matching and Candidate Selection...")
     candidates = []
     
-    # 1. איטרציה על כל רחוב ב-OSM
+    # 1. Iterate over each street in OSM
     for _, osm_row in osm_df.iterrows():
         osm_id = osm_row['osm_id']
-        osm_name = osm_row['normalized_name']
-        osm_city = osm_row['city'] 
+        osm_city = osm_row['city']
+        all_osm_names = osm_row.get('all_osm_names')
 
-        # 2. סינון רחובות הלמ"ס לאותה עיר (חיסכון במשאבי חישוב)
-        # שימוש ב-copy כדי למנוע SettingWithCopyWarning
-        LAMAS_subset = LAMAS_df[LAMAS_df['city'] == osm_city].copy() 
-        
-        # 3. חישוב ציוני דמיון
-        scores = []
-        for _, LAMAS_row in LAMAS_subset.iterrows():
-            LAMAS_id = LAMAS_row['LAMAS_id']
-            LAMAS_name_raw = LAMAS_row['LAMAS_name'] # נשמור את השם המקורי/לא מנורמל לצורך דיאגנוסטיקה
-            LAMAS_name = LAMAS_row['normalized_name']
-            
-            # חישוב 3 מדדים שונים:
-            ratio = fuzz.ratio(osm_name, LAMAS_name)
-            token_sort = fuzz.token_sort_ratio(osm_name, LAMAS_name)
-            token_set = fuzz.token_set_ratio(osm_name, LAMAS_name) # הכי חשוב לשמות חלקיים
-            
-            # ניקוד ממוצע משוקלל
-            weighted_score = np.average([ratio, token_sort, token_set], weights=[0.2, 0.3, 0.5])
-
-            scores.append({
-                'LAMAS_id': LAMAS_id,
-                'LAMAS_name': LAMAS_name_raw, # שמירת השם הלא מנורמל לדיאגנוסטיקה טובה יותר
-                'weighted_score': weighted_score,
-                'token_set_score': token_set
-            })
-
-        # 4. סינון וסיווג: בחירת המועמדים הטובים ביותר
-        if not scores:
-             candidates.append({
-                 'osm_id': osm_id,
-                 'status': 'MISSING',
-                 'best_LAMAS_id': None,
-                 'best_LAMAS_name': None, # <-- ADDED
-                 'best_score': 0,
-                 'all_candidates': None
-             })
-             continue
-             
-        scores_df = pd.DataFrame(scores).sort_values(by='weighted_score', ascending=False)
-        
-        # התאמה ודאית: אם יש ציון גבוה מאוד (מעל 90)
-        confident_match = scores_df[scores_df['weighted_score'] >= 90].head(1)
-        if not confident_match.empty:
+        # If there are no names for the street, mark as MISSING and continue
+        if not all_osm_names:
             candidates.append({
-                'osm_id': osm_id,
-                'status': 'CONFIDENT',
-                'best_LAMAS_id': confident_match.iloc[0]['LAMAS_id'],
-                'best_LAMAS_name': confident_match.iloc[0]['LAMAS_name'], # <-- ADDED
-                'best_score': confident_match.iloc[0]['weighted_score'],
-                'all_candidates': None
+                'osm_id': osm_id, 'status': 'MISSING', 'best_LAMAS_id': None,
+                'best_LAMAS_name': None, 'best_score': 0, 'all_candidates': None,
+                'matched_osm_name': None
             })
             continue
 
-        # מועמדים ל-AI: אם יש ציונים סבירים (בין 80 ל-98)
-        # שינוי קל: הוספת התנאי לחוסר התאמה ודאית כדי למנוע מצב בו הציון 90 נופל כאן
-        ai_candidates = scores_df[
-            (scores_df['weighted_score'] >= 80) & 
-            (scores_df['weighted_score'] < 90) # טווח ציון קשיח ל-NEEDS_AI
-        ].head(5).copy() 
+        # 2. Filter LAMAS streets for the same city
+        LAMAS_subset = LAMAS_df[LAMAS_df['city'] == osm_city].copy()
         
-        if not ai_candidates.empty:
-            # איסוף פרטי המועמדים לטקסט
-            candidate_list = ai_candidates.apply(
-                lambda r: f"ID: {r['LAMAS_id']}, Name: '{r['LAMAS_name']}' (Score: {r['weighted_score']:.2f})", 
-                axis=1
+        # 3. Calculate similarity scores for each OSM name against all LAMAS names
+        best_match_for_street = None
+
+        for osm_name in all_osm_names:
+            normalized_osm_name = normalize_street_name(osm_name)
+            if not normalized_osm_name:
+                continue
+
+            for _, lamas_row in LAMAS_subset.iterrows():
+                lamas_id = lamas_row['LAMAS_id']
+                lamas_name_raw = lamas_row['LAMAS_name']
+                normalized_lamas_name = lamas_row['normalized_name']
+
+                # Calculate weighted average score
+                ratio = fuzz.ratio(normalized_osm_name, normalized_lamas_name)
+                token_sort = fuzz.token_sort_ratio(normalized_osm_name, normalized_lamas_name)
+                token_set = fuzz.token_set_ratio(normalized_osm_name, normalized_lamas_name)
+                weighted_score = np.average([ratio, token_sort, token_set], weights=[0.2, 0.3, 0.5])
+
+                # Keep track of the best match found so far for this OSM street
+                if best_match_for_street is None or weighted_score > best_match_for_street['weighted_score']:
+                    best_match_for_street = {
+                        'LAMAS_id': lamas_id,
+                        'LAMAS_name': lamas_name_raw,
+                        'weighted_score': weighted_score,
+                        'matched_osm_name': osm_name  # Store which OSM name gave the best match
+                    }
+
+        # After checking all names, decide the status based on the best match found
+        if best_match_for_street and best_match_for_street['weighted_score'] >= 90:
+            candidates.append({
+                'osm_id': osm_id,
+                'status': 'CONFIDENT',
+                'best_LAMAS_id': best_match_for_street['LAMAS_id'],
+                'best_LAMAS_name': best_match_for_street['LAMAS_name'],
+                'best_score': best_match_for_street['weighted_score'],
+                'all_candidates': None,
+                'matched_osm_name': best_match_for_street['matched_osm_name']
+            })
+        elif best_match_for_street and best_match_for_street['weighted_score'] >= 80:
+             # For NEEDS_AI, we still need to collect other good candidates
+            ai_candidates_scores = []
+            for _, lamas_row in LAMAS_subset.iterrows():
+                normalized_lamas_name = lamas_row['normalized_name']
+                # Re-calculate score against the best-matched OSM name for consistency
+                best_osm_name_norm = normalize_street_name(best_match_for_street['matched_osm_name'])
+
+                ratio = fuzz.ratio(best_osm_name_norm, normalized_lamas_name)
+                token_sort = fuzz.token_sort_ratio(best_osm_name_norm, normalized_lamas_name)
+                token_set = fuzz.token_set_ratio(best_osm_name_norm, normalized_lamas_name)
+                score = np.average([ratio, token_sort, token_set], weights=[0.2, 0.3, 0.5])
+
+                if score >= 80:
+                    ai_candidates_scores.append({
+                        'LAMAS_id': lamas_row['LAMAS_id'],
+                        'LAMAS_name': lamas_row['LAMAS_name'],
+                        'score': score
+                    })
+
+            ai_candidates_df = pd.DataFrame(ai_candidates_scores).sort_values(by='score', ascending=False).head(5)
+            candidate_list = ai_candidates_df.apply(
+                lambda r: f"ID: {r['LAMAS_id']}, Name: '{r['LAMAS_name']}' (Score: {r['score']:.2f})", axis=1
             ).tolist()
-            
+
             candidates.append({
                 'osm_id': osm_id,
                 'status': 'NEEDS_AI',
-                'best_LAMAS_id': ai_candidates.iloc[0]['LAMAS_id'], # שמירת ה-ID המוביל רק לדיאגנוסטיקה
-                'best_LAMAS_name': ai_candidates.iloc[0]['LAMAS_name'], # <-- ADDED (השם המוביל)
-                'best_score': ai_candidates.iloc[0]['weighted_score'],
-                'all_candidates': "\n".join(candidate_list)
+                'best_LAMAS_id': best_match_for_street['LAMAS_id'],
+                'best_LAMAS_name': best_match_for_street['LAMAS_name'],
+                'best_score': best_match_for_street['weighted_score'],
+                'all_candidates': "\n".join(candidate_list),
+                'matched_osm_name': best_match_for_street['matched_osm_name']
             })
-        
-        # רחובות ללא התאמה: יטופלו כ-Missing later
-        else:
+        else: # No suitable match found
             candidates.append({
                 'osm_id': osm_id,
                 'status': 'MISSING',
                 'best_LAMAS_id': None,
-                'best_LAMAS_name': None, # <-- ADDED
-                'best_score': scores_df.iloc[0]['weighted_score'] if not scores_df.empty else 0,
-                'all_candidates': None
+                'best_LAMAS_name': None,
+                'best_score': best_match_for_street['weighted_score'] if best_match_for_street else 0,
+                'all_candidates': None,
+                'matched_osm_name': None
             })
 
     return pd.DataFrame(candidates)
