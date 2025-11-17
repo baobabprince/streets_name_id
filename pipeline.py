@@ -193,6 +193,12 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
             LAMAS_df['city'] = _normalize_city(LAMAS_df['city'])
         osm_gdf['city'] = _normalize_city(osm_gdf['city'])
         
+        # --- DEBUG: Print normalized city names ---
+        print("--- Normalized City Names ---")
+        print(f"OSM city names: {osm_gdf['city'].unique()}")
+        print(f"LAMAS city names for 'אבו גוש': {LAMAS_df[LAMAS_df['LAMAS_name'] == 'אבו גוש']['city'].unique()}")
+        print("-----------------------------")
+
         # Save intermediate normalized data
         _save_intermediate_df(LAMAS_df, "step1_lamas_raw", chosen_place)
         _save_intermediate_df(osm_gdf, "step1_osm_raw", chosen_place)
@@ -204,10 +210,34 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     # STEP 2: Preprocessing and Normalization
     print("\n[Step 2/7] Normalizing street names...")
     LAMAS_df['normalized_name'] = LAMAS_df['LAMAS_name'].apply(normalize_street_name)
-    osm_gdf['normalized_name'] = osm_gdf['osm_name'].apply(normalize_street_name)
+
+    # --- NEW: Normalize all available 'name' columns in OSM data ---
+    # Identify all columns that start with 'name' (e.g., 'osm_name', 'name:he', 'name:en')
+    osm_name_columns = [col for col in osm_gdf.columns if col.startswith('name') or col == 'osm_name']
+
+    for col in osm_name_columns:
+        # The new normalized column will be named, e.g., 'normalized_osm_name', 'normalized_name:he'
+        normalized_col_name = f"normalized_{col}"
+        osm_gdf[normalized_col_name] = osm_gdf[col].apply(normalize_street_name)
+
+    # For backward compatibility, ensure 'normalized_name' exists, prioritizing Hebrew.
+    # This column will be the primary one used for matching.
+    if 'normalized_name:he' in osm_gdf.columns:
+        osm_gdf['normalized_name'] = osm_gdf['normalized_name:he']
+    elif 'normalized_osm_name' in osm_gdf.columns:
+        osm_gdf['normalized_name'] = osm_gdf['normalized_osm_name']
+    else:
+        # If no primary name is available, fill with None to avoid errors
+        osm_gdf['normalized_name'] = None
     
     LAMAS_df.dropna(subset=['normalized_name'], inplace=True)
-    osm_gdf.dropna(subset=['normalized_name'], inplace=True)
+
+    # --- Corrected Logic: Keep rows if at least one normalized name exists ---
+    # Find all normalized name columns that were created
+    normalized_cols = [f"normalized_{col}" for col in osm_name_columns if f"normalized_{col}" in osm_gdf.columns]
+
+    # Keep a row only if it has a valid name in at least one of the normalized columns
+    osm_gdf.dropna(subset=osm_name_columns, how='all', inplace=True)
 
     _save_intermediate_df(LAMAS_df, "step2_lamas_normalized", chosen_place)
     _save_intermediate_df(osm_gdf, "step2_osm_normalized", chosen_place)
