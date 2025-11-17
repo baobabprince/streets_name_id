@@ -320,13 +320,55 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     print("\n--- Final Mapping Result Sample ---")
     print(osm_gdf_final[osm_gdf_final['final_LAMAS_id'].notna()][['osm_id', 'osm_name', 'final_LAMAS_id']].head(5))
 
+    # STEP 6.5: Calculate Diagnostic Summary
+    print("\n[Step 6.5/7] Calculating diagnostic summary...")
+    osm_city_label = osm_gdf['city'].iloc[0]
+    lamas_in_city_df = LAMAS_df[LAMAS_df['city'] == osm_city_label]
+
+    total_osm_streets = len(osm_gdf)
+    total_lamas_streets = len(lamas_in_city_df)
+
+    confident_matches = diagnostic_df_full[diagnostic_df_full['status'] == 'CONFIDENT'].shape[0]
+    ai_resolved_matches = diagnostic_df_full[(diagnostic_df_full['status'] == 'NEEDS_AI') & (diagnostic_df_full['final_LAMAS_id'].notna())].shape[0]
+    total_matched = confident_matches + ai_resolved_matches
+    unmatched_osm_streets = total_osm_streets - total_matched
+
+    # Find unmatched LAMAS streets
+    if not lamas_in_city_df.empty:
+        # Ensure final_LAMAS_id is string, handling potential float representations
+        final_mapping_df['final_LAMAS_id'] = final_mapping_df['final_LAMAS_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+        matched_lamas_ids = set(final_mapping_df['final_LAMAS_id'].dropna())
+
+        lamas_in_city_df['LAMAS_id'] = lamas_in_city_df['LAMAS_id'].astype(str)
+        unmatched_lamas_df = lamas_in_city_df[~lamas_in_city_df['LAMAS_id'].isin(matched_lamas_ids)]
+        unmatched_lamas_street_names = sorted(unmatched_lamas_df['LAMAS_name'].tolist())
+        unmatched_lamas_count = len(unmatched_lamas_df)
+        unmatched_lamas_percentage = (unmatched_lamas_count / total_lamas_streets) * 100 if total_lamas_streets > 0 else 0
+    else:
+        unmatched_lamas_street_names = []
+        unmatched_lamas_count = 0
+        unmatched_lamas_percentage = 0
+
+    diagnostics = {
+        "total_osm_streets": total_osm_streets,
+        "total_lamas_streets": total_lamas_streets,
+        "confident_matches": confident_matches,
+        "ai_resolved_matches": ai_resolved_matches,
+        "total_matched": total_matched,
+        "unmatched_osm_streets": unmatched_osm_streets,
+        "unmatched_lamas_count": unmatched_lamas_count,
+        "unmatched_lamas_percentage": f"{unmatched_lamas_percentage:.1f}%",
+        "unmatched_lamas_street_names": unmatched_lamas_street_names
+    }
+    print(f"-> Diagnostic Summary: {diagnostics}")
+
     # STEP 7: Generate HTML Visualization
     print("\n[Step 7/7] Generating HTML visualization of all streets...")
     try:
         from generate_html import create_html_from_gdf
         os.makedirs("HTML", exist_ok=True)
-        # Pass the GeoDataFrame that includes the final ID
-        create_html_from_gdf(diagnostic_df_full, chosen_place)
+        # Pass the GeoDataFrame and the new diagnostics object
+        create_html_from_gdf(diagnostic_df_full, chosen_place, diagnostics)
     except Exception as e:
         print(f"Warning: failed to generate HTML visualization: {e}")
 
