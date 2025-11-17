@@ -15,6 +15,10 @@ def fetch_osm_street_data(place):
     """
     print(f"מתחיל בשליפת גרף הרחובות של {place} מ-OSM...")
     
+    # Configure osmnx to retrieve all tags
+    ox.settings.all_oneway = True
+    ox.settings.useful_tags_way = ['highway', 'name', 'name:he']
+
     # 1. הורדת גרף הרחובות
     # 'drive' מציין שאנו רוצים את רשת הדרכים הניתנת לנסיעה
     try:
@@ -28,24 +32,36 @@ def fetch_osm_street_data(place):
     osm_gdf = ox.graph_to_gdfs(G, nodes=False, edges=True)
     
     # 3. ניקוי ועיבוד ראשוני של ה-GeoDataFrame:
-    # שמירת עמודות רלוונטיות, במיוחד שמות הרחובות (name)
+    # שמירת עמודות רלוונטיות, כולל כל שמות הרחובות ('name', 'name:he', etc.)
     
     # oxmnx משתמש ב-u, v, key כמזהה של כל קטע. ניצור osm_id פשוט לשם נוחות.
     osm_gdf = osm_gdf.reset_index()
     osm_gdf['osm_id'] = osm_gdf.apply(lambda row: f"{row['u']}-{row['v']}-{row['key']}", axis=1)
     
-    # נבחר את השדות החיוניים להמשך העבודה
-    osm_gdf = osm_gdf[['osm_id', 'name', 'highway', 'geometry']].copy()
+    # Keep essential columns and all name-related columns ('name', 'name:he', etc.)
+    essential_cols = ['osm_id', 'highway', 'geometry']
+    name_cols = [col for col in osm_gdf.columns if col.startswith('name')]
+    columns_to_keep = list(dict.fromkeys(essential_cols + name_cols))
     
-    # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
-    osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
+    # Filter the GeoDataFrame to only the columns we need
+    osm_gdf = osm_gdf[columns_to_keep].copy()
     
-    # ב-OSM, שם הרחוב (name) יכול להיות מחרוזת בודדת או רשימה של שמות.
-    # נטפל בכך כדי לקבל מחרוזת אחידה (או נשאיר את הרשימה כטקסט מופרד)
-    osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(lambda x: x[0] if isinstance(x, list) else x)
+    # Rename 'name' to 'osm_name' for backward compatibility in the pipeline
+    if 'name' in osm_gdf.columns:
+        osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
+    else:
+        # If 'name' doesn't exist, create an 'osm_name' column filled with None
+        # This prevents key errors in downstream processing that expects this column.
+        osm_gdf['osm_name'] = None
+
+    # In OSM, name fields can be single strings or lists. Unpack lists to their first element.
+    # Apply this to all columns that start with 'name' (including the new 'osm_name')
+    for col in [c for c in osm_gdf.columns if c.startswith('name') or c == 'osm_name']:
+        if col in osm_gdf.columns:
+            osm_gdf[col] = osm_gdf[col].apply(lambda x: x[0] if isinstance(x, list) else x)
 
     # 4. כיווץ ה-GeoDataFrame לדרכים בלבד (נאבד חלק מהתכונות של הגרף, אך זה מתאים למיפוי)
-    print(f"נשלפו {len(osm_gdf)} קטעי דרך מ-OSM.")
+    print(f"נשלפו {len(osm_gdf)} קטעי דרך מ-OSM. Columns include: {list(osm_gdf.columns)}")
     return osm_gdf
 
 # טעינת נתוני OSM (יכול לקחת מספר דקות!)
