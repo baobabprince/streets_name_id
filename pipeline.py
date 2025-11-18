@@ -261,8 +261,19 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     # STEP 2: Preprocessing and Normalization
     print("\n[Step 2/7] Normalizing street names...")
     LAMAS_df['normalized_name'] = LAMAS_df['LAMAS_name'].apply(normalize_street_name)
-    osm_gdf['normalized_name'] = osm_gdf['osm_name'].apply(normalize_street_name)
     
+    # Create the primary 'normalized_name' by prioritizing 'name:he'
+    # and falling back to 'osm_name'
+    if 'name:he' in osm_gdf.columns:
+        # Use name:he if it's not null, otherwise use osm_name
+        osm_gdf['normalized_osm_name'] = osm_gdf['osm_name'].apply(normalize_street_name)
+        osm_gdf['normalized_name:he'] = osm_gdf['name:he'].apply(normalize_street_name)
+        osm_gdf['normalized_name'] = osm_gdf['normalized_name:he'].fillna(osm_gdf['normalized_osm_name'])
+    else:
+        # Fallback for older data or places without hebrew names
+        osm_gdf['normalized_name'] = osm_gdf['osm_name'].apply(normalize_street_name)
+
+    # Drop rows where the final normalized_name is null
     LAMAS_df.dropna(subset=['normalized_name'], inplace=True)
     osm_gdf.dropna(subset=['normalized_name'], inplace=True)
 
@@ -349,7 +360,11 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     diagnostic_cols = ['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'all_candidates', 'ai_LAMAS_id']
     
     # Create the full diagnostic table by merging OSM data with the candidates/AI data
-    diagnostic_df_full = osm_gdf[['osm_id', 'osm_name', 'normalized_name', 'city', 'geometry']].merge(
+    osm_cols_for_diag = ['osm_id', 'osm_name', 'normalized_name', 'city', 'geometry']
+    if 'name:he' in osm_gdf.columns:
+        osm_cols_for_diag.insert(2, 'name:he') # Insert 'name:he' after 'osm_name'
+
+    diagnostic_df_full = osm_gdf[osm_cols_for_diag].merge(
         ai_decisions_merged[diagnostic_cols], on='osm_id', how='left'
     )
     
