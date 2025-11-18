@@ -15,6 +15,9 @@ def fetch_osm_street_data(place):
     """
     print(f"מתחיל בשליפת גרף הרחובות של {place} מ-OSM...")
     
+    # הגדרת התגים הנוספים שאנו רוצים לשלוף, במיוחד 'name:he'
+    ox.settings.useful_tags_way += ['name:he']
+
     # 1. הורדת גרף הרחובות
     # 'drive' מציין שאנו רוצים את רשת הדרכים הניתנת לנסיעה
     try:
@@ -35,14 +38,20 @@ def fetch_osm_street_data(place):
     osm_gdf['osm_id'] = osm_gdf.apply(lambda row: f"{row['u']}-{row['v']}-{row['key']}", axis=1)
     
     # נבחר את השדות החיוניים להמשך העבודה
-    osm_gdf = osm_gdf[['osm_id', 'name', 'highway', 'geometry']].copy()
+    cols_to_keep = ['osm_id', 'name', 'highway', 'geometry']
+    if 'name:he' in osm_gdf.columns:
+        cols_to_keep.append('name:he')
+
+    osm_gdf = osm_gdf[cols_to_keep].copy()
     
     # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
     osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
     
     # ב-OSM, שם הרחוב (name) יכול להיות מחרוזת בודדת או רשימה של שמות.
-    # נטפל בכך כדי לקבל מחרוזת אחידה (או נשאיר את הרשימה כטקסט מופרד)
+    # נטפל בכך כדי לקבל מחרוזת אחידה
     osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(lambda x: x[0] if isinstance(x, list) else x)
+    if 'name:he' in osm_gdf.columns:
+        osm_gdf['name:he'] = osm_gdf['name:he'].apply(lambda x: x[0] if isinstance(x, list) else x)
 
     # 4. כיווץ ה-GeoDataFrame לדרכים בלבד (נאבד חלק מהתכונות של הגרף, אך זה מתאים למיפוי)
     print(f"נשלפו {len(osm_gdf)} קטעי דרך מ-OSM.")
