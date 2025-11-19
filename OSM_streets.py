@@ -8,6 +8,17 @@ from shapely.geometry import LineString
 # השם הגיאוגרפי "Israel, Palestine" משמש כקירוב נוח
 place_name = "Israel, Palestine" 
 
+def is_hebrew(text):
+    """
+    בדיקה אם טקסט מכיל תווים עבריים.
+    מחזיר True אם יש לפחות תו עברי אחד בטקסט.
+    """
+    if pd.isna(text) or text is None:
+        return False
+    text = str(text)
+    # טווח תווים עבריים ב-Unicode: U+0590 to U+05FF
+    return any('\u0590' <= char <= '\u05FF' for char in text)
+
 def fetch_osm_street_data(place):
     """
     מוריד את גרף הרחובות של האזור הנתון וממיר אותו
@@ -52,6 +63,24 @@ def fetch_osm_street_data(place):
     osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(lambda x: x[0] if isinstance(x, list) else x)
     if 'name:he' in osm_gdf.columns:
         osm_gdf['name:he'] = osm_gdf['name:he'].apply(lambda x: x[0] if isinstance(x, list) else x)
+    
+    # 4. עדיפות לשם העברי: אם השם הראשי אינו בעברית ויש name:he, נשתמש בו
+    # שמירת השם המקורי לצורך דיאגנוסטיקה
+    if 'name:he' in osm_gdf.columns:
+        osm_gdf['osm_name_original'] = osm_gdf['osm_name'].copy()
+        
+        # עבור כל שורה, אם השם הראשי אינו עברי אך name:he קיים ועברי, נחליף
+        for idx, row in osm_gdf.iterrows():
+            main_name = row['osm_name']
+            hebrew_name = row['name:he']
+            
+            # אם השם הראשי אינו עברי ויש שם עברי תקין
+            if not is_hebrew(main_name) and pd.notna(hebrew_name) and is_hebrew(hebrew_name):
+                osm_gdf.at[idx, 'osm_name'] = hebrew_name
+                print(f"  → החלפה: '{main_name}' → '{hebrew_name}' (עדיפות לעברית)")
+    else:
+        # אם אין name:he, השם המקורי זהה לשם הראשי
+        osm_gdf['osm_name_original'] = osm_gdf['osm_name'].copy()
 
     # 4. כיווץ ה-GeoDataFrame לדרכים בלבד (נאבד חלק מהתכונות של הגרף, אך זה מתאים למיפוי)
     print(f"נשלפו {len(osm_gdf)} קטעי דרך מ-OSM.")
