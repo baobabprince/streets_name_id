@@ -67,14 +67,14 @@ The pipeline operates in a series of sequential steps to achieve a high-quality 
 
 ## How to Run the Pipeline
 
-You can run the entire pipeline from the command line using `pipeline.py`.
+You can run the entire pipeline from the command line using the script in the `scripts/` directory.
 
 ### Basic Usage
 
 To run the pipeline for a specific city, provide the city name as an argument.
 
 ```bash
-python pipeline.py "בית שאן"
+python scripts/run_pipeline.py "בית שאן"
 ```
 
 ### Command-Line Arguments
@@ -87,13 +87,21 @@ python pipeline.py "בית שאן"
 
 -   **Run for Tel Aviv with AI resolution:**
     ```bash
-    python pipeline.py "Tel Aviv-Yafo, Israel"
+    python scripts/run_pipeline.py "Tel Aviv-Yafo, Israel"
     ```
 
 -   **Run for Beit She'an without AI and force a data refresh:**
     ```bash
-    python pipeline.py "בית שאן" --no-ai --refresh
+    python scripts/run_pipeline.py "בית שאן" --no-ai --refresh
     ```
+
+### Running Diagnostics
+
+To diagnose the results of a pipeline run, you can use the `diagnose_pipeline.py` script:
+
+```bash
+python scripts/diagnose_pipeline.py "בית שאן"
+```
 
 ## Outputs
 

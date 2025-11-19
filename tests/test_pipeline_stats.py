@@ -9,7 +9,7 @@ import os
 # Add the root directory to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from pipeline import calculate_diagnostics
+from src.pipeline import calculate_diagnostics
 
 class TestPipelineStats(unittest.TestCase):
 

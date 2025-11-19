@@ -1,99 +1,14 @@
-# pipeline.py
+# src/pipeline.py
 import os
 import pandas as pd
-import geopandas as gpd
-from shapely.geometry import LineString
-import numpy as np
-import requests
-import time
-import json
-from fuzzywuzzy import fuzz
-import re
-import datetime
-import sys
+from src.utils.caching import _save_intermediate_df, _safe_place_name, load_or_fetch_LAMAS, load_or_fetch_osm
+from src.processing.normalization import normalize_street_name, find_fuzzy_candidates
+from src.processing.map_of_adjacents import build_adjacency_map
+from src.utils.ai_resolver import get_ai_resolution
+from src.visualization.generate_html import create_html_from_gdf
+import os
 
-# --- Import necessary utility functions (assuming these files exist in the project) ---
-from lamas_streets import fetch_all_LAMAS_data
-from OSM_streets import fetch_osm_street_data, place_name as OSM_PLACE_NAME
-from map_of_adjacents import build_adjacency_map
-from normalization import normalize_street_name, find_fuzzy_candidates
-
-
-# --- הגדרות API ---
-# קריאה למפתח ה-API ממשתנה הסביבה GEMINI_API_KEY
 API_KEY = os.getenv("GEMINI_API_KEY") 
-GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key={API_KEY}"
-MAX_RETRIES = 3
-
-# Caching settings
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "data")
-os.makedirs(CACHE_DIR, exist_ok=True)
-LAMAS_CACHE = os.path.join(CACHE_DIR, "LAMAS_data.pkl")
-OSM_CACHE_TEMPLATE = os.path.join(CACHE_DIR, "osm_data_{place}.pkl")
-SIX_MONTHS_DAYS = 182
-
-
-# --- פונקציות עזר לקריאת API ---
-def get_ai_resolution(prompt, osm_id):
-    """
-    מבצע קריאת API אמיתית למודל Gemini כדי להכריע בזיהוי רחובות.
-    כולל מנגנון Retry פשוט.
-    """
-    if not API_KEY:
-        print("  -> ERROR: GEMINI_API_KEY not found or is empty. Skipping AI resolution.")
-        return 'None'
-        
-    print(f"  -> Consulting AI for OSM ID: {osm_id}...")
-    
-    # הגדרות פרומפט ופרסונה עבור המודל
-    system_prompt = "אתה מערכת GIS אוטומטית שתפקידה למצוא את המזהה המספרי היחיד של רחוב (LAMAS ID) מתוך רשימת מועמדים, על בסיס שם וקונטקסט גיאוגרפי (שמות רחובות משיקים). השב עם המספר של ה-ID בלבד, או עם המילה 'None' אם לא נמצאה התאמה ודאית."
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "tools": [{"google_search": {}}] # מאפשר שימוש בחיפוש להקשר היסטורי/כינויים
-    }
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.post(
-                GEMINI_API_URL, 
-                headers={'Content-Type': 'application/json'}, 
-                data=json.dumps(payload)
-            )
-            response.raise_for_status() # שגיאות HTTP יעלו חריגה
-            
-            result = response.json()
-            # חילוץ הטקסט
-            text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'None').strip()
-            
-            # ניקוי התשובה - ודא שרק ה-ID המספרי או 'None' מוחזר
-            clean_text = ''.join(filter(str.isdigit, text))
-            if not clean_text:
-                return 'None'
-            
-            return clean_text
-
-        except requests.exceptions.RequestException as e:
-            print(f"API Error (Attempt {attempt+1}/{MAX_RETRIES}) for {osm_id}: {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(2 ** attempt) # Exponential backoff
-            else:
-                return 'None' # החזרת None לאחר כל הניסיונות
-
-    return 'None'
-
-
-# --- 1. פונקציות עזר לטיפול ב-CACHE וטעינת נתונים ---
-def _is_fresh(path, max_age_days=SIX_MONTHS_DAYS):
-    if not os.path.exists(path):
-        return False
-    age_days = (datetime.datetime.now() - datetime.datetime.fromtimestamp(os.path.getmtime(path))).days
-    return age_days <= max_age_days
-
-def _safe_place_name(place: str) -> str:
-    # convert place to a filesystem-safe token
-    return re.sub(r'[^0-9A-Za-z_\-\u0590-\u05FF]', '_', place)
 
 def _normalize_city(col: pd.Series) -> pd.Series:
     """Robustly normalizes city names."""
@@ -104,61 +19,6 @@ def _normalize_city(col: pd.Series) -> pd.Series:
         .str.replace(r'עיריית', '', regex=False) # remove common suffix/prefix
         .str.strip()
     )
-
-def _save_intermediate_df(df, step_name, place):
-    """Saves an intermediate DataFrame/GeoDataFrame to the cache directory."""
-    safe_place = _safe_place_name(place)
-    # Use CSV for the final report, PKL for intermediate steps to preserve data types
-    file_ext = "csv" if step_name.startswith("diagnostic_report") else "pkl"
-    filename = f"{step_name}_{safe_place}.{file_ext}"
-    path = os.path.join(CACHE_DIR, filename)
-    
-    try:
-        if file_ext == "pkl":
-            df.to_pickle(path)
-        elif file_ext == "csv":
-            # Ensure geometry is dropped if saving GeoDataFrame to CSV
-            df_to_save = df.drop(columns=['geometry'], errors='ignore')
-            df_to_save.to_csv(path, index=False, encoding='utf-8')
-            
-        print(f"  -> Saved intermediate result for {step_name} to {path}")
-    except Exception as e:
-        print(f"  -> Warning: Failed to save {step_name} intermediate result: {e}")
-
-
-def load_or_fetch_LAMAS(force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
-    """Load LAMAS data from cache if fresh, otherwise fetch and cache it."""
-    if not force_refresh and _is_fresh(LAMAS_CACHE, max_age_days):
-        try:
-            return pd.read_pickle(LAMAS_CACHE)
-        except Exception:
-            pass
-
-    df = fetch_all_LAMAS_data()
-    try:
-        df.to_pickle(LAMAS_CACHE)
-    except Exception:
-        pass
-    return df
-
-def load_or_fetch_osm(place: str, force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
-    """Load OSM GeoDataFrame from cache if fresh, otherwise fetch and cache it."""
-    safe = _safe_place_name(place)
-    cache_path = OSM_CACHE_TEMPLATE.format(place=safe)
-    if not force_refresh and _is_fresh(cache_path, max_age_days):
-        try:
-            return pd.read_pickle(cache_path)
-        except Exception:
-            pass
-
-    gdf = fetch_osm_street_data(place)
-    try:
-        # GeoDataFrame is a subclass of DataFrame; pickle preserves geometry
-        gdf.to_pickle(cache_path)
-    except Exception:
-        pass
-    return gdf
-
 
 def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
     """Calculates the diagnostic summary statistics."""
@@ -232,10 +92,6 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
     return diagnostics
 
 
-# ----------------------------------------------------------------------------------
-#                                 ORCHESTRATION START
-# ----------------------------------------------------------------------------------
-
 def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: bool = False):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
@@ -249,6 +105,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     
     # STEP 1: Data Acquisition (with caching)
     try:
+        from src.data_management.OSM_streets import place_name as OSM_PLACE_NAME
         chosen_place = place or OSM_PLACE_NAME or "Tel Aviv-Yafo, Israel"
         print(f"Using place: {chosen_place}")
         LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
@@ -395,7 +252,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     osm_gdf_final = osm_gdf.merge(diagnostic_df_full[['osm_id', 'final_LAMAS_id']], on='osm_id', how='left')
 
     print("\n-----------------------------------------------------")
-    print("                 PIPELINE COMPLETED                  ")
+    print("       _              PIPELINE COMPLETED                  ")
     print("-----------------------------------------------------")
     print(f"Total OSM streets considered: {len(osm_gdf_final)}")
     
@@ -418,22 +275,8 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     # STEP 7: Generate HTML Visualization
     print("\n[Step 7/7] Generating HTML visualization of all streets...")
     try:
-        from generate_html import create_html_from_gdf
         os.makedirs("HTML", exist_ok=True)
         # Pass the GeoDataFrame and the new diagnostics object
         create_html_from_gdf(diagnostic_df_full, chosen_place, diagnostics)
     except Exception as e:
         print(f"Warning: failed to generate HTML visualization: {e}")
-
-if __name__ == "__main__":
-    place_arg = None
-    force = False
-    no_ai = False
-    if len(sys.argv) > 1:
-        place_arg = sys.argv[1]
-    if "--refresh" in sys.argv:
-        force = True
-    if "--no-ai" in sys.argv:
-        no_ai = True
-
-    run_pipeline(place=place_arg, force_refresh=force, use_ai=(not no_ai))

@@ -7,8 +7,11 @@ import pandas as pd
 import re
 import colorsys
 
+# Add the src directory to the Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+
 # --- Import from existing project files ---
-from pipeline import _safe_place_name
+from src.utils.caching import _safe_place_name
 
 
 def score_to_color(score):
