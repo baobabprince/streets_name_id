@@ -16,7 +16,9 @@ import sys
 from lamas_streets import fetch_all_LAMAS_data
 from OSM_streets import fetch_osm_street_data, place_name as OSM_PLACE_NAME
 from map_of_adjacents import build_adjacency_map
+from map_of_adjacents import build_adjacency_map
 from normalization import normalize_street_name, find_fuzzy_candidates
+from local_ai_resolver import LocalAIResolver, get_local_ai_resolution
 
 
 # --- הגדרות API ---
@@ -236,7 +238,7 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
 #                                 ORCHESTRATION START
 # ----------------------------------------------------------------------------------
 
-def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: bool = False):
+def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
     """
@@ -271,7 +273,8 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
         
     except Exception as e:
         print(f"FATAL ERROR during Data Acquisition: {e}")
-        return
+        return False
+
 
     # STEP 2: Preprocessing and Normalization
     print("\n[Step 2/7] Normalizing street names...")
@@ -304,10 +307,22 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     _save_intermediate_df(candidates_df, "step4_candidates", chosen_place)
 
     # STEP 5: AI Resolution (CREATES ai_decisions_df)
-    print("\n[Step 5/7] (Optional) Invoking Real AI for ambiguous cases...")
+    print("\n[Step 5/7] (Optional) Invoking AI for ambiguous cases...")
     ai_results = []
 
-    if use_ai and API_KEY:
+    if use_ai:
+        # Initialize Local AI if requested
+        local_resolver = None
+        if use_local_ai:
+            try:
+                local_resolver = LocalAIResolver()
+                if not local_resolver.is_available():
+                    print("Local AI not available, will fall back to Gemini if API key exists.")
+                    local_resolver = None
+            except Exception as e:
+                print(f"Failed to initialize Local AI: {e}")
+                local_resolver = None
+
         # Filter candidates to the city being processed to avoid processing irrelevant streets
         osm_city_label = osm_gdf['city'].iloc[0]
         osm_gdf_in_city = osm_gdf[osm_gdf['city'] == osm_city_label]
@@ -327,25 +342,62 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
             if osm_id not in osm_id_set:
                  continue
 
-            # Building the full prompt (including topological context)
-            osm_street_name = osm_gdf_in_city[osm_gdf_in_city['osm_id'] == osm_id]['normalized_name'].iloc[0]
+            ai_decision_id = 'None'
+            confidence = 0.0
+            reasoning = ""
+            method = "none"
+
+            # Try Local AI first
+            if local_resolver:
+                print(f" -> Consulting Local AI for OSM ID: {osm_id}...")
+                local_result = get_local_ai_resolution(
+                    osm_id, osm_gdf, LAMAS_df, row, map_of_adjacents, local_resolver
+                )
+                ai_decision_id = local_result.get('lamas_id')
+                confidence = local_result.get('confidence', 0.0)
+                reasoning = local_result.get('reasoning', '')
+                method = "local_ai"
+                
+                # If Local AI returned None or low confidence, maybe fall back?
+                # For now, we accept Local AI's decision if it ran successfully.
+                if str(ai_decision_id) == 'None':
+                     print(f"    Local AI found no match. Confidence: {confidence}")
+                else:
+                     print(f"    Local AI matched to {ai_decision_id}. Confidence: {confidence}")
+
+            # Fallback to Gemini if Local AI didn't run or failed (and we have API key)
+            if (str(ai_decision_id) == 'None' or method == "none") and API_KEY:
+                if method == "local_ai":
+                     print("    Falling back to Gemini API...")
+                
+                # Building the full prompt (including topological context)
+                osm_street_name = osm_gdf_in_city[osm_gdf_in_city['osm_id'] == osm_id]['normalized_name'].iloc[0]
+                
+                # Find adjacent OSM IDs and look up their normalized names
+                adjacent_osm_ids = map_of_adjacents.get(osm_id, [])
+                adjacent_names = osm_gdf_in_city[osm_gdf_in_city['osm_id'].isin(adjacent_osm_ids)]['normalized_name'].tolist()
+
+                prompt = (f"OSM Street Name: '{osm_street_name}'. "
+                          f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
+                          f"LAMAS Candidates: {row['all_candidates']}. Choose the best LAMAS ID (number only or 'None').")
+
+                ai_decision_id = get_ai_resolution(prompt, osm_id)
+                method = "gemini"
+                confidence = 0.0 # Gemini function doesn't return confidence currently
             
-            # Find adjacent OSM IDs and look up their normalized names
-            adjacent_osm_ids = map_of_adjacents.get(osm_id, [])
-            adjacent_names = osm_gdf_in_city[osm_gdf_in_city['osm_id'].isin(adjacent_osm_ids)]['normalized_name'].tolist()
-
-            prompt = (f"OSM Street Name: '{osm_street_name}'. "
-                      f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
-                      f"LAMAS Candidates: {row['all_candidates']}. Choose the best LAMAS ID (number only or 'None').")
-
-            ai_decision_id = get_ai_resolution(prompt, osm_id)
-            ai_results.append({'osm_id': osm_id, 'ai_LAMAS_id': ai_decision_id})
+            ai_results.append({
+                'osm_id': osm_id, 
+                'ai_LAMAS_id': ai_decision_id,
+                'ai_confidence': confidence,
+                'ai_reasoning': reasoning,
+                'ai_method': method
+            })
     else:
-        # AI disabled or missing API key — produce empty results
+        # AI disabled — produce empty results
         ai_results = []
 
     # ensure DataFrame has expected columns even if empty
-    ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id'])
+    ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id', 'ai_confidence', 'ai_reasoning', 'ai_method'])
     _save_intermediate_df(ai_decisions_df, "step5_ai_decisions", chosen_place)
 
     # STEP 6: Final Merge and Mapping
@@ -424,16 +476,21 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
         create_html_from_gdf(diagnostic_df_full, chosen_place, diagnostics)
     except Exception as e:
         print(f"Warning: failed to generate HTML visualization: {e}")
+    
+    return True  # Indicate successful completion
+
 
 if __name__ == "__main__":
     place_arg = None
     force = False
-    no_ai = False
+    no_local_ai = False
     if len(sys.argv) > 1:
         place_arg = sys.argv[1]
     if "--refresh" in sys.argv:
         force = True
     if "--no-ai" in sys.argv:
         no_ai = True
+    if "--no-local-ai" in sys.argv:
+        no_local_ai = True
 
-    run_pipeline(place=place_arg, force_refresh=force, use_ai=(not no_ai))
+    run_pipeline(place=place_arg, force_refresh=force, use_ai=(not no_ai), use_local_ai=(not no_local_ai))
