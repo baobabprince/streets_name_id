@@ -31,18 +31,28 @@ def score_to_color(score):
     # Hue for red is 0. Saturation is high for a vivid color.
     r, g, b = colorsys.hls_to_rgb(0, lightness, 0.9)
     
-    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+    return f"#{int(r*255):02x}{int(b*255):02x}{int(b*255):02x}"
 
 
 def _build_diagnostics_html(diagnostics: dict) -> str:
     """Builds the HTML for the diagnostics section."""
 
-    unmatched_streets_html = ""
+    unmatched_lamas_html = ""
     if diagnostics["unmatched_lamas_street_names"]:
         street_list_items = "".join(f"<li>{name}</li>" for name in diagnostics["unmatched_lamas_street_names"])
-        unmatched_streets_html = f"""
+        unmatched_lamas_html = f"""
         <div class="unmatched-list">
             <h3>רחובות למ"ס ללא התאמה ({diagnostics['unmatched_lamas_count']} - {diagnostics['unmatched_lamas_percentage']})</h3>
+            <ul>{street_list_items}</ul>
+        </div>
+        """
+
+    unmatched_osm_html = ""
+    if diagnostics.get("unmatched_osm_street_names"):
+        street_list_items = "".join(f"<li>{name}</li>" for name in diagnostics["unmatched_osm_street_names"])
+        unmatched_osm_html = f"""
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה ({diagnostics['unmatched_osm_streets']})</h3>
             <ul>{street_list_items}</ul>
         </div>
         """
@@ -76,7 +86,8 @@ def _build_diagnostics_html(diagnostics: dict) -> str:
                 <div class="value">{diagnostics.get('unmatched_osm_streets', 'N/A')}</div>
             </div>
         </div>
-        {unmatched_streets_html}
+        {unmatched_osm_html}
+        {unmatched_lamas_html}
     </div>
     """
 
