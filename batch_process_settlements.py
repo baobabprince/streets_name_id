@@ -8,14 +8,18 @@ Processes all settlements from the LAMAS (CBS) database by:
 3. Validating geographic reasonableness
 4. Running the pipeline on each successfully matched settlement
 5. Generating comprehensive summary reports
+
+Supports parallel processing for the pipeline execution phase.
 """
 
 import os
 import sys
 import json
 import argparse
+import time
+import concurrent.futures
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple, Any
 import pandas as pd
 from pathlib import Path
 
@@ -30,13 +34,62 @@ REPORTS_DIR = os.path.join(os.path.dirname(__file__), "batch_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
+def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_local_ai: bool) -> Dict[str, Any]:
+    """
+    Worker function to run the pipeline in a separate process.
+    Captures success/failure and returns a result dictionary.
+    """
+    start_time = time.time()
+    result = {
+        'settlement': settlement_name,
+        'status': 'unknown',
+        'message': '',
+        'pipeline_success': False,
+        'duration_seconds': 0.0
+    }
+    
+    try:
+        # Redirect stdout/stderr to avoid console interleaving mess if needed?
+        # For now, we'll let it print but maybe prefix? 
+        # Actually, capturing output is complex across processes without a manager.
+        # We will rely on the pipeline's own logging/printing.
+        
+        print(f"  [Worker] Starting pipeline for {settlement_name}...")
+        
+        success = run_pipeline(
+            place=place_string,
+            force_refresh=False,
+            use_ai=use_ai,
+            use_local_ai=use_local_ai
+        )
+        
+        result['pipeline_success'] = success
+        if success:
+            result['status'] = 'success'
+            result['message'] = 'Pipeline completed successfully'
+        else:
+            result['status'] = 'failed_pipeline'
+            result['message'] = 'Pipeline execution failed (returned False)'
+            
+    except Exception as e:
+        result['status'] = 'failed_pipeline'
+        result['message'] = f'Pipeline exception: {str(e)}'
+        result['pipeline_success'] = False
+    
+    result['duration_seconds'] = time.time() - start_time
+    return result
+
+
 class BatchProcessor:
     """Orchestrates batch processing of all settlements"""
     
-    def __init__(self, use_ai: bool = False, skip_html: bool = False, quiet: bool = False):
+    def __init__(self, use_ai: bool = False, use_local_ai: bool = True, 
+                 skip_html: bool = False, quiet: bool = False, workers: int = 1):
         self.use_ai = use_ai
+        self.use_local_ai = use_local_ai
         self.skip_html = skip_html
         self.quiet = quiet
+        self.workers = workers
         self.matcher = SettlementMatcher()
         
         # Statistics tracking
@@ -92,50 +145,29 @@ class BatchProcessor:
         print(f"\nFound {len(settlements)} unique settlements in LAMAS data")
         return settlements
     
-    def process_settlement(self, settlement_name: str, force: bool = False) -> Dict:
+    def resolve_settlement(self, settlement_name: str) -> Dict[str, Any]:
         """
-        Process a single settlement through the entire pipeline.
-        
-        Args:
-            settlement_name: Name of the settlement to process
-            force: Force reprocessing even if already processed
-            
-        Returns:
-            Dictionary with processing results
+        Step 1: Resolve settlement location using Nominatim (Sequential/Rate-limited)
         """
         result = {
             'settlement': settlement_name,
             'status': 'unknown',
             'message': '',
             'match': None,
-            'pipeline_success': False,
             'timestamp': datetime.now().isoformat()
         }
         
-        print(f"\n{'='*70}")
-        print(f"Processing: {settlement_name}")
-        print(f"{'='*70}")
-        
-        # Check if already processed
-        if not force and settlement_name in self.processed_settlements:
-            print(f"  ⏭ Skipping - already processed")
-            result['status'] = 'skipped'
-            result['message'] = 'Already processed (use --force to reprocess)'
-            self.stats['skipped_already_processed'] += 1
-            return result
-        
-        # Step 1: Search Nominatim
+        # Search Nominatim
         match = self.matcher.search_settlement(settlement_name)
         
         if not match:
-            print(f"  ✗ Failed to find valid match in Nominatim")
+            print(f"  ✗ Failed to find valid match in Nominatim for '{settlement_name}'")
             result['status'] = 'failed_nominatim'
             result['message'] = 'No valid Nominatim match found'
-            self.stats['failed_nominatim'] += 1
             return result
         
         if not match.is_valid:
-            print(f"  ✗ Match failed validation: {match.validation_message}")
+            print(f"  ✗ Match failed validation for '{settlement_name}': {match.validation_message}")
             result['status'] = 'failed_validation'
             result['message'] = match.validation_message
             result['match'] = {
@@ -143,10 +175,10 @@ class BatchProcessor:
                 'lat': match.lat,
                 'lon': match.lon
             }
-            self.stats['failed_validation'] += 1
             return result
         
-        print(f"  ✓ Valid match found: {match.display_name}")
+        print(f"  ✓ Valid match found for '{settlement_name}': {match.display_name}")
+        result['status'] = 'ready_for_pipeline'
         result['match'] = {
             'display_name': match.display_name,
             'lat': match.lat,
@@ -154,46 +186,8 @@ class BatchProcessor:
             'place_type': match.place_type,
             'osm_id': match.osm_id
         }
-        self.stats['matched'] += 1
-        
-        # Step 2: Run the pipeline
-        print(f"  → Running pipeline for {settlement_name}...")
-        
-        try:
-            # Construct the place string for OSM query
-            # Use the display name from Nominatim for better accuracy
-            place_string = match.display_name
-            
-            # Run the pipeline
-            pipeline_success = run_pipeline(
-                place=place_string,
-                force_refresh=False,
-                use_ai=self.use_ai
-            )
-            
-            if pipeline_success is None or pipeline_success:
-                print(f"  ✓ Pipeline completed successfully")
-                result['status'] = 'success'
-                result['message'] = 'Pipeline completed successfully'
-                result['pipeline_success'] = True
-                self.stats['successful'] += 1
-                
-                # Mark as processed
-                self._save_processed_settlement(settlement_name)
-            else:
-                print(f"  ✗ Pipeline failed")
-                result['status'] = 'failed_pipeline'
-                result['message'] = 'Pipeline execution failed'
-                self.stats['failed_pipeline'] += 1
-                
-        except Exception as e:
-            print(f"  ✗ Pipeline error: {e}")
-            result['status'] = 'failed_pipeline'
-            result['message'] = f'Pipeline exception: {str(e)}'
-            self.stats['failed_pipeline'] += 1
-        
         return result
-    
+
     def generate_summary_report(self, output_file: Optional[str] = None):
         """Generate comprehensive summary report"""
         if output_file is None:
@@ -280,12 +274,7 @@ class BatchProcessor:
                   force: bool = False, dry_run: bool = False):
         """
         Run batch processing on a list of settlements.
-        
-        Args:
-            settlements: List of settlement names to process
-            limit: Maximum number of settlements to process (for testing)
-            force: Force reprocessing of already processed settlements
-            dry_run: Show what would be processed without actually running
+        Supports parallel execution for the pipeline phase.
         """
         if limit:
             settlements = settlements[:limit]
@@ -304,18 +293,98 @@ class BatchProcessor:
         
         print(f"\n{'='*70}")
         print(f"Starting batch processing of {len(settlements)} settlements")
+        print(f"Workers: {self.workers}")
         print(f"AI Resolution: {'ENABLED' if self.use_ai else 'DISABLED'}")
         print(f"{'='*70}")
         
-        for i, settlement in enumerate(settlements, 1):
-            print(f"\n[{i}/{len(settlements)}] ", end='')
+        # Use ProcessPoolExecutor for parallel pipeline execution
+        # We use a 'producer-consumer' pattern where the main thread resolves locations (producer)
+        # and the executor runs the pipelines (consumer)
+        
+        with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as executor:
+            future_to_settlement = {}
             
-            result = self.process_settlement(settlement, force=force)
-            self.results.append(result)
+            for i, settlement in enumerate(settlements, 1):
+                print(f"\n[{i}/{len(settlements)}] Processing: {settlement}")
+                
+                # Check if already processed
+                if not force and settlement in self.processed_settlements:
+                    print(f"  ⏭ Skipping - already processed")
+                    self.stats['skipped_already_processed'] += 1
+                    self.results.append({
+                        'settlement': settlement,
+                        'status': 'skipped',
+                        'message': 'Already processed'
+                    })
+                    continue
+                
+                # Step 1: Resolve location (Sequential - Main Thread)
+                # This respects the Nominatim rate limit inside SettlementMatcher
+                resolve_result = self.resolve_settlement(settlement)
+                
+                if resolve_result['status'] != 'ready_for_pipeline':
+                    # Failed resolution, record result and continue
+                    self.results.append(resolve_result)
+                    if resolve_result['status'] == 'failed_nominatim':
+                        self.stats['failed_nominatim'] += 1
+                    elif resolve_result['status'] == 'failed_validation':
+                        self.stats['failed_validation'] += 1
+                    continue
+                
+                # Step 2: Submit pipeline task (Parallel - Worker Process)
+                self.stats['matched'] += 1
+                match_data = resolve_result['match']
+                
+                print(f"  → Submitting pipeline task for {settlement}...")
+                future = executor.submit(
+                    worker_wrapper, 
+                    settlement, 
+                    match_data['display_name'], 
+                    self.use_ai,
+                    self.use_local_ai
+                )
+                
+                # Store context with future
+                future_to_settlement[future] = {
+                    'settlement': settlement,
+                    'resolve_result': resolve_result
+                }
             
-            # Save intermediate results every 10 settlements
-            if i % 10 == 0:
-                self.generate_summary_report()
+            # Step 3: Collect results as they complete
+            print(f"\n{'='*70}")
+            print("Waiting for pending pipeline tasks...")
+            print(f"{'='*70}")
+            
+            for future in concurrent.futures.as_completed(future_to_settlement):
+                context = future_to_settlement[future]
+                settlement = context['settlement']
+                resolve_result = context['resolve_result']
+                
+                try:
+                    worker_result = future.result()
+                    
+                    # Merge resolve info with worker result
+                    final_result = resolve_result.copy()
+                    final_result.update(worker_result)
+                    
+                    if worker_result['status'] == 'success':
+                        print(f"  ✓ Task completed: {settlement} (Success)")
+                        self.stats['successful'] += 1
+                        self._save_processed_settlement(settlement)
+                    else:
+                        print(f"  ✗ Task completed: {settlement} (Failed: {worker_result['message']})")
+                        self.stats['failed_pipeline'] += 1
+                    
+                    self.results.append(final_result)
+                    
+                except Exception as e:
+                    print(f"  ✗ Exception in worker for {settlement}: {e}")
+                    self.stats['failed_pipeline'] += 1
+                    resolve_result['status'] = 'failed_pipeline'
+                    resolve_result['message'] = f"Worker exception: {e}"
+                    self.results.append(resolve_result)
+                
+                # Intermediate reporting could go here
         
         # Generate final summary
         self.generate_summary_report()
@@ -327,22 +396,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Process all settlements with AI
-  python batch_process_settlements.py --use-ai
+  # Process all settlements with AI using 4 workers
+  python batch_process_settlements.py --use-ai --workers 4
   
   # Process first 10 settlements without AI (testing)
   python batch_process_settlements.py --limit 10
   
   # Dry run to see what would be processed
   python batch_process_settlements.py --dry-run
-  
-  # Force reprocess all settlements
-  python batch_process_settlements.py --force --use-ai
         """
     )
     
     parser.add_argument('--use-ai', action='store_true',
                        help='Enable AI resolution for ambiguous matches')
+    parser.add_argument('--no-local-ai', action='store_true',
+                       help='Disable Local AI resolution')
     parser.add_argument('--limit', type=int, metavar='N',
                        help='Limit processing to first N settlements (for testing)')
     parser.add_argument('--force', action='store_true',
@@ -353,6 +421,8 @@ Examples:
                        help='Skip HTML generation (faster for batch processing)')
     parser.add_argument('--quiet', action='store_true',
                        help='Reduce console output')
+    parser.add_argument('--workers', type=int, default=1,
+                       help='Number of parallel workers (default: 1)')
     
     args = parser.parse_args()
     
@@ -367,8 +437,10 @@ Examples:
     # Step 2: Initialize batch processor
     processor = BatchProcessor(
         use_ai=args.use_ai,
+        use_local_ai=(not args.no_local_ai),
         skip_html=args.skip_html,
-        quiet=args.quiet
+        quiet=args.quiet,
+        workers=args.workers
     )
     
     # Step 3: Get unique settlements
