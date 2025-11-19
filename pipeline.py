@@ -176,10 +176,21 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
     # Total matched is the count of unique OSM names that have a final LAMAS ID
     total_matched = diagnostic_df_full[diagnostic_df_full['final_LAMAS_id'].notna()]['normalized_name'].nunique()
     unmatched_osm_streets = total_osm_streets - total_matched
+    
+    # Get the list of unmatched OSM street names
+    matched_osm_names = set(diagnostic_df_full[diagnostic_df_full['final_LAMAS_id'].notna()]['normalized_name'].unique())
+    all_osm_names = set(named_osm_gdf['normalized_name'].unique())
+    unmatched_osm_names = sorted(list(all_osm_names - matched_osm_names))
 
     # --- LAMAS Statistics (based on unique LAMAS IDs) ---
     if not lamas_in_city_df.empty:
-        total_lamas_streets = lamas_in_city_df['LAMAS_id'].nunique()
+        # Filter LAMAS data to include only actual streets (3-digit codes)
+        # 4-digit codes represent non-streets: neighborhoods, squares, settlements, etc.
+        lamas_streets_only = lamas_in_city_df[
+            lamas_in_city_df['LAMAS_id'].astype(str).str.len() == 3
+        ]
+        
+        total_lamas_streets = lamas_streets_only['LAMAS_id'].nunique()
 
         # Get the set of unique LAMAS IDs that were successfully matched to at least one OSM street
         matched_lamas_ids = set(diagnostic_df_full['final_LAMAS_id'].dropna().astype(str).str.replace(r'\.0$', '', regex=True))
@@ -188,13 +199,16 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
         matched_lamas_ids = set(diagnostic_df_full['final_LAMAS_id'].dropna().astype(str).str.replace(r'\.0$', '', regex=True))
 
         # Create a boolean Series that is True for every row where the LAMAS_id was matched
-        is_matched = lamas_in_city_df['LAMAS_id'].astype(str).isin(matched_lamas_ids)
+        is_matched = lamas_streets_only['LAMAS_id'].astype(str).isin(matched_lamas_ids)
 
         # All rows for LAMAS streets that were never matched
-        unmatched_lamas_df = lamas_in_city_df[~is_matched]
+        unmatched_lamas_df = lamas_streets_only[~is_matched]
 
-        # From the unmatched streets, get the unique names and count of unique IDs
-        unmatched_lamas_street_names = sorted(unmatched_lamas_df['LAMAS_name'].unique().tolist())
+        # From the unmatched streets, get ONE name per unique LAMAS_id (to avoid showing all synonyms)
+        # Group by LAMAS_id and take the first name for each ID
+        unmatched_lamas_street_names = sorted(
+            unmatched_lamas_df.groupby('LAMAS_id')['LAMAS_name'].first().tolist()
+        )
         unmatched_lamas_count = unmatched_lamas_df['LAMAS_id'].nunique()
         unmatched_lamas_percentage = (unmatched_lamas_count / total_lamas_streets) * 100 if total_lamas_streets > 0 else 0
     else:
@@ -210,6 +224,7 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
         "ai_resolved_matches": ai_resolved_matches,
         "total_matched": total_matched,
         "unmatched_osm_streets": unmatched_osm_streets,
+        "unmatched_osm_street_names": unmatched_osm_names,
         "unmatched_lamas_count": unmatched_lamas_count,
         "unmatched_lamas_percentage": f"{unmatched_lamas_percentage:.1f}%",
         "unmatched_lamas_street_names": unmatched_lamas_street_names
