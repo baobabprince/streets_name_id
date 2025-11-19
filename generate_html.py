@@ -131,21 +131,31 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         
         # Determine color based on new rules
         stroke_width = 4  # Default stroke width
+        stroke_dasharray = "none"  # Default: solid line
 
         if not osm_name:  # Street has no name
-            stroke_color = "#808080"  # Gray
+            stroke_color = "#CCCCCC"  # Light gray
+            stroke_dasharray = "5,5"  # Dashed line for unnamed streets
+            stroke_width = 2  # Thinner for unnamed
         else:  # Street has a name
             if is_matched:
-                if pd.notna(best_score):
+                if status == 'NEEDS_AI':  # AI-resolved match
+                    stroke_color = "#00BFFF"  # Deep sky blue for AI matches
+                    stroke_width = 5
+                elif pd.notna(best_score):
                     if best_score >= 100:
                         stroke_color = "#000000"  # Black for perfect match
+                        stroke_width = 5
                     else:
                         stroke_color = score_to_color(best_score)  # Red gradient
+                        stroke_width = 5
                 else:
                     stroke_color = "#000000"  # Matched but no score -> Black
+                    stroke_width = 5
             else:
                 # Has a name, but is not matched
-                stroke_color = "#AAAAAA"  # A different gray
+                stroke_color = "#FF8C00"  # Dark orange - more visible than gray
+                stroke_width = 4
         
         if isinstance(geom, LineString):
             # Convert LineString to SVG path data
@@ -176,6 +186,7 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
                 f'<path d="{path_data}" '
                 f'stroke="{stroke_color}" '
                 f'stroke-width="{stroke_width}" '
+                f'stroke-dasharray="{stroke_dasharray}" '
                 f'fill="none" '
                 f'class="street-path" '
                 f'data-tooltip="{safe_tooltip}">'
@@ -255,28 +266,34 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         
         .street-path {{
             cursor: pointer;
-            transition: stroke-width 0.2s;
+            transition: stroke-width 0.2s, filter 0.2s;
         }}
         
         .street-path:hover {{
-            stroke-width: 6 !important;
-            filter: brightness(1.2);
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 3px rgba(0,0,0,0.5));
+        }}
+        
+        .street-path.pinned {{
+            stroke-width: 8 !important;
+            filter: drop-shadow(0 0 5px rgba(255,215,0,0.8));
         }}
         
         #tooltip {{
             position: fixed;
             background: rgba(0, 0, 0, 0.9);
             color: white;
-            padding: 10px 15px;
-            border-radius: 5px;
+            padding: 12px 18px;
+            border-radius: 6px;
             pointer-events: none;
             opacity: 0;
             transition: opacity 0.2s;
             z-index: 1000;
             white-space: pre-line;
-            font-size: 14px;
-            max-width: 300px;
+            font-size: 15px;
+            max-width: 350px;
             direction: rtl;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
         }}
         
         #tooltip.visible {{
@@ -359,11 +376,15 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
                     <span>התאמה חלקית (0-99)</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #AAAAAA;"></span>
+                    <span class="legend-color" style="background: #00BFFF;"></span>
+                    <span>התאמה ע"י AI</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #FF8C00;"></span>
                     <span>שם קיים, ללא התאמה</span>
                 </div>
                 <div class="legend-item">
-                    <span class="legend-color" style="background: #808080;"></span>
+                    <span class="legend-color" style="background: repeating-linear-gradient(to right, #CCCCCC 0px, #CCCCCC 5px, transparent 5px, transparent 10px);"></span>
                     <span>ללא שם</span>
                 </div>
             </div>
@@ -375,7 +396,7 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         </svg>
         
         <div class="stats">
-            <strong>הוראות:</strong> העבר את העכבר מעל רחוב כדי לראות את שמו ופרטי ההתאמה
+            <strong>הוראות:</strong> העבר את העכבר מעל רחוב כדי לראות את שמו ופרטי ההתאמה. <strong>לחץ על רחוב</strong> כדי לנעוץ את המידע (שימושי בערים גדולות).
         </div>
 
         {_build_diagnostics_html(diagnostics) if diagnostics else ""}
@@ -387,22 +408,65 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
     <script>
         const tooltip = document.getElementById('tooltip');
         const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
         
         paths.forEach(path => {{
+            // Click to pin/unpin tooltip
+            path.addEventListener('click', (e) => {{
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {{
+                    // Unpin current
+                    path.classList.remove('pinned');
+                    tooltip.classList.remove('visible');
+                    pinnedPath = null;
+                }} else {{
+                    // Unpin previous if exists
+                    if (pinnedPath) {{
+                        pinnedPath.classList.remove('pinned');
+                    }}
+                    
+                    // Pin new
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    const tooltipText = path.getAttribute('data-tooltip');
+                    tooltip.textContent = tooltipText;
+                    tooltip.classList.add('visible');
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }}
+            }});
+            
+            // Hover to show tooltip (only if not pinned)
             path.addEventListener('mouseenter', (e) => {{
-                const tooltipText = path.getAttribute('data-tooltip');
-                tooltip.textContent = tooltipText;
-                tooltip.classList.add('visible');
+                if (pinnedPath !== path) {{
+                    const tooltipText = path.getAttribute('data-tooltip');
+                    tooltip.textContent = tooltipText;
+                    tooltip.classList.add('visible');
+                }}
             }});
             
             path.addEventListener('mousemove', (e) => {{
-                tooltip.style.left = (e.clientX + 15) + 'px';
-                tooltip.style.top = (e.clientY + 15) + 'px';
+                if (pinnedPath !== path) {{
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }}
             }});
             
             path.addEventListener('mouseleave', () => {{
-                tooltip.classList.remove('visible');
+                if (pinnedPath !== path) {{
+                    tooltip.classList.remove('visible');
+                }}
             }});
+        }});
+        
+        // Click anywhere else to unpin
+        document.addEventListener('click', () => {{
+            if (pinnedPath) {{
+                pinnedPath.classList.remove('pinned');
+                tooltip.classList.remove('visible');
+                pinnedPath = null;
+            }}
         }});
     </script>
 </body>
