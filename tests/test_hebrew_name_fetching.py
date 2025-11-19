@@ -1,6 +1,12 @@
 import unittest
 import geopandas as gpd
-from OSM_streets import fetch_osm_street_data
+import sys
+import os
+
+# Add the src directory to the Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+
+from src.data_management.OSM_streets import fetch_osm_street_data
 
 class TestHebrewNameFetching(unittest.TestCase):
 

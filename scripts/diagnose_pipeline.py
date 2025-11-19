@@ -8,12 +8,10 @@ import pandas as pd
 import sys
 import re
 
-# Assume these are available from the main pipeline file
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "data") 
+# Add the src directory to the Python path
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-def _safe_place_name(place: str) -> str:
-    # Utility function to match the naming convention in pipeline.py
-    return re.sub(r'[^0-9A-Za-z_\-\u0590-\u05FF]', '_', place)
+from src.utils.caching import _safe_place_name, CACHE_DIR
 
 
 def generate_full_report(place):
