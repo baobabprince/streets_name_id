@@ -20,20 +20,21 @@ class TestPipelineStats(unittest.TestCase):
         incorrectly appear in the 'unmatched' list.
         """
         # --- Mock LAMAS Data ---
-        # A single unique LAMAS ID (1234) has two different names.
+        # A single unique LAMAS ID (123) has two different names.
+        # Using 3-digit codes since 4-digit codes are filtered out (non-streets)
         lamas_data = {
             'LAMAS_name': ['רחוב הניצנים', 'סמ הניצנים', 'רחוב אחר'],
-            'LAMAS_id': [1234, 1234, 5678],
+            'LAMAS_id': [123, 123, 567],
             'city': ['אבן יהודה', 'אבן יהודה', 'אבן יהודה']
         }
         lamas_in_city_df = pd.DataFrame(lamas_data)
 
         # --- Mock OSM and Diagnostic Data ---
-        # OSM street 'הניצנים' is successfully matched to LAMAS ID 1234.
+        # OSM street 'הניצנים' is successfully matched to LAMAS ID 123.
         diagnostic_data = {
             'osm_name': ['הניצנים', 'רחוב לא תואם'],
             'normalized_name': ['הניצנים', 'לא תואם'],
-            'final_LAMAS_id': ['1234', None],
+            'final_LAMAS_id': ['123', None],
             'status': ['CONFIDENT', 'NO_MATCH']
         }
         diagnostic_df_full = pd.DataFrame(diagnostic_data)
@@ -50,7 +51,7 @@ class TestPipelineStats(unittest.TestCase):
 
         # --- Assertions ---
         # The 'unmatched_lamas_street_names' list should only contain 'רחוב אחר'.
-        # 'סמ הניצנים' should NOT be in this list because its LAMAS ID (1234) was matched.
+        # 'סמ הניצנים' should NOT be in this list because its LAMAS ID (123) was matched.
         self.assertNotIn('סמ הניצנים', diagnostics['unmatched_lamas_street_names'])
         self.assertIn('רחוב אחר', diagnostics['unmatched_lamas_street_names'])
         self.assertEqual(diagnostics['unmatched_lamas_count'], 1)
