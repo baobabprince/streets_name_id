@@ -14,6 +14,7 @@ import pandas as pd
 import geopandas as gpd
 
 # Try to import the required libraries for local AI
+
 try:
     from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
     import torch
@@ -28,7 +29,7 @@ class LocalAIResolver:
     Handles local AI resolution using qwen3-VL-8b model.
     """
     
-    def __init__(self, model_name: str = "Qwen/Qwen2-VL-7B-Instruct", device: str = "auto"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-VL-8B", device: str = "auto"):
         """
         Initialize the local AI resolver.
         
@@ -120,9 +121,14 @@ class LocalAIResolver:
         prompt += """
 
 **הוראות:**
-1. השווה את שם הרחוב ב-OSM לשמות המועמדים מלמ"ס
-2. קח בחשבון את הרחובות הסמוכים - הם עוזרים להבין את ההקשר (למשל, אם רחוב סמוך נקרא ע"ש אישיות קשורה)
-3. שמות עשויים להיות שונים בגלל: כינויים, שמות חלקיים, שינויי איות, או תרגומים
+1. השווה את שם הרחוב ב-OSM לשמות המועמדים מלמ"ס.
+2. קח בחשבון את הרחובות הסמוכים - הם עוזרים להבין את ההקשר (למשל, אם רחוב סמוך נקרא ע"ש אישיות קשורה).
+3. **חשוב מאוד:** שמות עשויים להיות שונים בגלל:
+    - כינויים (למשל "בן גוריון" לעומת "דוד בן גוריון")
+    - שמות חלקיים (למשל "הנביאים" לעומת "שמואל הנביא")
+    - שינויי איות או תרגומים
+    - תוספת/השמטה של תואר (למשל "הרב", "דוקטור")
+    - **במקרה של "בן עמר" מול "תאודור בן עמר" - זוהי התאמה טובה!**
 
 **פורמט התשובה (JSON בלבד):**
 ```json
@@ -133,11 +139,20 @@ class LocalAIResolver:
 }
 ```
 
-אם אין התאמה ודאית, החזר lamas_id: null עם confidence נמוך.
+אם אתה מזהה התאמה סבירה (מעל 0.5), אנא החזר את ה-ID. אל תהסס להתאים אם השם דומה מאוד אך לא זהה.
+אם אין שום התאמה הגיונית, החזר lamas_id: null.
 """
         
         return prompt
     
+    def _clean_json_string(self, json_str: str) -> str:
+        """Clean common JSON formatting issues from LLM output."""
+        # Remove comments // ...
+        json_str = re.sub(r'//.*$', '', json_str, flags=re.MULTILINE)
+        # Fix trailing commas
+        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+        return json_str.strip()
+
     def parse_response(self, response_text: str) -> Tuple[Optional[str], float, str]:
         """
         Parse the AI model's response to extract LAMAS ID and confidence.
@@ -157,22 +172,36 @@ class LocalAIResolver:
             
             if json_match:
                 json_str = json_match.group(1)
-                result = json.loads(json_str)
+                json_str = self._clean_json_string(json_str)
                 
-                lamas_id = result.get('lamas_id')
-                confidence = float(result.get('confidence', 0.0))
-                reasoning = result.get('reasoning', 'No reasoning provided')
-                
-                # Convert lamas_id to string if it's not None
-                if lamas_id is not None:
-                    lamas_id = str(lamas_id)
-                
-                return lamas_id, confidence, reasoning
+                try:
+                    result = json.loads(json_str)
+                    
+                    lamas_id = result.get('lamas_id')
+                    confidence = float(result.get('confidence', 0.0))
+                    reasoning = result.get('reasoning', 'No reasoning provided')
+                    
+                    # Convert lamas_id to string if it's not None
+                    if lamas_id is not None and str(lamas_id).lower() != 'null' and str(lamas_id).lower() != 'none':
+                        lamas_id = str(lamas_id)
+                    else:
+                        lamas_id = None
+                    
+                    return lamas_id, confidence, reasoning
+                except json.JSONDecodeError:
+                    pass # Fall through to other methods
             
-            # Fallback: try to extract just a number
-            number_match = re.search(r'\b(\d{3})\b', response_text)
-            if number_match:
-                return number_match.group(1), 0.5, "Extracted number from response"
+            # Fallback: try to extract just a number if it looks like an ID (3-4 digits)
+            # But be careful not to pick up numbers from the reasoning or prompt
+            # Look for pattern "lamas_id": 123
+            id_match = re.search(r'"lamas_id"\s*:\s*"?(\d+)"?', response_text)
+            if id_match:
+                return id_match.group(1), 0.6, "Extracted ID from partial JSON"
+
+            # Last resort: if the response is VERY short and is just a number
+            clean_text = response_text.strip()
+            if re.match(r'^\d+$', clean_text):
+                 return clean_text, 0.5, "Response was just a number"
             
             # No match found
             return None, 0.0, "Could not parse response"
@@ -241,17 +270,21 @@ class LocalAIResolver:
             # Move inputs to device
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             
-            # Generate response
+            # Inference: Generation of the output
             with torch.no_grad():
-                output_ids = self.model.generate(
+                generated_ids = self.model.generate(
                     **inputs,
-                    max_new_tokens=512,
+                    max_new_tokens=128,
                     do_sample=False  # Deterministic for consistency
                 )
             
+            generated_ids_trimmed = [
+                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)
+            ]
+            
             # Decode response
             generated_text = self.processor.batch_decode(
-                output_ids,
+                generated_ids_trimmed, # Decode trimmed IDs
                 skip_special_tokens=True,
                 clean_up_tokenization_spaces=False
             )[0]
@@ -259,12 +292,14 @@ class LocalAIResolver:
             # Parse the response
             lamas_id, confidence, reasoning = self.parse_response(generated_text)
             
+            print(f"    [DEBUG] Local AI Raw Response: {generated_text[:200]}...") # Log to console
+            
             return {
                 'lamas_id': lamas_id,
                 'confidence': confidence,
                 'reasoning': reasoning,
                 'method': 'local_ai',
-                'raw_response': generated_text[:500]  # Store first 500 chars for debugging
+                'raw_response': generated_text[:500]
             }
             
         except Exception as e:
