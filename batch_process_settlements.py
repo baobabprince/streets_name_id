@@ -39,21 +39,20 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
     Worker function to run the pipeline in a separate process.
     Captures success/failure and returns a result dictionary.
     """
+    import traceback
+    
     start_time = time.time()
     result = {
         'settlement': settlement_name,
         'status': 'unknown',
         'message': '',
         'pipeline_success': False,
-        'duration_seconds': 0.0
+        'duration_seconds': 0.0,
+        'error_type': None,
+        'error_details': None
     }
     
     try:
-        # Redirect stdout/stderr to avoid console interleaving mess if needed?
-        # For now, we'll let it print but maybe prefix? 
-        # Actually, capturing output is complex across processes without a manager.
-        # We will rely on the pipeline's own logging/printing.
-        
         print(f"  [Worker] Starting pipeline for {settlement_name}...")
         
         success = run_pipeline(
@@ -69,12 +68,24 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
             result['message'] = 'Pipeline completed successfully'
         else:
             result['status'] = 'failed_pipeline'
-            result['message'] = 'Pipeline execution failed (returned False)'
+            result['message'] = 'Pipeline returned False (likely no OSM data or empty dataset)'
+            result['error_type'] = 'PipelineReturnedFalse'
             
     except Exception as e:
+        error_trace = traceback.format_exc()
         result['status'] = 'failed_pipeline'
         result['message'] = f'Pipeline exception: {str(e)}'
+        result['error_type'] = type(e).__name__
+        result['error_details'] = error_trace
         result['pipeline_success'] = False
+        
+        # Log detailed error for debugging
+        print(f"  [Worker] ERROR in {settlement_name}:")
+        print(f"    Type: {type(e).__name__}")
+        print(f"    Message: {str(e)}")
+        print(f"    Traceback (last 3 lines):")
+        for line in error_trace.split('\n')[-4:-1]:
+            print(f"      {line}")
     
     result['duration_seconds'] = time.time() - start_time
     return result
@@ -435,6 +446,13 @@ Examples:
         sys.exit(1)
     
     # Step 2: Initialize batch processor
+    
+    # FORCE WORKERS=1 if using Local AI to prevent OOM/CUDA errors
+    if args.use_ai and not args.no_local_ai and args.workers > 1:
+        print(f"\nWARNING: Forcing workers=1 because Local AI is enabled.")
+        print("Running multiple LLM instances in parallel will likely cause Out Of Memory errors.")
+        args.workers = 1
+        
     processor = BatchProcessor(
         use_ai=args.use_ai,
         use_local_ai=(not args.no_local_ai),
