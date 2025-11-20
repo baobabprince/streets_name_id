@@ -184,6 +184,8 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
     all_osm_names = set(named_osm_gdf['normalized_name'].unique())
     unmatched_osm_names = sorted(list(all_osm_names - matched_osm_names))
 
+    unmatched_osm_percentage = (unmatched_osm_streets / total_osm_streets) * 100 if total_osm_streets > 0 else 0
+
     # --- LAMAS Statistics (based on unique LAMAS IDs) ---
     if not lamas_in_city_df.empty:
         # Filter LAMAS data to include only actual streets (3-digit codes)
@@ -226,6 +228,7 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
         "ai_resolved_matches": ai_resolved_matches,
         "total_matched": total_matched,
         "unmatched_osm_streets": unmatched_osm_streets,
+        "unmatched_osm_percentage": f"{unmatched_osm_percentage:.1f}%",
         "unmatched_osm_street_names": unmatched_osm_names,
         "unmatched_lamas_count": unmatched_lamas_count,
         "unmatched_lamas_percentage": f"{unmatched_lamas_percentage:.1f}%",
@@ -252,10 +255,46 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     # STEP 1: Data Acquisition (with caching)
     try:
         chosen_place = place or OSM_PLACE_NAME or "Tel Aviv-Yafo, Israel"
+        
+        # Ensure the place name includes "Israel" to avoid ambiguity (e.g. German cities)
+        # This fixes the issue where "El'ad" resolves to a city in Germany
+        if "israel" not in chosen_place.lower() and "palestine" not in chosen_place.lower():
+            print(f"Appending ', Israel' to place name '{chosen_place}' for disambiguation.")
+            chosen_place = f"{chosen_place}, Israel"
+            
         print(f"Using place: {chosen_place}")
         LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
         osm_gdf = load_or_fetch_osm(chosen_place, force_refresh=force_refresh)
 
+        # Check if OSM data was successfully fetched
+        if osm_gdf is None:
+            print(f"WARNING: No OSM data available for {chosen_place}")
+            print("This settlement may not have street data in OpenStreetMap.")
+            print("Creating empty result and completing successfully.")
+            
+            # Create empty HTML report indicating no data
+            try:
+                from generate_html import create_empty_html_report
+                os.makedirs("HTML", exist_ok=True)
+                create_empty_html_report(chosen_place, reason="No OSM street data available")
+            except Exception as html_error:
+                print(f"Could not create empty HTML report: {html_error}")
+            
+            return True  # Return success - this is not a failure, just no data
+        
+        # Check if OSM data is empty
+        if len(osm_gdf) == 0:
+            print(f"WARNING: OSM data for {chosen_place} is empty (no streets found)")
+            print("Creating empty result and completing successfully.")
+            
+            try:
+                from generate_html import create_empty_html_report
+                os.makedirs("HTML", exist_ok=True)
+                create_empty_html_report(chosen_place, reason="No streets found in OSM data")
+            except Exception as html_error:
+                print(f"Could not create empty HTML report: {html_error}")
+            
+            return True  # Return success - this is not a failure, just no data
 
         # If OSM doesn't include a 'city' column, populate it from the place string
         if 'city' not in osm_gdf.columns:
@@ -273,6 +312,8 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
         
     except Exception as e:
         print(f"FATAL ERROR during Data Acquisition: {e}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         return False
 
 
@@ -293,6 +334,21 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     LAMAS_df.dropna(subset=['normalized_name'], inplace=True)
     osm_gdf.dropna(subset=['normalized_name'], inplace=True)
 
+    # Check if all OSM streets were unnamed (and thus dropped)
+    if len(osm_gdf) == 0:
+        print(f"\nWARNING: All streets in {chosen_place} are unnamed")
+        print("No streets can be matched without names.")
+        print("Creating empty result and completing successfully.")
+        
+        try:
+            from generate_html import create_empty_html_report
+            os.makedirs("HTML", exist_ok=True)
+            create_empty_html_report(chosen_place, reason="All streets are unnamed (no name tags in OSM)")
+        except Exception as html_error:
+            print(f"Could not create empty HTML report: {html_error}")
+        
+        return True  # Return success - this is not a failure, just no matchable data
+
     _save_intermediate_df(LAMAS_df, "step2_lamas_normalized", chosen_place)
     _save_intermediate_df(osm_gdf, "step2_osm_normalized", chosen_place)
     
@@ -302,7 +358,19 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
 
     # STEP 4: Candidate Matching (CREATES candidates_df)
     print("\n[Step 4/7] Running Fuzzy Matching and Candidate Creation...")
-    candidates_df = find_fuzzy_candidates(osm_gdf, LAMAS_df)
+    
+    # OPTIMIZATION: Filter LAMAS data to the relevant city BEFORE fuzzy matching
+    # This prevents matching against the entire country's street list
+    osm_city_label = osm_gdf['city'].iloc[0]
+    print(f"Filtering LAMAS data for city: '{osm_city_label}'")
+    
+    lamas_city_df = LAMAS_df[LAMAS_df['city'] == osm_city_label].copy()
+    
+    if lamas_city_df.empty:
+        print(f"WARNING: No LAMAS data found for city '{osm_city_label}'. Fuzzy matching will fail.")
+        # Fallback? Or just proceed (will result in MISSING)
+    
+    candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
     
     _save_intermediate_df(candidates_df, "step4_candidates", chosen_place)
 
@@ -315,16 +383,19 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
         local_resolver = None
         if use_local_ai:
             try:
+                print("Initializing Local AI Resolver...")
                 local_resolver = LocalAIResolver()
                 if not local_resolver.is_available():
-                    print("Local AI not available, will fall back to Gemini if API key exists.")
+                    print("Local AI not available (is_available=False), will fall back to Gemini if API key exists.")
                     local_resolver = None
+                else:
+                    print("Local AI initialized successfully.")
             except Exception as e:
                 print(f"Failed to initialize Local AI: {e}")
                 local_resolver = None
 
         # Filter candidates to the city being processed to avoid processing irrelevant streets
-        osm_city_label = osm_gdf['city'].iloc[0]
+        # (Already filtered osm_gdf, but good to be safe)
         osm_gdf_in_city = osm_gdf[osm_gdf['city'] == osm_city_label]
         
         ai_candidates_to_process = candidates_df[
@@ -364,6 +435,9 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
                      print(f"    Local AI found no match. Confidence: {confidence}")
                 else:
                      print(f"    Local AI matched to {ai_decision_id}. Confidence: {confidence}")
+                
+                # Log the raw decision for debugging
+                print(f"    [DEBUG] AI Raw Decision ID: '{ai_decision_id}' (Type: {type(ai_decision_id)})")
 
             # Fallback to Gemini if Local AI didn't run or failed (and we have API key)
             if (str(ai_decision_id) == 'None' or method == "none") and API_KEY:
@@ -413,7 +487,9 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     # 1. Create final_mapping_df (the rows that successfully received a final ID)
     final_mapping_df = ai_decisions_merged[
         (ai_decisions_merged['status'] == 'CONFIDENT') | 
-        ((ai_decisions_merged['status'] == 'NEEDS_AI') & (ai_decisions_merged['ai_LAMAS_id'].astype(str) != 'None'))
+        ((ai_decisions_merged['status'] == 'NEEDS_AI') & 
+         (ai_decisions_merged['ai_LAMAS_id'].astype(str) != 'None') & 
+         (ai_decisions_merged['ai_LAMAS_id'].astype(str) != 'nan'))
     ].copy()
 
     # Determine the final ID source
@@ -488,6 +564,7 @@ if __name__ == "__main__":
         place_arg = sys.argv[1]
     if "--refresh" in sys.argv:
         force = True
+    no_ai = False
     if "--no-ai" in sys.argv:
         no_ai = True
     if "--no-local-ai" in sys.argv:
