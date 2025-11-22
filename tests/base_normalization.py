@@ -8,11 +8,11 @@ class TestNormalizeStreetName(unittest.TestCase):
 
     def test_abbreviations_and_expansion(self):
         # 1. קיצורים והרחבות
-        self.assertEqual(normalize_street_name("רח' הנביאים"), "רחוב הנביאים")
-        self.assertEqual(normalize_street_name("שד. רוטשילד"), "שדרות רוטשילד")
-        self.assertEqual(normalize_street_name("שד' העצמאות"), "שדרות העצמאות")
-        self.assertEqual(normalize_street_name("שד בן גוריון"), "שדרות בן גוריון")
-        self.assertEqual(normalize_street_name("כי. המדינה"), "כיכר המדינה")
+        self.assertEqual(normalize_street_name("רח' הנביאים"), "הנביאים")
+        self.assertEqual(normalize_street_name("שד. רוטשילד"), "רוטשילד")
+        self.assertEqual(normalize_street_name("שד' העצמאות"), "העצמאות")
+        self.assertEqual(normalize_street_name("שד בן גוריון"), "בן גוריון")
+        self.assertEqual(normalize_street_name("כי. המדינה"), "המדינה")
 
     def test_punctuation_and_spacing(self):
         # 2. סימני פיסוק ורווחים
@@ -33,8 +33,25 @@ class TestNormalizeStreetName(unittest.TestCase):
         """
         Tests that the function does not expand words that are already in their full form.
         """
-        self.assertEqual(normalize_street_name("שדרות רוטשילד"), "שדרות רוטשילד")
+        self.assertEqual(normalize_street_name("שדרות רוטשילד"), "רוטשילד")
         self.assertEqual(normalize_street_name("רחובות העיר"), "רחובות העיר") # "רחוב" is part of "רחובות"
+
+    def test_prefix_suffix_removal(self):
+        """
+        Tests the removal of common prefixes and suffixes.
+        """
+        self.assertEqual(normalize_street_name("רחוב הרצל"), "הרצל")
+        self.assertEqual(normalize_street_name("שדרות רגר"), "רגר")
+        self.assertEqual(normalize_street_name("סמטת האלמונים"), "האלמונים")
+        self.assertEqual(normalize_street_name("האלמונים סמטה"), "האלמונים")
+        self.assertEqual(normalize_street_name("כיכר אתרים"), "אתרים")
+        self.assertEqual(normalize_street_name("מבוא הגפן"), "הגפן")
+        # Test that it doesn't remove from single-word names
+        self.assertEqual(normalize_street_name("שדרות"), "שדרות")
+        self.assertEqual(normalize_street_name("מבוא"), "מבוא")
+        # Test with abbreviations
+        self.assertEqual(normalize_street_name("רח' הרצל"), "הרצל")
+        self.assertEqual(normalize_street_name("שד. רגר"), "רגר")
 
 
 # # הרצת הבדיקות
