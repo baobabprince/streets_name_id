@@ -39,8 +39,8 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
     print("Executing Fuzzy Matching and Candidate Selection...")
     candidates = []
     
-    print("Executing Fuzzy Matching and Candidate Selection...")
-    candidates = []
+    # Statistics for threshold analysis
+    all_best_scores = []  # Track best score for each OSM street
     
     # Optimization: Pre-filter LAMAS data by city to avoid repeated filtering inside the loop
     # Group OSM data by city to process each city's streets against its relevant LAMAS records
@@ -69,92 +69,148 @@ def find_fuzzy_candidates(osm_df, LAMAS_df):
             continue
 
         # Iterate over streets in this city
-        for _, osm_row in tqdm(city_osm_df.iterrows(), total=len(city_osm_df), desc=f"Matching {city}"):
-            osm_id = osm_row['osm_id']
-            osm_name = osm_row['normalized_name']
+        # Optimization: Process unique OSM names instead of all segments
+        # This drastically reduces runtime for large cities with many segments per street
+        unique_osm_names = city_osm_df[['normalized_name', 'osm_name']].drop_duplicates('normalized_name')
+        print(f"Optimized Matching: Processing {len(unique_osm_names)} unique names (out of {len(city_osm_df)} total segments) for {city}")
+        
+        name_to_results = {}
+        
+        # Iterate over unique names
+        for _, row in tqdm(unique_osm_names.iterrows(), total=len(unique_osm_names), desc=f"Fuzzy Matching (Unique Names) for {city}"):
+            osm_name = row['normalized_name']
             
-            # 3. חישוב ציוני דמיון
-            scores = []
+            scores_for_unique_name = []
             for _, LAMAS_row in city_lamas_df.iterrows():
                 LAMAS_id = LAMAS_row['LAMAS_id']
-                LAMAS_name_raw = LAMAS_row['LAMAS_name'] # נשמור את השם המקורי/לא מנורמל לצורך דיאגנוסטיקה
+                LAMAS_name_raw = LAMAS_row['LAMAS_name']
                 LAMAS_name = LAMAS_row['normalized_name']
                 
-                # חישוב 3 מדדים שונים:
                 ratio = fuzz.ratio(osm_name, LAMAS_name)
                 token_sort = fuzz.token_sort_ratio(osm_name, LAMAS_name)
-                token_set = fuzz.token_set_ratio(osm_name, LAMAS_name) # הכי חשוב לשמות חלקיים
+                token_set = fuzz.token_set_ratio(osm_name, LAMAS_name)
                 
-                # ניקוד ממוצע משוקלל
                 weighted_score = np.average([ratio, token_sort, token_set], weights=[0.2, 0.3, 0.5])
 
-                scores.append({
+                scores_for_unique_name.append({
                     'LAMAS_id': LAMAS_id,
-                    'LAMAS_name': LAMAS_name_raw, # שמירת השם הלא מנורמל לדיאגנוסטיקה טובה יותר
+                    'LAMAS_name': LAMAS_name_raw,
                     'weighted_score': weighted_score,
                     'token_set_score': token_set
                 })
 
-            # 4. סינון וסיווג: בחירת המועמדים הטובים ביותר
-            if not scores:
-                 candidates.append({
-                     'osm_id': osm_id,
-                     'status': 'MISSING',
-                     'best_LAMAS_id': None,
-                     'best_LAMAS_name': None, # <-- ADDED
-                     'best_score': 0,
-                     'all_candidates': None
-                 })
-                 continue
-                 
-            scores_df = pd.DataFrame(scores).sort_values(by='weighted_score', ascending=False)
-            
-            # התאמה ודאית: אם יש ציון גבוה מאוד (מעל 90)
-            confident_match = scores_df[scores_df['weighted_score'] >= 90].head(1)
-            if not confident_match.empty:
-                candidates.append({
-                    'osm_id': osm_id,
-                    'status': 'CONFIDENT',
-                    'best_LAMAS_id': confident_match.iloc[0]['LAMAS_id'],
-                    'best_LAMAS_name': confident_match.iloc[0]['LAMAS_name'], # <-- ADDED
-                    'best_score': confident_match.iloc[0]['weighted_score'],
-                    'all_candidates': None
-                })
-                continue
-
-            # מועמדים ל-AI: אם יש ציונים סבירים (בין 80 ל-98)
-            # שינוי קל: הוספת התנאי לחוסר התאמה ודאית כדי למנוע מצב בו הציון 90 נופל כאן
-            ai_candidates = scores_df[
-                (scores_df['weighted_score'] >= 80) & 
-                (scores_df['weighted_score'] < 90) # טווח ציון קשיח ל-NEEDS_AI
-            ].head(5).copy() 
-            
-            if not ai_candidates.empty:
-                # איסוף פרטי המועמדים לטקסט
-                candidate_list = ai_candidates.apply(
-                    lambda r: f"ID: {r['LAMAS_id']}, Name: '{r['LAMAS_name']}' (Score: {r['weighted_score']:.2f})", 
-                    axis=1
-                ).tolist()
-                
-                candidates.append({
-                    'osm_id': osm_id,
-                    'status': 'NEEDS_AI',
-                    'best_LAMAS_id': ai_candidates.iloc[0]['LAMAS_id'], # שמירת ה-ID המוביל רק לדיאגנוסטיקה
-                    'best_LAMAS_name': ai_candidates.iloc[0]['LAMAS_name'], # <-- ADDED (השם המוביל)
-                    'best_score': ai_candidates.iloc[0]['weighted_score'],
-                    'all_candidates': "\n".join(candidate_list)
-                })
-            
-            # רחובות ללא התאמה: יטופלו כ-Missing later
-            else:
-                candidates.append({
-                    'osm_id': osm_id,
+            if not scores_for_unique_name:
+                name_to_results[osm_name] = {
                     'status': 'MISSING',
                     'best_LAMAS_id': None,
-                    'best_LAMAS_name': None, # <-- ADDED
-                    'best_score': scores_df.iloc[0]['weighted_score'] if not scores_df.empty else 0,
+                    'best_LAMAS_name': None,
+                    'best_score': 0,
                     'all_candidates': None
-                })
+                }
+                continue
+            
+            scores_df = pd.DataFrame(scores_for_unique_name).sort_values(by='weighted_score', ascending=False)
+            
+            # Logic for classification
+            result = {}
+            
+            # CONFIDENT
+            confident_match = scores_df[scores_df['weighted_score'] >= 90].head(1)
+            if not confident_match.empty:
+                result = {
+                    'status': 'CONFIDENT',
+                    'best_LAMAS_id': confident_match.iloc[0]['LAMAS_id'],
+                    'best_LAMAS_name': confident_match.iloc[0]['LAMAS_name'],
+                    'best_score': confident_match.iloc[0]['weighted_score'],
+                    'all_candidates': None
+                }
+            else:
+                # NEEDS_AI
+                ai_candidates = scores_df[
+                    (scores_df['weighted_score'] >= 80) & 
+                    (scores_df['weighted_score'] < 90)
+                ].head(5).copy()
+                
+                if not ai_candidates.empty:
+                    candidate_list = ai_candidates.apply(
+                        lambda r: f"ID: {r['LAMAS_id']}, Name: '{r['LAMAS_name']}' (Score: {r['weighted_score']:.2f})", 
+                        axis=1
+                    ).tolist()
+                    
+                    result = {
+                        'status': 'NEEDS_AI',
+                        'best_LAMAS_id': ai_candidates.iloc[0]['LAMAS_id'],
+                        'best_LAMAS_name': ai_candidates.iloc[0]['LAMAS_name'],
+                        'best_score': ai_candidates.iloc[0]['weighted_score'],
+                        'all_candidates': "\n".join(candidate_list)
+                    }
+                else:
+                    # MISSING
+                    result = {
+                        'status': 'MISSING',
+                        'best_LAMAS_id': None,
+                        'best_LAMAS_name': scores_df.iloc[0]['LAMAS_name'] if not scores_df.empty else None,
+                        'best_score': scores_df.iloc[0]['weighted_score'] if not scores_df.empty else 0,
+                        'all_candidates': None
+                    }
+            
+            name_to_results[osm_name] = result
+
+        # Map results back to all OSM segments
+        print(f"Mapping results to {len(city_osm_df)} segments...")
+        for _, osm_row in city_osm_df.iterrows():
+            osm_id = osm_row['osm_id']
+            osm_name = osm_row['normalized_name']
+            
+            res = name_to_results.get(osm_name, {
+                'status': 'MISSING',
+                'best_LAMAS_id': None,
+                'best_LAMAS_name': None,
+                'best_score': 0,
+                'all_candidates': None
+            })
+            
+            candidates.append({
+                'osm_id': osm_id,
+                'status': res['status'],
+                'best_LAMAS_id': res['best_LAMAS_id'],
+                'best_LAMAS_name': res['best_LAMAS_name'],
+                'best_score': res['best_score'],
+                'all_candidates': res['all_candidates']
+            })
+            
+            # Track statistics
+            all_best_scores.append(res['best_score'])
+
+
+    # Print statistics about score distribution
+    print("\n" + "="*60)
+    print("FUZZY MATCHING THRESHOLD ANALYSIS")
+    print("="*60)
+    if all_best_scores:
+        all_best_scores_array = np.array(all_best_scores)
+        print(f"Total streets processed: {len(all_best_scores)}")
+        print(f"\nScore Distribution:")
+        print(f"  Mean score: {all_best_scores_array.mean():.2f}")
+        print(f"  Median score: {np.median(all_best_scores_array):.2f}")
+        print(f"  Std deviation: {all_best_scores_array.std():.2f}")
+        print(f"\nPercentiles:")
+        for p in [10, 25, 50, 75, 90, 95, 99]:
+            print(f"  {p}th percentile: {np.percentile(all_best_scores_array, p):.2f}")
+        
+        print(f"\nCurrent Thresholds Impact:")
+        confident = sum(1 for s in all_best_scores if s >= 90)
+        needs_ai = sum(1 for s in all_best_scores if 80 <= s < 90)
+        missing = sum(1 for s in all_best_scores if s < 80)
+        print(f"  CONFIDENT (≥90): {confident} streets ({100*confident/len(all_best_scores):.1f}%)")
+        print(f"  NEEDS_AI (80-90): {needs_ai} streets ({100*needs_ai/len(all_best_scores):.1f}%)")
+        print(f"  MISSING (<80): {missing} streets ({100*missing/len(all_best_scores):.1f}%)")
+        
+        print(f"\nAlternative Threshold Scenarios:")
+        for threshold in [70, 75, 80, 85]:
+            count = sum(1 for s in all_best_scores if s >= threshold)
+            print(f"  If threshold was {threshold}: {count} streets would qualify ({100*count/len(all_best_scores):.1f}%)")
+    print("="*60 + "\n")
 
     return pd.DataFrame(candidates)
 
