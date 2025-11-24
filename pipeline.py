@@ -11,6 +11,12 @@ from fuzzywuzzy import fuzz
 import re
 import datetime
 import sys
+from enum import Enum
+
+class PipelineStatus(Enum):
+    SUCCESS = "SUCCESS"
+    NO_DATA = "NO_DATA"
+    FAILURE = "FAILURE"
 
 # --- Import necessary utility functions (assuming these files exist in the project) ---
 from lamas_streets import fetch_all_LAMAS_data
@@ -42,10 +48,10 @@ def get_ai_resolution(prompt, osm_id):
     כולל מנגנון Retry פשוט.
     """
     if not API_KEY:
-        print("  -> ERROR: GEMINI_API_KEY not found or is empty. Skipping AI resolution.")
+        print("  -> ERROR: GEMINI_API_KEY not found or is empty. Skipping AI resolution.")
         return 'None'
         
-    print(f"  -> Consulting AI for OSM ID: {osm_id}...")
+    print(f"  -> Consulting AI for OSM ID: {osm_id}...")
     
     # הגדרות פרומפט ופרסונה עבור המודל
     system_prompt = "אתה מערכת GIS אוטומטית שתפקידה למצוא את המזהה המספרי היחיד של רחוב (LAMAS ID) מתוך רשימת מועמדים, על בסיס שם וקונטקסט גיאוגרפי (שמות רחובות משיקים). השב עם המספר של ה-ID בלבד, או עם המילה 'None' אם לא נמצאה התאמה ודאית."
@@ -60,7 +66,7 @@ def get_ai_resolution(prompt, osm_id):
         try:
             response = requests.post(
                 GEMINI_API_URL, 
-                headers={'Content-Type': 'application/json'}, 
+                headers={'Content-Type': 'application/json'},
                 data=json.dumps(payload)
             )
             response.raise_for_status() # שגיאות HTTP יעלו חריגה
@@ -123,9 +129,9 @@ def _save_intermediate_df(df, step_name, place):
             df_to_save = df.drop(columns=['geometry'], errors='ignore')
             df_to_save.to_csv(path, index=False, encoding='utf-8')
             
-        print(f"  -> Saved intermediate result for {step_name} to {path}")
+        print(f"  -> Saved intermediate result for {step_name} to {path}")
     except Exception as e:
-        print(f"  -> Warning: Failed to save {step_name} intermediate result: {e}")
+        print(f"  -> Warning: Failed to save {step_name} intermediate result: {e}")
 
 
 def load_or_fetch_LAMAS(force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
@@ -143,19 +149,29 @@ def load_or_fetch_LAMAS(force_refresh: bool = False, max_age_days: int = SIX_MON
         pass
     return df
 
-def load_or_fetch_osm(place: str, force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
+def load_or_fetch_osm(place: str | dict, force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
     """Load OSM GeoDataFrame from cache if fresh, otherwise fetch and cache it."""
-    safe = _safe_place_name(place)
+    
+    if isinstance(place, dict):
+        place_str_for_cache = place.get('display_name', 'unknown_place')
+    else:
+        place_str_for_cache = place
+
+    safe = _safe_place_name(place_str_for_cache)
     cache_path = OSM_CACHE_TEMPLATE.format(place=safe)
+    
     if not force_refresh and _is_fresh(cache_path, max_age_days):
         try:
             return pd.read_pickle(cache_path)
         except Exception:
             pass
 
-    gdf = fetch_osm_street_data(place)
+    gdf = fetch_osm_street_data(place) # pass the object (str or dict)
+    
+    if gdf is None:
+        return None
+
     try:
-        # GeoDataFrame is a subclass of DataFrame; pickle preserves geometry
         gdf.to_pickle(cache_path)
     except Exception:
         pass
@@ -241,64 +257,85 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
 #                                 ORCHESTRATION START
 # ----------------------------------------------------------------------------------
 
-def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True):
+def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, refresh_lamas: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
+    'place' can be a string for a search query, or a dict from Nominatim.
     """
     print("--- Starting Street Mapping Orchestrator ---")
     if not API_KEY:
-        print("\n*** WARNING: GEMINI_API_KEY environment variable not set. AI resolution will be skipped. ***)")
+        print("\n*** WARNING: GEMINI_API_KEY environment variable not set. AI resolution will be skipped. ***")
 
     if not use_ai:
         print("\n*** INFO: AI resolution is disabled for this run (use_ai=False). ***")
     
     # STEP 1: Data Acquisition (with caching)
     try:
-        chosen_place = place or OSM_PLACE_NAME or "Tel Aviv-Yafo, Israel"
+        # Determine the object to use for OSM fetching and the string for display/caching
+        place_obj_for_osm = place
+        if isinstance(place, dict):
+            # If a dict is provided, use it directly for OSM. Use its display_name for logging.
+            chosen_place_str = place.get('display_name', 'unknown_place')
+        elif isinstance(place, str):
+            # If a string is provided, append ", Israel" for disambiguation
+            chosen_place_str = place
+            if "israel" not in chosen_place_str.lower() and "palestine" not in chosen_place_str.lower():
+                chosen_place_str = f"{chosen_place_str}, Israel"
+            place_obj_for_osm = chosen_place_str
+        else:
+            # Default fallback if place is None
+            chosen_place_str = OSM_PLACE_NAME or "Tel Aviv-Yafo, Israel"
+            place_obj_for_osm = chosen_place_str
+
+        print(f"Using place: {chosen_place_str}")
+        LAMAS_df = load_or_fetch_LAMAS(force_refresh=refresh_lamas)
         
-        # Ensure the place name includes "Israel" to avoid ambiguity (e.g. German cities)
-        # This fixes the issue where "El'ad" resolves to a city in Germany
-        if "israel" not in chosen_place.lower() and "palestine" not in chosen_place.lower():
-            print(f"Appending ', Israel' to place name '{chosen_place}' for disambiguation.")
-            chosen_place = f"{chosen_place}, Israel"
-            
-        print(f"Using place: {chosen_place}")
-        LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
-        osm_gdf = load_or_fetch_osm(chosen_place, force_refresh=force_refresh)
+        # Pass the correct object (dict or string) to the fetcher
+        osm_gdf = load_or_fetch_osm(place_obj_for_osm, force_refresh=refresh_osm)
 
         # Check if OSM data was successfully fetched
         if osm_gdf is None:
-            print(f"WARNING: No OSM data available for {chosen_place}")
+            print(f"WARNING: No OSM data available for {chosen_place_str}")
             print("This settlement may not have street data in OpenStreetMap.")
-            print("Creating empty result and completing successfully.")
-            
-            # Create empty HTML report indicating no data
-            try:
-                from generate_html import create_empty_html_report
-                os.makedirs("HTML", exist_ok=True)
-                create_empty_html_report(chosen_place, reason="No OSM street data available")
-            except Exception as html_error:
-                print(f"Could not create empty HTML report: {html_error}")
-            
-            return True  # Return success - this is not a failure, just no data
+            return PipelineStatus.NO_DATA
         
         # Check if OSM data is empty
         if len(osm_gdf) == 0:
-            print(f"WARNING: OSM data for {chosen_place} is empty (no streets found)")
-            print("Creating empty result and completing successfully.")
+            print(f"WARNING: OSM data for {chosen_place_str} is empty (no streets found)")
+            return PipelineStatus.NO_DATA
+
+        # GEOGRAPHIC VALIDATION: Check if the data is within Israel/Palestine bounds
+        # Israel/Palestine bounds: lat (29.0 to 33.5), lon (34.0 to 36.0)
+        ISRAEL_BOUNDS = (29.0, 34.0, 33.5, 36.0)  # (min_lat, min_lon, max_lat, max_lon)
+        
+        # Get the bounds of all geometries to check location
+        try:
+            # Use bounds instead of centroid to avoid CRS warning
+            total_bounds = osm_gdf.total_bounds  # [minx, miny, maxx, maxy]
+            avg_lon = (total_bounds[0] + total_bounds[2]) / 2
+            avg_lat = (total_bounds[1] + total_bounds[3]) / 2
             
-            try:
-                from generate_html import create_empty_html_report
-                os.makedirs("HTML", exist_ok=True)
-                create_empty_html_report(chosen_place, reason="No streets found in OSM data")
-            except Exception as html_error:
-                print(f"Could not create empty HTML report: {html_error}")
-            
-            return True  # Return success - this is not a failure, just no data
+            min_lat, min_lon, max_lat, max_lon = ISRAEL_BOUNDS
+            if not (min_lat <= avg_lat <= max_lat and min_lon <= avg_lon <= max_lon):
+                print(f"ERROR: Downloaded data appears to be outside Israel/Palestine!")
+                print(f"  Average coordinates: ({avg_lat:.4f}, {avg_lon:.4f})")
+                print(f"  Expected bounds: lat ({min_lat} to {max_lat}), lon ({min_lon} to {max_lon})")
+                print(f"  This likely means '{place}' matched to a location outside Israel.")
+                print(f"  Please check the settlement name and try again.")
+                return PipelineStatus.FAILURE
+        except Exception as e:
+            print(f"Warning: Could not validate geographic location: {e}")
+        
+        # SIZE VALIDATION: Warn if dataset is suspiciously large
+        # A single city should typically have < 50,000 street segments
+        if len(osm_gdf) > 50000:
+            print(f"WARNING: Downloaded {len(osm_gdf)} street segments - this seems very large for a single city!")
+            print(f"  This might indicate that the entire region was downloaded instead of just the city.")
+            print(f"  Proceeding anyway, but results may be slow or incorrect.")
 
         # If OSM doesn't include a 'city' column, populate it from the place string
         if 'city' not in osm_gdf.columns:
-            city_label = chosen_place.split(',')[0].strip()
+            city_label = chosen_place_str.split(',')[0].strip()
             osm_gdf['city'] = city_label
 
         # Normalize city name formatting in both dataframes (CRITICAL FIX)
@@ -307,14 +344,14 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
         osm_gdf['city'] = _normalize_city(osm_gdf['city'])
         
         # Save intermediate normalized data
-        _save_intermediate_df(LAMAS_df, "step1_lamas_raw", chosen_place)
-        _save_intermediate_df(osm_gdf, "step1_osm_raw", chosen_place)
+        _save_intermediate_df(LAMAS_df, "step1_lamas_raw", chosen_place_str)
+        _save_intermediate_df(osm_gdf, "step1_osm_raw", chosen_place_str)
         
     except Exception as e:
         print(f"FATAL ERROR during Data Acquisition: {e}")
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
-        return False
+        return PipelineStatus.FAILURE
 
 
     # STEP 2: Preprocessing and Normalization
@@ -336,21 +373,12 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
 
     # Check if all OSM streets were unnamed (and thus dropped)
     if len(osm_gdf) == 0:
-        print(f"\nWARNING: All streets in {chosen_place} are unnamed")
+        print(f"\nWARNING: All streets in {chosen_place_str} are unnamed")
         print("No streets can be matched without names.")
-        print("Creating empty result and completing successfully.")
-        
-        try:
-            from generate_html import create_empty_html_report
-            os.makedirs("HTML", exist_ok=True)
-            create_empty_html_report(chosen_place, reason="All streets are unnamed (no name tags in OSM)")
-        except Exception as html_error:
-            print(f"Could not create empty HTML report: {html_error}")
-        
-        return True  # Return success - this is not a failure, just no matchable data
+        return PipelineStatus.NO_DATA
 
-    _save_intermediate_df(LAMAS_df, "step2_lamas_normalized", chosen_place)
-    _save_intermediate_df(osm_gdf, "step2_osm_normalized", chosen_place)
+    _save_intermediate_df(LAMAS_df, "step2_lamas_normalized", chosen_place_str)
+    _save_intermediate_df(osm_gdf, "step2_osm_normalized", chosen_place_str)
     
     # STEP 3: Topology (Adjacency)
     print("\n[Step 3/7] Building Adjacency Map (Topology)...")
@@ -372,7 +400,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     
     candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
     
-    _save_intermediate_df(candidates_df, "step4_candidates", chosen_place)
+    _save_intermediate_df(candidates_df, "step4_candidates", chosen_place_str)
 
     # STEP 5: AI Resolution (CREATES ai_decisions_df)
     print("\n[Step 5/7] (Optional) Invoking AI for ambiguous cases...")
@@ -472,7 +500,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
 
     # ensure DataFrame has expected columns even if empty
     ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id', 'ai_confidence', 'ai_reasoning', 'ai_method'])
-    _save_intermediate_df(ai_decisions_df, "step5_ai_decisions", chosen_place)
+    _save_intermediate_df(ai_decisions_df, "step5_ai_decisions", chosen_place_str)
 
     # STEP 6: Final Merge and Mapping
     print("\n[Step 6/7] Merging results to create final diagnostic table...")
@@ -517,7 +545,7 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     )
 
     # Export final diagnostic report to CSV (new comprehensive file)
-    _save_intermediate_df(diagnostic_df_full, "diagnostic_report", chosen_place)
+    _save_intermediate_df(diagnostic_df_full, "diagnostic_report", chosen_place_str)
     
     # Merge final mapping back into GeoDataFrame for visualization (Step 7)
     osm_gdf_final = osm_gdf.merge(diagnostic_df_full[['osm_id', 'final_LAMAS_id']], on='osm_id', how='left')
@@ -544,30 +572,42 @@ def run_pipeline(place: str | None = None, force_refresh: bool = False, use_ai: 
     print(f"-> Diagnostic Summary: {diagnostics}")
 
     # STEP 7: Generate HTML Visualization
-    print("\n[Step 7/7] Generating HTML visualization of all streets...")
-    try:
-        from generate_html import create_html_from_gdf
-        os.makedirs("HTML", exist_ok=True)
-        # Pass the GeoDataFrame and the new diagnostics object
-        create_html_from_gdf(diagnostic_df_full, chosen_place, diagnostics)
-    except Exception as e:
-        print(f"Warning: failed to generate HTML visualization: {e}")
+    if not skip_html:
+        print("\n[Step 7/7] Generating HTML visualization of all streets...")
+        try:
+            from generate_html import create_html_from_gdf
+            os.makedirs("HTML", exist_ok=True)
+            # Pass the GeoDataFrame and the new diagnostics object
+            create_html_from_gdf(diagnostic_df_full, chosen_place_str, diagnostics)
+        except Exception as e:
+            print(f"Warning: failed to generate HTML visualization: {e}")
     
-    return True  # Indicate successful completion
+    return PipelineStatus.SUCCESS  # Indicate successful completion
 
 
 if __name__ == "__main__":
     place_arg = None
-    force = False
+    refresh_osm = False
+    refresh_lamas = False
     no_local_ai = False
+    
     if len(sys.argv) > 1:
-        place_arg = sys.argv[1]
+        # Assume the first argument that doesn't start with -- is the place name
+        for arg in sys.argv[1:]:
+            if not arg.startswith("--"):
+                place_arg = arg
+                break
+    
     if "--refresh" in sys.argv:
-        force = True
+        refresh_osm = True
+    
+    if "--refresh-lamas" in sys.argv:
+        refresh_lamas = True
+        
     no_ai = False
     if "--no-ai" in sys.argv:
         no_ai = True
     if "--no-local-ai" in sys.argv:
         no_local_ai = True
 
-    run_pipeline(place=place_arg, force_refresh=force, use_ai=(not no_ai), use_local_ai=(not no_local_ai))
+    run_pipeline(place=place_arg, refresh_osm=refresh_osm, refresh_lamas=refresh_lamas, use_ai=(not no_ai), use_local_ai=(not no_local_ai))
