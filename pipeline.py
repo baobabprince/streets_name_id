@@ -257,7 +257,7 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
 #                                 ORCHESTRATION START
 # ----------------------------------------------------------------------------------
 
-def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, refresh_lamas: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False):
+def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
     'place' can be a string for a search query, or a dict from Nominatim.
@@ -288,10 +288,10 @@ def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, ref
             place_obj_for_osm = chosen_place_str
 
         print(f"Using place: {chosen_place_str}")
-        LAMAS_df = load_or_fetch_LAMAS(force_refresh=refresh_lamas)
+        LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
         
         # Pass the correct object (dict or string) to the fetcher
-        osm_gdf = load_or_fetch_osm(place_obj_for_osm, force_refresh=refresh_osm)
+        osm_gdf = load_or_fetch_osm(place_obj_for_osm, force_refresh=force_refresh)
 
         # Check if OSM data was successfully fetched
         if osm_gdf is None:
@@ -306,7 +306,7 @@ def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, ref
 
         # GEOGRAPHIC VALIDATION: Check if the data is within Israel/Palestine bounds
         # Israel/Palestine bounds: lat (29.0 to 33.5), lon (34.0 to 36.0)
-        ISRAEL_BOUNDS = (29.0, 34.0, 33.5, 36.0)  # (min_lat, min_lon, max_lat, max_lon)
+        ISRAEL_BOUNDS = (29.0, 34.0, 33.7, 36.0)  # (min_lat, min_lon, max_lat, max_lon)
         
         # Get the bounds of all geometries to check location
         try:
@@ -422,24 +422,44 @@ def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, ref
                 print(f"Failed to initialize Local AI: {e}")
                 local_resolver = None
 
-        # Filter candidates to the city being processed to avoid processing irrelevant streets
-        # (Already filtered osm_gdf, but good to be safe)
+        # Filter candidates to the city being processed
         osm_gdf_in_city = osm_gdf[osm_gdf['city'] == osm_city_label]
         
+        # Merge candidates with normalized_name from osm_gdf to process by name
         ai_candidates_to_process = candidates_df[
             (candidates_df['status'] == 'NEEDS_AI') & 
             (candidates_df['osm_id'].isin(osm_gdf_in_city['osm_id']))
-        ].copy()
-        
-        # Make a set of OSM IDs to check against
-        osm_id_set = set(osm_gdf_in_city['osm_id'])
-        
-        for _, row in ai_candidates_to_process.iterrows():
-            osm_id = row['osm_id']
+        ].merge(osm_gdf_in_city[['osm_id', 'normalized_name']], on='osm_id')
 
-            # Safety check: skip if osm_id is not in the current city (shouldn't happen with filter above)
-            if osm_id not in osm_id_set:
-                 continue
+        # Get unique street names that need AI resolution
+        unique_ai_streets = ai_candidates_to_process.drop_duplicates(subset=['normalized_name'])
+        
+        print(f"Found {len(unique_ai_streets)} unique street names requiring AI resolution.")
+
+        # Cache for AI decisions to avoid re-processing the same name
+        ai_decision_cache = {}
+
+        for _, row in unique_ai_streets.iterrows():
+            normalized_street_name = row['normalized_name']
+            
+            # Use the first osm_id as a representative for this street name (for logging/context)
+            representative_osm_id = row['osm_id']
+
+            # --- Information Gathering for the unique street ---
+            # 1. Get all OSM IDs for this street name
+            all_osm_ids_for_street = osm_gdf_in_city[osm_gdf_in_city['normalized_name'] == normalized_street_name]['osm_id'].tolist()
+            
+            # 2. Get all unique adjacent street names for this street
+            all_adjacent_ids = set()
+            for osm_id in all_osm_ids_for_street:
+                all_adjacent_ids.update(map_of_adjacents.get(osm_id, []))
+            
+            adjacent_names = osm_gdf_in_city[osm_gdf_in_city['osm_id'].isin(all_adjacent_ids)]['normalized_name'].unique().tolist()
+
+            # 3. All other info (candidates, city) is the same for the whole street
+            lamas_candidates_str = row['all_candidates']
+            city_name = osm_gdf_in_city['city'].iloc[0]
+
 
             ai_decision_id = 'None'
             confidence = 0.0
@@ -448,52 +468,65 @@ def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, ref
 
             # Try Local AI first
             if local_resolver:
-                print(f" -> Consulting Local AI for OSM ID: {osm_id}...")
-                local_result = get_local_ai_resolution(
-                    osm_id, osm_gdf, LAMAS_df, row, map_of_adjacents, local_resolver
+                print(f" -> Consulting Local AI for street: '{normalized_street_name}'...")
+                # We need to construct the candidates list for the local AI from the string
+                local_lamas_candidates = []
+                if pd.notna(lamas_candidates_str):
+                    for line in lamas_candidates_str.split('\n'):
+                        id_match = re.search(r'ID:\s*(\d+)', line)
+                        name_match = re.search(r"Name:\s*['\"]([^'\"]+)['\"]", line)
+                        score_match = re.search(r'Score:\s*([\d.]+)', line)
+                        if id_match and name_match:
+                            local_lamas_candidates.append({
+                                'id': id_match.group(1), 'name': name_match.group(1), 
+                                'score': float(score_match.group(1)) if score_match else 0.0
+                            })
+                
+                local_result = local_resolver.resolve_street(
+                    representative_osm_id, normalized_street_name, city_name,
+                    local_lamas_candidates, adjacent_names
                 )
+
                 ai_decision_id = local_result.get('lamas_id')
                 confidence = local_result.get('confidence', 0.0)
                 reasoning = local_result.get('reasoning', '')
                 method = "local_ai"
                 
-                # If Local AI returned None or low confidence, maybe fall back?
-                # For now, we accept Local AI's decision if it ran successfully.
                 if str(ai_decision_id) == 'None':
-                     print(f"    Local AI found no match. Confidence: {confidence}")
+                     print(f"    Local AI found no match for '{normalized_street_name}'. Confidence: {confidence}")
                 else:
-                     print(f"    Local AI matched to {ai_decision_id}. Confidence: {confidence}")
-                
-                # Log the raw decision for debugging
-                print(f"    [DEBUG] AI Raw Decision ID: '{ai_decision_id}' (Type: {type(ai_decision_id)})")
+                     print(f"    Local AI matched '{normalized_street_name}' to {ai_decision_id}. Confidence: {confidence}")
 
-            # Fallback to Gemini if Local AI didn't run or failed (and we have API key)
+            # Fallback to Gemini if Local AI didn't run or found no match
             if (str(ai_decision_id) == 'None' or method == "none") and API_KEY:
                 if method == "local_ai":
-                     print("    Falling back to Gemini API...")
+                     print(f"    Falling back to Gemini API for '{normalized_street_name}'...")
                 
-                # Building the full prompt (including topological context)
-                osm_street_name = osm_gdf_in_city[osm_gdf_in_city['osm_id'] == osm_id]['normalized_name'].iloc[0]
-                
-                # Find adjacent OSM IDs and look up their normalized names
-                adjacent_osm_ids = map_of_adjacents.get(osm_id, [])
-                adjacent_names = osm_gdf_in_city[osm_gdf_in_city['osm_id'].isin(adjacent_osm_ids)]['normalized_name'].tolist()
-
-                prompt = (f"OSM Street Name: '{osm_street_name}'. "
+                prompt = (f"OSM Street Name: '{normalized_street_name}'. "
                           f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
-                          f"LAMAS Candidates: {row['all_candidates']}. Choose the best LAMAS ID (number only or 'None').")
+                          f"LAMAS Candidates: {lamas_candidates_str}. Choose the best LAMAS ID (number only or 'None').")
 
-                ai_decision_id = get_ai_resolution(prompt, osm_id)
+                ai_decision_id = get_ai_resolution(prompt, representative_osm_id) # Pass representative_osm_id for logging
                 method = "gemini"
                 confidence = 0.0 # Gemini function doesn't return confidence currently
             
-            ai_results.append({
-                'osm_id': osm_id, 
+            # Cache the decision for this unique street name
+            ai_decision_cache[normalized_street_name] = {
                 'ai_LAMAS_id': ai_decision_id,
                 'ai_confidence': confidence,
                 'ai_reasoning': reasoning,
                 'ai_method': method
-            })
+            }
+
+        # Now, apply the cached decisions to all relevant segments
+        for _, row in ai_candidates_to_process.iterrows():
+            street_name = row['normalized_name']
+            cached_result = ai_decision_cache.get(street_name)
+            if cached_result:
+                ai_results.append({
+                    'osm_id': row['osm_id'],
+                    **cached_result
+                })
     else:
         # AI disabled — produce empty results
         ai_results = []
@@ -526,7 +559,7 @@ def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, ref
     ).astype(str)
 
     # Select key diagnostic columns from candidates/AI merge
-    diagnostic_cols = ['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'all_candidates', 'ai_LAMAS_id']
+    diagnostic_cols = ['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'all_candidates', 'ai_LAMAS_id', 'ai_reasoning']
     
     # Create the full diagnostic table by merging OSM data with the candidates/AI data
     osm_cols_for_diag = ['osm_id', 'osm_name', 'normalized_name', 'city', 'geometry']
@@ -587,27 +620,16 @@ def run_pipeline(place: str | dict | None = None, refresh_osm: bool = False, ref
 
 if __name__ == "__main__":
     place_arg = None
-    refresh_osm = False
-    refresh_lamas = False
+    force = False
     no_local_ai = False
-    
     if len(sys.argv) > 1:
-        # Assume the first argument that doesn't start with -- is the place name
-        for arg in sys.argv[1:]:
-            if not arg.startswith("--"):
-                place_arg = arg
-                break
-    
+        place_arg = sys.argv[1]
     if "--refresh" in sys.argv:
-        refresh_osm = True
-    
-    if "--refresh-lamas" in sys.argv:
-        refresh_lamas = True
-        
+        force = True
     no_ai = False
     if "--no-ai" in sys.argv:
         no_ai = True
     if "--no-local-ai" in sys.argv:
         no_local_ai = True
 
-    run_pipeline(place=place_arg, refresh_osm=refresh_osm, refresh_lamas=refresh_lamas, use_ai=(not no_ai), use_local_ai=(not no_local_ai))
+    run_pipeline(place=place_arg, force_refresh=force, use_ai=(not no_ai), use_local_ai=(not no_local_ai))

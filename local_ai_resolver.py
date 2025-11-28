@@ -16,7 +16,7 @@ import geopandas as gpd
 # Try to import the required libraries for local AI
 
 try:
-    from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
     import torch
     TRANSFORMERS_AVAILABLE = True
 except ImportError:
@@ -29,7 +29,7 @@ class LocalAIResolver:
     Handles local AI resolution using qwen3-VL-8b model.
     """
     
-    def __init__(self, model_name: str = "Qwen/Qwen3-VL-8B", device: str = "auto"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-VL-8B-Instruct", device: str = "auto"):
         """
         Initialize the local AI resolver.
         
@@ -45,6 +45,10 @@ class LocalAIResolver:
         
         if TRANSFORMERS_AVAILABLE:
             try:
+                # Attempt to clear CUDA cache before initializing model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    print("  -> Cleared CUDA cache.")
                 self._initialize_model()
             except Exception as e:
                 print(f"Failed to initialize local AI model: {e}")
@@ -64,14 +68,14 @@ class LocalAIResolver:
         # Load model with appropriate dtype based on device
         if self.device == "cuda":
             # Use bfloat16 for better performance on GPU
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
                 device_map="auto"
             )
         else:
             # Use float32 for CPU
-            self.model = Qwen2VLForConditionalGeneration.from_pretrained(
+            self.model = Qwen3VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.float32
             )
@@ -129,6 +133,7 @@ class LocalAIResolver:
     - שינויי איות או תרגומים
     - תוספת/השמטה של תואר (למשל "הרב", "דוקטור")
     - **במקרה של "בן עמר" מול "תאודור בן עמר" - זוהי התאמה טובה!**
+4. **התאמה בין ערבית לעברית:** שמות בערבית ובעברית יכולים להיות תרגומים או תעתיקים זה של זה. למשל, 'شارع السلام' בערבית הוא 'רחוב השלום' בעברית. כמו כן, 'אלסלאם' הוא תעתיק של 'السلام'. חפש התאמות כאלו.
 
 **פורמט התשובה (JSON בלבד):**
 ```json
