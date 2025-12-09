@@ -55,15 +55,16 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
     try:
         print(f"  [Worker] Starting pipeline for {settlement_name}...")
         
-        success = run_pipeline(
+        pipeline_result = run_pipeline(
             place=place_string,
             force_refresh=False,
             use_ai=use_ai,
             use_local_ai=use_local_ai
         )
         
-        result['pipeline_success'] = success
-        if success:
+        # Ensure pipeline_success is always a boolean
+        result['pipeline_success'] = bool(pipeline_result)
+        if result['pipeline_success']:
             result['status'] = 'success'
             result['message'] = 'Pipeline completed successfully'
         else:
