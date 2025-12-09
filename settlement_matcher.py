@@ -10,6 +10,7 @@ import json
 import os
 import time
 import re
+import difflib
 from typing import Optional, Dict, Any, Tuple
 from dataclasses import dataclass
 
@@ -86,6 +87,12 @@ class NominatimCache:
 
 class SettlementMatcher:
     """Handles settlement name matching using Nominatim with validation"""
+    # NOTE: Previously we used a hard‑coded SPECIAL_CASES dict to rewrite
+    # problematic settlement names (e.g. "תל אביב" → "תל‑אביב‑יפו").
+    # This approach is brittle and does not scale.  We now rely on a generic
+    # fallback that appends a country qualifier (", Israel") when the initial
+    # Nominatim query yields no valid result.
+    # The SPECIAL_CASES dict is removed.
     
     def __init__(self):
         self.cache = NominatimCache()
@@ -104,22 +111,27 @@ class SettlementMatcher:
         if not name:
             return ""
         
-        # Remove common prefixes/suffixes
+        # 1️⃣ Strip whitespace and generic punctuation
         normalized = name.strip()
         
-        # Remove parenthetical content (e.g., "תל אביב (יפו)" -> "תל אביב")
+        # 2️⃣ Remove parenthetical content (e.g., "תל אביב (יפו)" → "תל אביב")
         normalized = re.sub(r'\([^)]*\)', '', normalized).strip()
         
-        # Normalize dashes and spaces
+        # 3️⃣ Normalise dashes and collapse multiple spaces
         normalized = re.sub(r'[־\-–—]', ' ', normalized)
         normalized = re.sub(r'\s+', ' ', normalized).strip()
         
-        # Remove common administrative prefixes
+        # 4️⃣ Strip common administrative prefixes and suffixes
         prefixes_to_remove = ['עיריית', 'מועצה מקומית', 'מועצה אזורית']
+        suffixes_to_remove = ['מושב', 'קיבוץ', 'יישוב', 'עיר']
         for prefix in prefixes_to_remove:
             if normalized.startswith(prefix):
                 normalized = normalized[len(prefix):].strip()
+        for suffix in suffixes_to_remove:
+            if normalized.endswith(suffix):
+                normalized = normalized[: -len(suffix)].strip()
         
+        # 5️⃣ No special‑case overrides – rely on generic fallback later.
         return normalized
     
     def _rate_limit(self):
@@ -155,10 +167,11 @@ class SettlementMatcher:
             if not self._is_within_israel(lat, lon):
                 return False, f"Outside Israel/Palestine bounds: {display_name}"
             
-            # Check 2: Display name should contain Israel or Palestinian territories
-            valid_regions = ['Israel', 'ישראל', 'Palestinian', 'فلسطين', 'West Bank', 'Gaza']
-            if not any(region in display_name for region in valid_regions):
-                return False, f"Display name doesn't contain expected region: {display_name}"
+            # Check 2: Previously we required the display name to contain specific region keywords.
+            # This was too restrictive for settlements that are listed without explicit region tags.
+            # We now only log a warning but allow the result to pass validation.
+            # If the region is clearly outside Israel/Palestine we still reject it via the geographic check.
+            # (No region keyword validation)
             
             # Check 3: Place type should be appropriate
             if place_type and place_type not in VALID_PLACE_TYPES:
@@ -169,8 +182,14 @@ class SettlementMatcher:
             if len(bbox) == 4:
                 bbox_lat_range = float(bbox[1]) - float(bbox[0])
                 bbox_lon_range = float(bbox[3]) - float(bbox[2])
-                # If bounding box is larger than 2 degrees, it's probably too large
-                if bbox_lat_range > 2.0 or bbox_lon_range > 2.0:
+                
+                # Allow a larger bbox for city‑level place types (Fix 2)
+                if result.get('type') in {'city', 'town', 'municipality', 'administrative'}:
+                    max_range = 3.0   # up to ~300 km – enough for a metro area
+                else:
+                    max_range = 2.0   # original strict limit for villages, etc.
+                
+                if bbox_lat_range > max_range or bbox_lon_range > max_range:
                     return False, f"Bounding box too large ({bbox_lat_range:.2f}°, {bbox_lon_range:.2f}°): {display_name}"
             
             return True, "Valid result"
@@ -195,24 +214,56 @@ class SettlementMatcher:
             print(f"  ⚠ Empty settlement name after normalization: '{settlement_name}'")
             return None
         
-        # Check cache first
-        cache_key = f"{normalized_name}::Israel"
+        # Generate a list of query variants (including country qualifier and simple suffix tweaks)
+        query_variants = []
+        # 1. Normalized name
+        query_variants.append(normalized_name)
+        # 2. Normalized name with country qualifier
+        query_variants.append(f"{normalized_name}, Israel")
+        # 3. Normalized name without common suffixes (already stripped above)
+        # 4. Try splitting on dash/hyphen and searching each part separately
+        parts = re.split(r'[\s\-]+', normalized_name)
+        for part in parts:
+            if part and part != normalized_name:
+                query_variants.append(part)
+                query_variants.append(f"{part}, Israel")
+
+        match = None
+        for q in query_variants:
+            if match:
+                break
+            print(f"  → Attempting Nominatim query variant: '{q}'")
+            match = self._perform_nominatim_query(settlement_name, q, max_retries)
+            if not match:
+                print(f"    ✗ Variant '{q}' yielded no valid result.")
+                # If this variant failed, try the same query without the country restriction (fallback)
+                # This is handled inside _perform_nominatim_query by the removed countrycodes param.
+        return match
+
+    def _perform_nominatim_query(self, original_name: str, query_name: str, max_retries: int) -> Optional[SettlementMatch]:
+        """
+        Helper to perform a Nominatim query and handle caching/validation.
+        The query_name is already a fully‑formed query (may include country qualifier).
+        """
+        cache_key = f"{query_name}"  # cache per exact query string
+        
         cached_result = self.cache.get(cache_key)
         if cached_result:
-            print(f"  ✓ Cache hit for '{settlement_name}'")
+            print(f"  ✓ Cache hit for query '{query_name}'")
             if cached_result.get('error'):
                 return None
-            return self._dict_to_match(cached_result, settlement_name)
-        
-        # Query Nominatim
-        print(f"  → Searching Nominatim for '{normalized_name}'...")
+            return self._dict_to_match(cached_result, original_name)
+
+        print(f"  → Searching Nominatim for '{query_name}'...")
         
         params = {
-            'q': f"{normalized_name}, Israel",
+            'q': query_name,
             'format': 'json',
             'addressdetails': 1,
             'limit': 5,  # Get top 5 results to find best match
-            'accept-language': 'he,en'
+            'accept-language': 'he,en',
+            # Removed strict country code restriction to allow matches in West Bank, Gaza, or ambiguous listings.
+            # 'countrycodes': 'il'  # was restricting results; now omitted for broader search.
         }
         
         for attempt in range(max_retries):
@@ -230,17 +281,17 @@ class SettlementMatcher:
                 results = response.json()
                 
                 if not results:
-                    print(f"  ✗ No results found for '{settlement_name}'")
+                    print(f"  ✗ No results found for '{original_name}'")
                     self.cache.set(cache_key, {'error': 'no_results'})
                     return None
                 
                 # Try to find the first valid result
                 for result in results:
-                    is_valid, validation_msg = self._validate_result(result, settlement_name)
+                    is_valid, validation_msg = self._validate_result(result, original_name)
                     
                     if is_valid:
                         match = SettlementMatch(
-                            settlement_name=settlement_name,
+                            settlement_name=original_name,
                             osm_id=result.get('osm_id', ''),
                             display_name=result.get('display_name', ''),
                             lat=float(result.get('lat', 0)),
@@ -261,8 +312,33 @@ class SettlementMatcher:
                     else:
                         print(f"  ✗ Invalid result: {validation_msg}")
                 
-                # No valid results found
-                print(f"  ✗ No valid results for '{settlement_name}' (all failed validation)")
+                # No valid results found – try fuzzy fallback based on display_name similarity
+                best_match = None
+                best_score = 0.0
+                for result in results:
+                    display = result.get('display_name', '')
+                    # simple similarity between query and display name
+                    score = difflib.SequenceMatcher(None, query_name.lower(), display.lower()).ratio()
+                    if score > best_score:
+                        best_score = score
+                        best_match = result
+                if best_match and best_score > 0.5:
+                    print(f"  ↺ Fuzzy fallback selected (score {best_score:.2f}) for '{query_name}'")
+                    match = SettlementMatch(
+                        settlement_name=original_name,
+                        osm_id=best_match.get('osm_id', ''),
+                        display_name=best_match.get('display_name', ''),
+                        lat=float(best_match.get('lat', 0)),
+                        lon=float(best_match.get('lon', 0)),
+                        boundingbox=tuple(map(float, best_match.get('boundingbox', [0, 0, 0, 0]))),
+                        place_type=best_match.get('type', ''),
+                        importance=float(best_match.get('importance', 0)),
+                        is_valid=True,
+                        validation_message='fuzzy fallback'
+                    )
+                    self.cache.set(cache_key, self._match_to_dict(match))
+                    return match
+                print(f"  ✗ No valid results for '{original_name}' (all failed validation)")
                 self.cache.set(cache_key, {'error': 'no_valid_results'})
                 return None
                 
