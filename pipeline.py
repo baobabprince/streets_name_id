@@ -278,9 +278,10 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
             # If a dict is provided, use it directly for OSM. Use its display_name for logging.
             chosen_place_str = place.get('display_name', 'unknown_place')
         elif isinstance(place, str):
-            # If a string is provided, append ", Israel" for disambiguation
+            # If a string is provided, append ", Israel" for disambiguation if country not present
             chosen_place_str = place
-            if "israel" not in chosen_place_str.lower() and "palestine" not in chosen_place_str.lower():
+            lower_place = chosen_place_str.lower()
+            if "israel" not in lower_place and "palestine" not in lower_place and "ישראל" not in chosen_place_str and "פלסטין" not in chosen_place_str:
                 chosen_place_str = f"{chosen_place_str}, Israel"
             place_obj_for_osm = chosen_place_str
         else:
