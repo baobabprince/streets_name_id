@@ -257,10 +257,11 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
 #                                 ORCHESTRATION START
 # ----------------------------------------------------------------------------------
 
-def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False):
+def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False, output_name: str = None):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
     'place' can be a string for a search query, or a dict from Nominatim.
+    'output_name' is an optional identifier for the output files (e.g. original settlement name).
     """
     print("--- Starting Street Mapping Orchestrator ---")
     if not API_KEY:
@@ -288,6 +289,12 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
             place_obj_for_osm = chosen_place_str
 
         print(f"Using place: {chosen_place_str}")
+        
+        # Determine the identifier to use for file naming (reports, cache, html)
+        # If output_name is provided, use that (e.g. for batch processing unique settlements)
+        # Otherwise use the place string
+        file_identifier = output_name if output_name else chosen_place_str
+        
         LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
         
         # Pass the correct object (dict or string) to the fetcher
@@ -344,8 +351,8 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
         osm_gdf['city'] = _normalize_city(osm_gdf['city'])
         
         # Save intermediate normalized data
-        _save_intermediate_df(LAMAS_df, "step1_lamas_raw", chosen_place_str)
-        _save_intermediate_df(osm_gdf, "step1_osm_raw", chosen_place_str)
+        _save_intermediate_df(LAMAS_df, "step1_lamas_raw", file_identifier)
+        _save_intermediate_df(osm_gdf, "step1_osm_raw", file_identifier)
         
     except Exception as e:
         print(f"FATAL ERROR during Data Acquisition: {e}")
@@ -377,8 +384,8 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
         print("No streets can be matched without names.")
         return PipelineStatus.NO_DATA
 
-    _save_intermediate_df(LAMAS_df, "step2_lamas_normalized", chosen_place_str)
-    _save_intermediate_df(osm_gdf, "step2_osm_normalized", chosen_place_str)
+    _save_intermediate_df(LAMAS_df, "step2_lamas_normalized", file_identifier)
+    _save_intermediate_df(osm_gdf, "step2_osm_normalized", file_identifier)
     
     # STEP 3: Topology (Adjacency)
     print("\n[Step 3/7] Building Adjacency Map (Topology)...")
@@ -400,7 +407,7 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
     
     candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
     
-    _save_intermediate_df(candidates_df, "step4_candidates", chosen_place_str)
+    _save_intermediate_df(candidates_df, "step4_candidates", file_identifier)
 
     # STEP 5: AI Resolution (CREATES ai_decisions_df)
     print("\n[Step 5/7] (Optional) Invoking AI for ambiguous cases...")
@@ -533,7 +540,7 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
 
     # ensure DataFrame has expected columns even if empty
     ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id', 'ai_confidence', 'ai_reasoning', 'ai_method'])
-    _save_intermediate_df(ai_decisions_df, "step5_ai_decisions", chosen_place_str)
+    _save_intermediate_df(ai_decisions_df, "step5_ai_decisions", file_identifier)
 
     # STEP 6: Final Merge and Mapping
     print("\n[Step 6/7] Merging results to create final diagnostic table...")
@@ -578,7 +585,7 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
     )
 
     # Export final diagnostic report to CSV (new comprehensive file)
-    _save_intermediate_df(diagnostic_df_full, "diagnostic_report", chosen_place_str)
+    _save_intermediate_df(diagnostic_df_full, "diagnostic_report", file_identifier)
     
     # Merge final mapping back into GeoDataFrame for visualization (Step 7)
     osm_gdf_final = osm_gdf.merge(diagnostic_df_full[['osm_id', 'final_LAMAS_id']], on='osm_id', how='left')
@@ -611,7 +618,7 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
             from generate_html import create_html_from_gdf
             os.makedirs("HTML", exist_ok=True)
             # Pass the GeoDataFrame and the new diagnostics object
-            create_html_from_gdf(diagnostic_df_full, chosen_place_str, diagnostics)
+            create_html_from_gdf(diagnostic_df_full, file_identifier, diagnostics)
         except Exception as e:
             print(f"Warning: failed to generate HTML visualization: {e}")
     
