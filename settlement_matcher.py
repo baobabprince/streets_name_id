@@ -10,9 +10,8 @@ import json
 import os
 import time
 import re
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 from dataclasses import dataclass
-
 # Geographic bounds for Israel/Palestine (min_lat, min_lon, max_lat, max_lon)
 ISRAEL_BOUNDS = (29.0, 34.0, 33.5, 36.0)
 
@@ -91,37 +90,59 @@ class SettlementMatcher:
     def __init__(self):
         self.cache = NominatimCache()
         self.last_request_time = 0
-    
-    def normalize_settlement_name(self, name: str) -> str:
-        """
-        Normalize settlement name for better Nominatim matching.
+        self.translit_map = self._load_translit_map()
+
+    def _load_translit_map(self) -> Dict:
+        map_path = os.path.join(os.path.dirname(__file__), "transliteration_map.json")
+        if os.path.exists(map_path):
+            try:
+                with open(map_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"  ⚠ Warning: Failed to load transliteration map: {e}")
+        return {}
+
+    def _transliterate_he_to_en(self, text: str) -> Optional[str]:
+        return self.translit_map.get(text)
+
+    def generate_name_variations(self, name: str) -> List[str]:
+        variations = set()
+        original_name = name.strip()
+        variations.add(original_name)
+
+        # Handle parentheticals
+        parenthetical_match = re.search(r'\(([^)]+)\)', original_name)
+        if parenthetical_match:
+            description = parenthetical_match.group(1).strip()
+            base_name = re.sub(r'\([^)]*\)', '', original_name).strip()
+            variations.add(base_name)
+            variations.add(f"{description} {base_name}")
+            variations.add(f"{base_name} {description}")
+
+        # Handle hyphens and geresh
+        processed_variations = set()
+        for v in list(variations):
+            processed_variations.add(v)
+            if '-' in v:
+                processed_variations.add(v.replace('-', ' '))
+            if '–' in v:
+                processed_variations.add(v.replace('–', ' '))
+            if '’' in v:
+                processed_variations.add(v.replace('’', ''))
+            if "'" in v:
+                processed_variations.add(v.replace("'", ""))
+        variations.update(processed_variations)
         
-        Args:
-            name: Original settlement name from LAMAS
-            
-        Returns:
-            Normalized settlement name
-        """
-        if not name:
-            return ""
-        
-        # Remove common prefixes/suffixes
-        normalized = name.strip()
-        
-        # Remove parenthetical content (e.g., "תל אביב (יפו)" -> "תל אביב")
-        normalized = re.sub(r'\([^)]*\)', '', normalized).strip()
-        
-        # Normalize dashes and spaces
-        normalized = re.sub(r'[־\-–—]', ' ', normalized)
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
-        
-        # Remove common administrative prefixes
-        prefixes_to_remove = ['עיריית', 'מועצה מקומית', 'מועצה אזורית']
-        for prefix in prefixes_to_remove:
-            if normalized.startswith(prefix):
-                normalized = normalized[len(prefix):].strip()
-        
-        return normalized
+        # Add transliterations
+        transliterated_variations = set()
+        for v in list(variations): # use list to avoid iterating over a changing set
+            transliterated = self._transliterate_he_to_en(v)
+            if transliterated:
+                transliterated_variations.add(transliterated)
+        variations.update(transliterated_variations)
+
+        return sorted(list(variations), key=len, reverse=True)
+
     
     def _rate_limit(self):
         """Enforce Nominatim rate limiting"""
@@ -175,107 +196,94 @@ class SettlementMatcher:
             return False, f"Validation error: {e}"
     
     def search_settlement(self, settlement_name: str, max_retries: int = 3) -> Optional[SettlementMatch]:
-        """
-        Search for a settlement using Nominatim with validation.
-        
-        Args:
-            settlement_name: Name of the settlement to search
-            max_retries: Maximum number of retry attempts
-            
-        Returns:
-            SettlementMatch object if found and valid, None otherwise
-        """
-        normalized_name = self.normalize_settlement_name(settlement_name)
-        
-        if not normalized_name:
-            print(f"  ⚠ Empty settlement name after normalization: '{settlement_name}'")
-            return None
-        
-        search_queries = [
-            f"{normalized_name}, Israel",
-            f"{normalized_name}, Judea and Samaria",
-            f"{normalized_name}, West Bank",
-            normalized_name
-        ]
+        name_variations = self.generate_name_variations(settlement_name)
 
-        for query in search_queries:
-            # Check cache first
-            cache_key = f"{query}"
-            cached_result = self.cache.get(cache_key)
-            if cached_result:
-                print(f"  ✓ Cache hit for '{settlement_name}'")
-                if cached_result.get('error'):
-                    continue
-                return self._dict_to_match(cached_result, settlement_name)
+        for name_variation in name_variations:
+            search_queries = [
+                f"{name_variation}, Israel",
+                f"{name_variation}, Judea and Samaria",
+                f"{name_variation}, West Bank",
+                name_variation
+            ]
 
-            # Query Nominatim
-            print(f"  → Searching Nominatim for '{query}'...")
+            for query in search_queries:
+                # Check cache first
+                cache_key = f"{query}"
+                cached_result = self.cache.get(cache_key)
+                if cached_result:
+                    print(f"  ✓ Cache hit for '{settlement_name}' with query '{query}'")
+                    if cached_result.get('error'):
+                        continue
+                    return self._dict_to_match(cached_result, settlement_name)
 
-            params = {
-                'q': query,
-                'format': 'json',
-                'addressdetails': 1,
-                'limit': 5,  # Get top 5 results to find best match
-                'accept-language': 'he,en'
-            }
+                # Query Nominatim
+                print(f"  → Searching Nominatim for '{query}'...")
 
-            for attempt in range(max_retries):
-                try:
-                    self._rate_limit()
+                params = {
+                    'q': query,
+                    'format': 'json',
+                    'addressdetails': 1,
+                    'limit': 5,  # Get top 5 results to find best match
+                    'accept-language': 'he,en'
+                }
 
-                    response = requests.get(
-                        NOMINATIM_URL,
-                        params=params,
-                        headers={'User-Agent': USER_AGENT},
-                        timeout=10
-                    )
-                    response.raise_for_status()
+                for attempt in range(max_retries):
+                    try:
+                        self._rate_limit()
 
-                    results = response.json()
+                        response = requests.get(
+                            NOMINATIM_URL,
+                            params=params,
+                            headers={'User-Agent': USER_AGENT},
+                            timeout=10
+                        )
+                        response.raise_for_status()
 
-                    if not results:
-                        print(f"  ✗ No results found for '{query}'")
-                        self.cache.set(cache_key, {'error': 'no_results'})
-                        break
+                        results = response.json()
 
-                    # Try to find the first valid result
-                    for result in results:
-                        is_valid, validation_msg = self._validate_result(result, settlement_name)
+                        if not results:
+                            print(f"  ✗ No results found for '{query}'")
+                            self.cache.set(cache_key, {'error': 'no_results'})
+                            break
 
-                        if is_valid:
-                            match = SettlementMatch(
-                                settlement_name=settlement_name,
-                                osm_id=result.get('osm_id', ''),
-                                display_name=result.get('display_name', ''),
-                                lat=float(result.get('lat', 0)),
-                                lon=float(result.get('lon', 0)),
-                                boundingbox=tuple(map(float, result.get('boundingbox', [0, 0, 0, 0]))),
-                                place_type=result.get('type', ''),
-                                importance=float(result.get('importance', 0)),
-                                is_valid=True,
-                                validation_message=validation_msg
-                            )
+                        # Try to find the first valid result
+                        for result in results:
+                            is_valid, validation_msg = self._validate_result(result, settlement_name)
 
-                            print(f"  ✓ Valid match: {match.display_name}")
+                            if is_valid:
+                                match = SettlementMatch(
+                                    settlement_name=settlement_name,
+                                    osm_id=result.get('osm_id', ''),
+                                    display_name=result.get('display_name', ''),
+                                    lat=float(result.get('lat', 0)),
+                                    lon=float(result.get('lon', 0)),
+                                    boundingbox=tuple(map(float, result.get('boundingbox', [0, 0, 0, 0]))),
+                                    place_type=result.get('type', ''),
+                                    importance=float(result.get('importance', 0)),
+                                    is_valid=True,
+                                    validation_message=validation_msg
+                                )
 
-                            # Cache the result
-                            self.cache.set(cache_key, self._match_to_dict(match))
+                                print(f"  ✓ Valid match: {match.display_name}")
 
-                            return match
+                                # Cache the result
+                                self.cache.set(cache_key, self._match_to_dict(match))
+
+                                return match
+                            else:
+                                print(f"  ✗ Invalid result: {validation_msg}")
+
+                        # No valid results found in this list, cache this failure
+                        print(f"  ✗ No valid results for '{query}' (all failed validation)")
+                        self.cache.set(cache_key, {'error': 'no_valid_results'})
+                        break  # Move to next attempt
+
+                    except requests.exceptions.RequestException as e:
+                        print(f"  ⚠ Request error (attempt {attempt + 1}/{max_retries}): {e}")
+                        if attempt < max_retries - 1:
+                            time.sleep(2 ** attempt)  # Exponential backoff
                         else:
-                            print(f"  ✗ Invalid result: {validation_msg}")
-                    
-                    # No valid results found in this list, cache this failure
-                    print(f"  ✗ No valid results for '{query}' (all failed validation)")
-                    self.cache.set(cache_key, {'error': 'no_valid_results'})
-                    break  # Move to next attempt
-
-                except requests.exceptions.RequestException as e:
-                    print(f"  ⚠ Request error (attempt {attempt + 1}/{max_retries}): {e}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                    else:
-                        self.cache.set(cache_key, {'error': f'request_failed: {e}'})
+                            self.cache.set(cache_key, {'error': f'request_failed: {e}'})
         
         # If all search queries fail
         print(f"  ✗ All search queries for '{settlement_name}' failed.")

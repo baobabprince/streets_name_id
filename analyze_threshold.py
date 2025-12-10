@@ -10,7 +10,6 @@
 """
 
 import sys
-import os
 import pandas as pd
 from normalization import find_fuzzy_candidates, normalize_street_name
 
@@ -65,71 +64,20 @@ if __name__ == "__main__":
     
     city = sys.argv[1]
     
-    # Find matching files in data directory
-    data_dir = "data"
-    osm_files = [f for f in os.listdir(data_dir) if f.startswith(f"step2_osm_normalized_{city}") and f.endswith(".pkl")]
-    lamas_files = [f for f in os.listdir(data_dir) if f.startswith(f"step2_lamas_normalized_{city}") and f.endswith(".pkl")]
-    
-    if not osm_files or not lamas_files:
-        print(f"Error: Could not find normalized data files for city query '{city}' in {data_dir}")
-        print(f"Make sure you have run the pipeline for this city first.")
-        sys.exit(1)
-        
-    osm_file = os.path.join(data_dir, osm_files[0])
-    lamas_file = os.path.join(data_dir, lamas_files[0])
-    
-    print(f"Using OSM file: {osm_file}")
-    print(f"Using LAMAS file: {lamas_file}")
+    # Construct file paths based on city name
+    osm_file = f"data/{city}_OSM.csv"
+    lamas_file = f"data/{city}_LAMAS.csv"
     
     try:
-        # Load pickle files directly
-        print("Loading data...")
-        osm_df = pd.read_pickle(osm_file)
-        lamas_df = pd.read_pickle(lamas_file)
+        results = analyze_threshold_impact(osm_file, lamas_file)
         
-        # Filter LAMAS data for the specific city if needed
-        # (The pipeline does this in step 4, we should replicate or rely on correct data)
-        if 'city' in osm_df.columns and not osm_df.empty:
-            city_name = osm_df['city'].iloc[0]
-            print(f"Filtering LAMAS data for city: {city_name}")
-            lamas_df = lamas_df[lamas_df['city'] == city_name]
-        
-        print(f"\nAnalyzing {len(osm_df)} OSM streets against {len(lamas_df)} LAMAS streets...")
-        
-        # Run fuzzy matching
-        candidates_df = find_fuzzy_candidates(osm_df, lamas_df)
-        
-        # Additional analysis
-        print("\n" + "="*60)
-        print("SAMPLE STREETS BY CATEGORY")
-        print("="*60)
-        
-        for status in ['CONFIDENT', 'NEEDS_AI', 'MISSING']:
-            status_df = candidates_df[candidates_df['status'] == status]
-            if not status_df.empty:
-                print(f"\n{status} ({len(status_df)} streets):")
-                # Merge with OSM data to get street names
-                merged = status_df.merge(osm_df[['osm_id', 'normalized_name']], on='osm_id')
-                if 'osm_name' in osm_df.columns:
-                     merged = merged.merge(osm_df[['osm_id', 'osm_name']], on='osm_id', suffixes=('', '_orig'))
-                
-                # Show top 5 examples
-                sample = merged.head(5)
-                for _, row in sample.iterrows():
-                    osm_name = row.get('osm_name', row['normalized_name'])
-                    lamas_name = row.get('best_LAMAS_name', 'N/A')
-                    score = row['best_score']
-                    print(f"  • OSM: '{osm_name}' → LAMAS: '{lamas_name}' (Score: {score:.2f})")
-        
-        print("="*60)
-        
-        # Save results
+        # Save results for further analysis
         output_file = f"data/{city}_threshold_analysis.csv"
-        candidates_df.to_csv(output_file, index=False)
+        results.to_csv(output_file, index=False)
         print(f"\nResults saved to: {output_file}")
         
-    except Exception as e:
-        print(f"Error analyzing thresholds: {e}")
-        import traceback
-        traceback.print_exc()
+    except FileNotFoundError as e:
+        print(f"Error: Could not find data files for city '{city}'")
+        print(f"Looking for: {osm_file} and {lamas_file}")
+        print(f"\nMake sure to run the pipeline first to generate these files.")
         sys.exit(1)
