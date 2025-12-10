@@ -64,11 +64,13 @@ if __name__ == "__main__":
         sys.exit(1)
     
     city = sys.argv[1]
+    # Handle spaces in city name as they are saved with underscores
+    city_safe = city.replace(' ', '_')
     
     # Find matching files in data directory
     data_dir = "data"
-    osm_files = [f for f in os.listdir(data_dir) if f.startswith(f"step2_osm_normalized_{city}") and f.endswith(".pkl")]
-    lamas_files = [f for f in os.listdir(data_dir) if f.startswith(f"step2_lamas_normalized_{city}") and f.endswith(".pkl")]
+    osm_files = [f for f in os.listdir(data_dir) if f.startswith(f"step2_osm_normalized_{city_safe}") and f.endswith(".pkl")]
+    lamas_files = [f for f in os.listdir(data_dir) if f.startswith(f"step2_lamas_normalized_{city_safe}") and f.endswith(".pkl")]
     
     if not osm_files or not lamas_files:
         print(f"Error: Could not find normalized data files for city query '{city}' in {data_dir}")

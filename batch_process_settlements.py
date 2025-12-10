@@ -59,7 +59,8 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
             place=place_string,
             force_refresh=False,
             use_ai=use_ai,
-            use_local_ai=use_local_ai
+            use_local_ai=use_local_ai,
+            output_name=settlement_name
         )
         
         # Ensure pipeline_success is always a boolean

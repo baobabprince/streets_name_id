@@ -83,8 +83,8 @@ def normalize_street_name(name):
 
 
 def find_fuzzy_candidates(osm_gdf, lamas_df, 
-                         confident_threshold: int = 90,
-                         needs_ai_threshold: int = 60):
+                         confident_threshold: int = 70,
+                         needs_ai_threshold: int = 50):
     """
     Find fuzzy match candidates between OSM and LAMAS street data.
     
@@ -94,8 +94,8 @@ def find_fuzzy_candidates(osm_gdf, lamas_df,
     Args:
         osm_gdf: GeoDataFrame with OSM street data (must have 'normalized_name' and 'osm_id')
         lamas_df: DataFrame with LAMAS street data (must have 'normalized_name', 'LAMAS_id', 'LAMAS_name')
-        confident_threshold: Score threshold for confident matches (default: 95)
-        needs_ai_threshold: Score threshold for ambiguous matches that need AI (default: 80)
+        confident_threshold: Score threshold for confident matches (default: 70)
+        needs_ai_threshold: Score threshold for ambiguous matches that need AI (default: 50)
         
     Returns:
         DataFrame with columns: osm_id, status, best_score, best_LAMAS_id, best_LAMAS_name, all_candidates
@@ -130,11 +130,11 @@ def find_fuzzy_candidates(osm_gdf, lamas_df,
             score_token_sort = fuzz.token_sort_ratio(osm_name, lamas_name)
             score_token_set = fuzz.token_set_ratio(osm_name, lamas_name)
 
-            # Weighted average
-            # ratio: strict exact match (handles typos well)
-            # token_sort_ratio: handles word order differences
-            # token_set_ratio: (handles partial matches/subset of words)
-            score = (score_ratio * 0.4) + (score_token_sort * 0.3) + (score_token_set * 0.3)
+            # Weighted average - Adjusted for higher permissiveness
+            # ratio (30%): strict exact match
+            # token_sort_ratio (30%): handles word order differences
+            # token_set_ratio (40%): handles partial matches/subset of words (higher importance now)
+            score = (score_ratio * 0.3) + (score_token_sort * 0.3) + (score_token_set * 0.4)
             
             if score >= needs_ai_threshold:
                 matches.append({
