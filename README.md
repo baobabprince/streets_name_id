@@ -1,47 +1,35 @@
-cond# Street Name Synonym Mapper
+# Street Name Synonym Mapper
 
-This project provides a comprehensive pipeline to map street names from OpenStreetMap (OSM) to their official LAMAS IDs, leveraging fuzzy matching, topological analysis, and an optional AI-driven resolution for ambiguous cases. The system is designed to handle variations in street names, including abbreviations and synonyms, by using an official government data source that includes synonym information.
+This project provides a comprehensive pipeline to map street names from OpenStreetMap (OSM) to their official LAMAS (Central Bureau of Statistics) IDs. It leverages fuzzy matching, topological analysis, and a two-tier AI resolution system (Local AI + Cloud AI) to handle variations in street names, abbreviations, and synonyms.
 
 ## Features
 
 - **Automated Data Fetching:** Downloads the latest street data from both OSM and the official Israeli government data portal (data.gov.il).
-- **Intelligent Normalization:** Standardizes street names by expanding abbreviations (e.g., 'שד' -> 'שדרות') and cleaning punctuation to ensure consistent comparisons.
-- **Fuzzy Matching:** Utilizes fuzzy logic to identify potential matches between OSM and LAMAS street names, even when they are not identical.
-- **Topological Context:** Builds an adjacency map of connected streets from OSM to provide geographical context, which can help in resolving ambiguous matches.
-- **Synonym Integration:** Leverages a LAMAS data source that includes official street name synonyms, significantly improving match rates.
-- **AI-Powered Resolution (Optional):** For complex cases, the pipeline can consult a generative AI model (Google's Gemini) to make a final decision based on all available context.
-- **Caching:** Caches downloaded data to speed up subsequent runs and reduce redundant API calls.
-- **Exportable Results:** Saves the final mapping and intermediate analysis files to CSV for easy inspection and use in other systems.
+- **Intelligent Normalization:** Standardizes street names by expanding abbreviations (e.g., 'שד' -> 'שדרות') and cleaning punctuation.
+- **Fuzzy Matching:** Utilizes fuzzy logic to identify potential matches between OSM and LAMAS street names.
+- **Topological Context:** Builds an adjacency map of connected streets to provide geographical context for resolving ambiguous matches.
+- **Two-Tier AI Resolution:**
+    - **Local AI:** Uses a local embedding/reasoning model (if available) for fast, free resolution of ambiguous cases.
+    - **Cloud AI (Gemini):** Falls back to Google's Gemini model for complex cases if local resolution fails or is disabled.
+- **Batch Processing:** Supports parallel processing of multiple settlements with robust error handling.
+- **Visual Reports:** Generates interactive HTML maps showing matched/unmatched streets and diagnostic statistics.
 
 ## Logic and Methodology
 
-The pipeline operates in a series of sequential steps to achieve a high-quality mapping:
+The pipeline operates in a series of sequential steps:
 
-1.  **Data Acquisition:**
-    *   Fetches all official street names and their synonyms from the `data.gov.il` API. This data includes a unique `official_code` for each street, which serves as the LAMAS ID.
-    *   Fetches all street geometries for a specified city (e.g., "בית שאן") from OpenStreetMap using the Overpass API.
-
-2.  **Preprocessing and Normalization:**
-    *   Both the OSM and LAMAS street names are passed through a normalization function. This function expands common abbreviations (like `שד`, `רח`, `כי`), removes punctuation, and standardizes whitespace. This ensures that, for example, "שד' רוטשילד" and "שדרות רוטשילד" are treated as identical.
-
-3.  **Topological Analysis:**
-    *   The pipeline analyzes the OSM data to understand which streets are connected to each other. It builds an "adjacency map" (a dictionary where each key is a street ID and the value is a list of adjacent street IDs). This map provides crucial geographic context for resolving ambiguities later.
-
+1.  **Data Acquisition:** Fetches official street codes from LAMAS and street geometries from OSM.
+2.  **Preprocessing:** Normalizes street names in both datasets (standardizing abbreviations, removing punctuation).
+3.  **Topological Analysis:** Builds a graph of connected streets in OSM to understand neighbor relationships.
 4.  **Candidate Matching:**
-    *   For each street in the OSM dataset, the system performs a fuzzy match against all LAMAS streets in the same city.
-    *   It calculates a weighted similarity score based on several fuzzy matching algorithms.
-    *   Matches with a very high score (>= 98) are marked as **'CONFIDENT'**.
-    *   Matches with a good but not perfect score (80-98) are marked as **'NEEDS_AI'**.
-    *   Streets with no good matches are marked as **'MISSING'**.
-
-5.  **AI Resolution (Optional):**
-    *   If enabled, all streets marked as 'NEEDS_AI' are sent to a generative AI model.
-    *   A detailed prompt is constructed, including the OSM street name, its adjacent streets (from the topology map), and the list of potential LAMAS candidates with their fuzzy scores.
-    *   The AI is instructed to act as a GIS expert and return the single best LAMAS ID or 'None' if no candidate is a clear match.
-
-6.  **Final Merging and Output:**
-    *   The system combines the 'CONFIDENT' matches with the successful AI-resolved matches to create the final mapping.
-    *   This final mapping, along with intermediate dataframes, is saved to the `data/` directory.
+    - **Confident:** Exact or high-score fuzzy matches (>= 98).
+    - **Needs AI:** Ambiguous matches (score 80-98) sent for further resolution.
+    - **Missing:** Streets with no plausible candidates in the official registry.
+5.  **AI Resolution:**
+    - Streets marked 'NEEDS_AI' are first checked by the Local AI resolver.
+    - If unresolved, they are sent to the Gemini API (if key provided).
+    - The AI is given the street name, its neighbors, and the list of official candidates to make a decision.
+6.  **Reporting:** Merges results and generates CSV reports and HTML visualizations.
 
 ## Installation
 
@@ -58,54 +46,80 @@ The pipeline operates in a series of sequential steps to achieve a high-quality 
     pip install -r requirements.txt
     ```
 
-3.  **Set up the AI (Optional):**
-    If you wish to use the AI resolution feature, you must obtain a Gemini API key from Google AI Studio and set it as an environment variable.
+3.  **Set up Cloud AI (Optional):**
+    To use the Gemini fallback for difficult cases, set your API key:
     ```bash
     export GEMINI_API_KEY="YOUR_API_KEY_HERE"
     ```
-    If you do not set this key, the pipeline will run but will skip the AI resolution step.
 
-## How to Run the Pipeline
+## Usage
 
-You can run the entire pipeline from the command line using `pipeline.py`.
+### 1. Single Settlement (`pipeline.py`)
 
-### Basic Usage
-
-To run the pipeline for a specific city, provide the city name as an argument.
+Run the pipeline for a specific city or settlement.
 
 ```bash
-python pipeline.py "בית שאן"
+python pipeline.py "Settlement Name" [OPTIONS]
 ```
 
-### Command-Line Arguments
+**Examples:**
+```bash
+# Run for Tel Aviv with full AI resolution
+python pipeline.py "Tel Aviv-Yafo"
 
--   **`place` (string):** The only required argument. The name of the city or place to process (e.g., `"תל אביב-יפו"`).
--   **`--no-ai`:** (Optional) Runs the pipeline without consulting the AI for ambiguous cases. This is useful for faster runs or if you don't have an API key.
--   **`--refresh`:** (Optional) Forces the script to re-download all data from the APIs, ignoring any cached data. Use this if you want to ensure you have the absolute latest data.
+# Run without any AI (only fuzzy matching)
+python pipeline.py "Haifa" --no-ai
 
-### Examples
+# Force data refresh (ignore cache)
+python pipeline.py "Eilat" --refresh
+```
 
--   **Run for Tel Aviv with AI resolution:**
-    ```bash
-    python pipeline.py "Tel Aviv-Yafo, Israel"
-    ```
+**Arguments:**
+- `place`: Name of the settlement (e.g., "Tel Aviv").
+- `--refresh`: Force re-download of data from APIs.
+- `--no-ai`: Disable all AI resolution.
+- `--no-local-ai`: Skip the local model and go straight to Gemini (or skip if no API key).
 
--   **Run for Beit She'an without AI and force a data refresh:**
-    ```bash
-    python pipeline.py "בית שאן" --no-ai --refresh
-    ```
+### 2. Batch Processing (`batch_process_settlements.py`)
+
+Process multiple settlements automatically. This script reads the list of all settlements from the LAMAS file and processes them.
+
+```bash
+python batch_process_settlements.py [OPTIONS]
+```
+
+**Examples:**
+```bash
+# Process all settlements using 4 parallel workers, with AI enabled
+python batch_process_settlements.py --workers 4 --use-ai
+
+# Test run: process only the first 5 settlements, no AI
+python batch_process_settlements.py --limit 5
+```
+
+**Arguments:**
+- `--workers N`: Number of parallel processes (default: 1).
+- `--use-ai`: Enable AI resolution (disabled by default in batch mode to save costs/time).
+- `--limit N`: Process only the first N settlements.
+- `--dry-run`: Print what would be done without running.
+- `--skip-html`: Don't generate HTML reports (saves time).
+- `--force`: Reprocess settlements even if they are already done.
+
+### 3. Generating the Index
+
+After running a batch, you can generate a master `index.html` linking to all individual reports:
+
+```bash
+python generate_index.py
+```
 
 ## Outputs
 
-The pipeline generates several files in the `data/` directory:
-
--   **`LAMAS_data.pkl`:** A cached pickle file of the raw data fetched from the LAMAS API.
--   **`osm_data_{place}.pkl`:** A cached pickle file of the GeoDataFrame containing street data from OSM for the specified place.
--   **`final_mapping_{place}.csv`:** The main output file. This CSV contains the final mapping between `osm_id`, `osm_name`, and the matched `final_LAMAS_id`.
--   **`analysis_{place}_{timestamp}_candidates.csv`:** (Generated by `analyze_results.py`) A detailed breakdown of all potential candidates considered for each OSM street.
--   **`analysis_{place}_{timestamp}_needs_ai.csv`:** (Generated by `analyze_results.py`) A filtered list of streets that were sent for AI resolution.
--   **`analysis_{place}_{timestamp}_merged_with_final.csv`:** (Generated by `analyze_results.py`) The final mapping merged with the intermediate candidate data for full traceability.
+- **`data/`**: functionality caches (PKL files) and intermediate CSVs.
+- **`HTML/`**: Individual HTML reports for each settlement (e.g., `Tel_Aviv_report.html`).
+- **`batch_reports/`**: Logs and summary CSVs from batch runs.
+- **`index.html`**: The main dashboard linking to all generated reports.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
