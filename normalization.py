@@ -68,21 +68,10 @@ def normalize_street_name(name):
     # Remove punctuation (dots, commas, quotes, etc.)
     name = re.sub(r'[.,;:!?\'"(){}[\]]', '', name)
     
-    # Remove common street type prefixes at the beginning
-    # This helps match "חטיבת הנגב" with "שדרות חטיבת הנגב"
-    street_type_prefixes = [
-        r'^\s*שדרות\s+',
-        r'^\s*רחוב\s+',
-        r'^\s*סמטה\s+',
-        r'^\s*סמטת\s+',
-        r'^\s*דרך\s+',
-        r'^\s*משעול\s+',
-        r'^\s*שביל\s+',
-        r'^\s*מעלה\s+',
-    ]
-    
-    for prefix_pattern in street_type_prefixes:
-        name = re.sub(prefix_pattern, '', name)
+    # Aggressive prefix removal (e.g. removing "Rehov") is removed here 
+    # to avoid ambiguity between e.g. "Rehov Hagefen" and "Simtat Hagefen".
+    # The improved fuzzy matching (token_set_ratio) will handle the presence/absence of these words.
+
     
     # Normalize whitespace (multiple spaces -> single space)
     name = re.sub(r'\s+', ' ', name)
@@ -94,8 +83,8 @@ def normalize_street_name(name):
 
 
 def find_fuzzy_candidates(osm_gdf, lamas_df, 
-                         confident_threshold: int = 95,
-                         needs_ai_threshold: int = 80):
+                         confident_threshold: int = 85,
+                         needs_ai_threshold: int = 60):
     """
     Find fuzzy match candidates between OSM and LAMAS street data.
     
@@ -136,8 +125,16 @@ def find_fuzzy_candidates(osm_gdf, lamas_df,
             if pd.isna(lamas_name):
                 continue
                 
-            # Calculate fuzzy match score
-            score = fuzz.ratio(osm_name, lamas_name)
+            # Calculate fuzzy match score using weighted average
+            score_ratio = fuzz.ratio(osm_name, lamas_name)
+            score_token_sort = fuzz.token_sort_ratio(osm_name, lamas_name)
+            score_token_set = fuzz.token_set_ratio(osm_name, lamas_name)
+
+            # Weighted average
+            # ratio: strict exact match (handles typos well)
+            # token_sort_ratio: handles word order differences
+            # token_set_ratio: (handles partial matches/subset of words)
+            score = (score_ratio * 0.4) + (score_token_sort * 0.3) + (score_token_set * 0.3)
             
             if score >= needs_ai_threshold:
                 matches.append({
