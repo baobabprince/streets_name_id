@@ -44,7 +44,7 @@ def fetch_all_LAMAS_data():
 
         except requests.exceptions.RequestException as e:
             print(f"שגיאה במהלך שליפת ה-API ב-offset {offset}: {e}")
-            break # יציאה מהלולאה במקרה של שגיאה
+            raise e # מעלה את השגיאה הלאה כדי לא לשמור נתונים חלקיים
 
     if all_records:
         LAMAS_raw_df = pd.DataFrame(all_records)
