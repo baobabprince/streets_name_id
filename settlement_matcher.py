@@ -263,7 +263,9 @@ class SettlementMatcher:
                         else:
                             print(f"  ✗ Invalid result: {validation_msg}")
                     
-                    # No valid results found in this list
+                    # No valid results found in this list, cache this failure
+                    print(f"  ✗ No valid results for '{query}' (all failed validation)")
+                    self.cache.set(cache_key, {'error': 'no_valid_results'})
                     break  # Move to next attempt
 
                 except requests.exceptions.RequestException as e:
