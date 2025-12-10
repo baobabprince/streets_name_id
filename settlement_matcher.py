@@ -19,7 +19,8 @@ ISRAEL_BOUNDS = (29.0, 34.0, 33.5, 36.0)
 # Acceptable place types from Nominatim
 VALID_PLACE_TYPES = {
     'city', 'town', 'village', 'municipality', 'administrative',
-    'hamlet', 'suburb', 'neighbourhood', 'locality'
+    'hamlet', 'suburb', 'neighbourhood', 'locality', 'isolated_dwelling',
+    'farm'
 }
 
 # Nominatim API settings
@@ -155,12 +156,7 @@ class SettlementMatcher:
             if not self._is_within_israel(lat, lon):
                 return False, f"Outside Israel/Palestine bounds: {display_name}"
             
-            # Check 2: Display name should contain Israel or Palestinian territories
-            valid_regions = ['Israel', 'ישראל', 'Palestinian', 'فلسطين', 'West Bank', 'Gaza']
-            if not any(region in display_name for region in valid_regions):
-                return False, f"Display name doesn't contain expected region: {display_name}"
-            
-            # Check 3: Place type should be appropriate
+            # Check 2: Place type should be appropriate
             if place_type and place_type not in VALID_PLACE_TYPES:
                 return False, f"Invalid place type '{place_type}': {display_name}"
             
@@ -195,85 +191,94 @@ class SettlementMatcher:
             print(f"  ⚠ Empty settlement name after normalization: '{settlement_name}'")
             return None
         
-        # Check cache first
-        cache_key = f"{normalized_name}::Israel"
-        cached_result = self.cache.get(cache_key)
-        if cached_result:
-            print(f"  ✓ Cache hit for '{settlement_name}'")
-            if cached_result.get('error'):
-                return None
-            return self._dict_to_match(cached_result, settlement_name)
-        
-        # Query Nominatim
-        print(f"  → Searching Nominatim for '{normalized_name}'...")
-        
-        params = {
-            'q': f"{normalized_name}, Israel",
-            'format': 'json',
-            'addressdetails': 1,
-            'limit': 5,  # Get top 5 results to find best match
-            'accept-language': 'he,en'
-        }
-        
-        for attempt in range(max_retries):
-            try:
-                self._rate_limit()
-                
-                response = requests.get(
-                    NOMINATIM_URL,
-                    params=params,
-                    headers={'User-Agent': USER_AGENT},
-                    timeout=10
-                )
-                response.raise_for_status()
-                
-                results = response.json()
-                
-                if not results:
-                    print(f"  ✗ No results found for '{settlement_name}'")
-                    self.cache.set(cache_key, {'error': 'no_results'})
-                    return None
-                
-                # Try to find the first valid result
-                for result in results:
-                    is_valid, validation_msg = self._validate_result(result, settlement_name)
+        search_queries = [
+            f"{normalized_name}, Israel",
+            f"{normalized_name}, Judea and Samaria",
+            f"{normalized_name}, West Bank",
+            normalized_name
+        ]
+
+        for query in search_queries:
+            # Check cache first
+            cache_key = f"{query}"
+            cached_result = self.cache.get(cache_key)
+            if cached_result:
+                print(f"  ✓ Cache hit for '{settlement_name}'")
+                if cached_result.get('error'):
+                    continue
+                return self._dict_to_match(cached_result, settlement_name)
+
+            # Query Nominatim
+            print(f"  → Searching Nominatim for '{query}'...")
+
+            params = {
+                'q': query,
+                'format': 'json',
+                'addressdetails': 1,
+                'limit': 5,  # Get top 5 results to find best match
+                'accept-language': 'he,en'
+            }
+
+            for attempt in range(max_retries):
+                try:
+                    self._rate_limit()
+
+                    response = requests.get(
+                        NOMINATIM_URL,
+                        params=params,
+                        headers={'User-Agent': USER_AGENT},
+                        timeout=10
+                    )
+                    response.raise_for_status()
+
+                    results = response.json()
+
+                    if not results:
+                        print(f"  ✗ No results found for '{query}'")
+                        self.cache.set(cache_key, {'error': 'no_results'})
+                        break
+
+                    # Try to find the first valid result
+                    for result in results:
+                        is_valid, validation_msg = self._validate_result(result, settlement_name)
+
+                        if is_valid:
+                            match = SettlementMatch(
+                                settlement_name=settlement_name,
+                                osm_id=result.get('osm_id', ''),
+                                display_name=result.get('display_name', ''),
+                                lat=float(result.get('lat', 0)),
+                                lon=float(result.get('lon', 0)),
+                                boundingbox=tuple(map(float, result.get('boundingbox', [0, 0, 0, 0]))),
+                                place_type=result.get('type', ''),
+                                importance=float(result.get('importance', 0)),
+                                is_valid=True,
+                                validation_message=validation_msg
+                            )
+
+                            print(f"  ✓ Valid match: {match.display_name}")
+
+                            # Cache the result
+                            self.cache.set(cache_key, self._match_to_dict(match))
+
+                            return match
+                        else:
+                            print(f"  ✗ Invalid result: {validation_msg}")
                     
-                    if is_valid:
-                        match = SettlementMatch(
-                            settlement_name=settlement_name,
-                            osm_id=result.get('osm_id', ''),
-                            display_name=result.get('display_name', ''),
-                            lat=float(result.get('lat', 0)),
-                            lon=float(result.get('lon', 0)),
-                            boundingbox=tuple(map(float, result.get('boundingbox', [0, 0, 0, 0]))),
-                            place_type=result.get('type', ''),
-                            importance=float(result.get('importance', 0)),
-                            is_valid=True,
-                            validation_message=validation_msg
-                        )
-                        
-                        print(f"  ✓ Valid match: {match.display_name}")
-                        
-                        # Cache the result
-                        self.cache.set(cache_key, self._match_to_dict(match))
-                        
-                        return match
+                    # No valid results found in this list, cache this failure
+                    print(f"  ✗ No valid results for '{query}' (all failed validation)")
+                    self.cache.set(cache_key, {'error': 'no_valid_results'})
+                    break  # Move to next attempt
+
+                except requests.exceptions.RequestException as e:
+                    print(f"  ⚠ Request error (attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)  # Exponential backoff
                     else:
-                        print(f"  ✗ Invalid result: {validation_msg}")
-                
-                # No valid results found
-                print(f"  ✗ No valid results for '{settlement_name}' (all failed validation)")
-                self.cache.set(cache_key, {'error': 'no_valid_results'})
-                return None
-                
-            except requests.exceptions.RequestException as e:
-                print(f"  ⚠ Request error (attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                else:
-                    self.cache.set(cache_key, {'error': f'request_failed: {e}'})
-                    return None
+                        self.cache.set(cache_key, {'error': f'request_failed: {e}'})
         
+        # If all search queries fail
+        print(f"  ✗ All search queries for '{settlement_name}' failed.")
         return None
     
     def _match_to_dict(self, match: SettlementMatch) -> Dict:
