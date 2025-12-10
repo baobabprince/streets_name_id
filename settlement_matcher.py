@@ -193,6 +193,8 @@ class SettlementMatcher:
         
         search_queries = [
             f"{normalized_name}, Israel",
+            f"{normalized_name}, Judea and Samaria",
+            f"{normalized_name}, West Bank",
             normalized_name
         ]
 
