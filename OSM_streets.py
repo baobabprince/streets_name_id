@@ -48,12 +48,22 @@ def fetch_osm_street_data(place):
     osm_gdf = osm_gdf.reset_index()
     osm_gdf['osm_id'] = osm_gdf.apply(lambda row: f"{row['u']}-{row['v']}-{row['key']}", axis=1)
     
-    # נבחר את השדות החיוניים להמשך העבודה
-    cols_to_keep = ['osm_id', 'name', 'highway', 'geometry']
-    if 'name:he' in osm_gdf.columns:
-        cols_to_keep.append('name:he')
+    # --- Robust Column Handling ---
+    # Ensure essential name columns exist, even if no street has a name tag.
+    # This prevents a KeyError if the OSM data for a settlement is sparse.
+    if 'name' not in osm_gdf.columns:
+        osm_gdf['name'] = pd.NA
+    if 'name:he' not in osm_gdf.columns:
+        osm_gdf['name:he'] = pd.NA
 
-    osm_gdf = osm_gdf[cols_to_keep].copy()
+    # נבחר את השדות החיוניים להמשך העבודה
+    cols_to_keep = ['osm_id', 'name', 'name:he', 'highway', 'geometry']
+
+    # Filter to only columns that actually exist in the dataframe
+    # This is an extra layer of safety.
+    final_cols = [col for col in cols_to_keep if col in osm_gdf.columns]
+
+    osm_gdf = osm_gdf[final_cols].copy()
     
     # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
     osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
