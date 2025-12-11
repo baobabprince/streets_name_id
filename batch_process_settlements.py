@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+
+# --- Force IPv4 for all network requests ---
+# This is a monkey-patch to address network environments where IPv6 is configured
+# but not properly routed, causing "Network is unreachable" errors. By forcing
+# getaddrinfo to resolve to AF_INET (IPv4), we ensure that libraries like
+# requests and urllib3 will use the working IPv4 connection.
+import socket
+_original_getaddrinfo = socket.getaddrinfo
+
+def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
+    """Force getaddrinfo to use IPv4"""
+    return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+socket.getaddrinfo = getaddrinfo_ipv4
+# --- End of IPv4 patch ---
 """
 Batch Settlement Processing Script
 
