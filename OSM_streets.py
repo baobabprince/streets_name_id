@@ -24,6 +24,9 @@ def fetch_osm_street_data(place):
     מוריד את גרף הרחובות של האזור הנתון וממיר אותו
     ל-GeoDataFrame של קטעי רחובות (Ways/Edges).
     """
+    if isinstance(place, tuple) and len(place) == 4:
+        return fetch_osm_street_data_by_bbox(place)
+
     print(f"מתחיל בשליפת גרף הרחובות של {place} מ-OSM...")
     
     # הגדרת התגים הנוספים שאנו רוצים לשלוף, במיוחד 'name:he'
@@ -36,6 +39,82 @@ def fetch_osm_street_data(place):
     except Exception as e:
         print(f"שגיאה בשליפת גרף מ-OSM: {e}")
         print("נסה לשנות את place_name לתיבת גבולות (bbox) אם השגיאה נמשכת.")
+        return None
+
+    # 2. המרת קטעי הדרך (Edges) ל-GeoDataFrame
+    osm_gdf = ox.graph_to_gdfs(G, nodes=False, edges=True)
+    
+    # 3. ניקוי ועיבוד ראשוני של ה-GeoDataFrame:
+    # שמירת עמודות רלוונטיות, במיוחד שמות הרחובות (name)
+    
+    # oxmnx משתמש ב-u, v, key כמזהה של כל קטע. ניצור osm_id פשוט לשם נוחות.
+    osm_gdf = osm_gdf.reset_index()
+    osm_gdf['osm_id'] = osm_gdf.apply(lambda row: f"{row['u']}-{row['v']}-{row['key']}", axis=1)
+    
+    # --- Robust Column Handling ---
+    # Ensure essential name columns exist, even if no street has a name tag.
+    # This prevents a KeyError if the OSM data for a settlement is sparse.
+    if 'name' not in osm_gdf.columns:
+        osm_gdf['name'] = pd.NA
+    if 'name:he' not in osm_gdf.columns:
+        osm_gdf['name:he'] = pd.NA
+
+    # נבחר את השדות החיוניים להמשך העבודה
+    cols_to_keep = ['osm_id', 'name', 'name:he', 'highway', 'geometry']
+
+    # Filter to only columns that actually exist in the dataframe
+    # This is an extra layer of safety.
+    final_cols = [col for col in cols_to_keep if col in osm_gdf.columns]
+
+    osm_gdf = osm_gdf[final_cols].copy()
+    
+    # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
+    osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
+    
+    # ב-OSM, שם הרחוב (name) יכול להיות מחרוזת בודדת או רשימה של שמות.
+    # נטפל בכך כדי לקבל מחרוזת אחידה
+    osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(lambda x: x[0] if isinstance(x, list) else x)
+    if 'name:he' in osm_gdf.columns:
+        osm_gdf['name:he'] = osm_gdf['name:he'].apply(lambda x: x[0] if isinstance(x, list) else x)
+    
+    # 4. עדיפות לשם העברי: אם השם הראשי אינו בעברית ויש name:he, נשתמש בו
+    # שמירת השם המקורי לצורך דיאגנוסטיקה
+    if 'name:he' in osm_gdf.columns:
+        osm_gdf['osm_name_original'] = osm_gdf['osm_name'].copy()
+        
+        # עבור כל שורה, אם השם הראשי אינו עברי אך name:he קיים ועברי, נחליף
+        for idx, row in osm_gdf.iterrows():
+            main_name = row['osm_name']
+            hebrew_name = row['name:he']
+            
+            # אם השם הראשי אינו עברי ויש שם עברי תקין
+            if not is_hebrew(main_name) and pd.notna(hebrew_name) and is_hebrew(hebrew_name):
+                osm_gdf.at[idx, 'osm_name'] = hebrew_name
+                print(f"  → החלפה: '{main_name}' → '{hebrew_name}' (עדיפות לעברית)")
+    else:
+        # אם אין name:he, השם המקורי זהה לשם הראשי
+        osm_gdf['osm_name_original'] = osm_gdf['osm_name'].copy()
+
+    # 4. כיווץ ה-GeoDataFrame לדרכים בלבד (נאבד חלק מהתכונות של הגרף, אך זה מתאים למיפוי)
+    print(f"נשלפו {len(osm_gdf)} קטעי דרך מ-OSM.")
+    return osm_gdf
+
+
+def fetch_osm_street_data_by_bbox(bbox):
+    """
+    מוריד את גרף הרחובות של האזור הנתון לפי תיבת גבולות וממיר אותו
+    ל-GeoDataFrame של קטעי רחובות (Ways/Edges).
+    """
+    print(f"מתחיל בשליפת גרף הרחובות מ-OSM לפי תיבת גבולות: {bbox}...")
+    
+    # הגדרת התגים הנוספים שאנו רוצים לשלוף, במיוחד 'name:he'
+    ox.settings.useful_tags_way += ['name:he']
+
+    # 1. הורדת גרף הרחובות
+    try:
+        G = ox.graph_from_bbox(bbox=bbox, network_type="all", simplify=False)
+    except Exception as e:
+        print(f"שגיאה בשליפת גרף מ-OSM: {e}")
         return None
 
     # 2. המרת קטעי הדרך (Edges) ל-GeoDataFrame
