@@ -6,6 +6,7 @@ from shapely.geometry import LineString
 import pandas as pd
 import re
 import colorsys
+import json
 
 # --- Import from existing project files ---
 from pipeline import _safe_place_name
@@ -484,6 +485,15 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         print(f"Successfully generated HTML file: {output_filename}")
     except IOError as e:
         print(f"Error writing HTML file: {e}")
+
+    if diagnostics:
+        diag_summary_path = os.path.join('data', f'diagnostic_summary_{safe_name}.json')
+        try:
+            with open(diag_summary_path, 'w', encoding='utf-8') as f:
+                json.dump(diagnostics, f, ensure_ascii=False, indent=2)
+            print(f"Successfully saved diagnostics summary to {diag_summary_path}")
+        except Exception as e:
+            print(f"Warning: Failed to save diagnostics summary: {e}")
 
 
 def main():
