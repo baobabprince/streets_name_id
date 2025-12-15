@@ -1,19 +1,35 @@
-
 import os
 import json
 from collections import defaultdict
+import re
 
 def get_district_from_filename(filename):
     parts = filename.replace('.html', '').split('__')
     if len(parts) > 2:
-        # Assuming the district is the 3rd part of the name
-        # e.g., א-טייבה_א-זועביה__מועצה_אזורית_גלבוע__נפת_יזרעאל__מחוז_הצפון__ישראל__Israel_roads
-        # After splitting by '__', the district is usually at index 2 or 3
-        # Let's look for "מחוז" (district)
         for part in parts:
             if 'מחוז' in part:
                 return part.replace('_', ' ')
     return "Unknown"
+
+def get_lamas_match_percentage(settlement_name):
+    safe_settlement_name = re.sub(r'[^0-9A-Za-z_\\-\\u0590-\\u05FF]', '_', settlement_name)
+    json_path = os.path.join('data', f'diagnostic_summary_{safe_settlement_name}.json')
+
+    if not os.path.exists(json_path):
+        return "N/A"
+
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            diagnostics = json.load(f)
+        
+        unmatched_percentage_str = diagnostics.get("unmatched_lamas_percentage", "0%")
+        unmatched_percentage = float(unmatched_percentage_str.strip('%'))
+        matched_percentage = 100 - unmatched_percentage
+        return f"{matched_percentage:.1f}%"
+
+    except Exception as e:
+        print(f"Could not process {json_path}: {e}")
+        return "Error"
 
 def main():
     html_dir = 'HTML/'
@@ -44,7 +60,12 @@ def main():
     for filename in file_list:
         district = get_district_from_filename(filename)
         settlement_name = filename.split('__')[0].replace('_', ' ')
-        grouped_files[district].append({'name': settlement_name, 'path': os.path.join(html_dir, filename)})
+        match_percentage = get_lamas_match_percentage(settlement_name)
+        grouped_files[district].append({
+            'name': settlement_name,
+            'path': os.path.join(html_dir, filename),
+            'match_percentage': match_percentage
+        })
 
     # --- Generate HTML ---
     
@@ -117,6 +138,8 @@ def main():
         }}
         .settlement-list li {{
             margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
         }}
         .settlement-list a {{
             text-decoration: none;
@@ -126,6 +149,11 @@ def main():
         .settlement-list a:hover {{
             color: #0056b3;
             text-decoration: underline;
+        }}
+        .percentage {{
+            color: #555;
+            font-size: 0.9em;
+            padding-right: 10px;
         }}
     </style>
 </head>
@@ -145,8 +173,8 @@ def main():
     for label, value in stats.items():
         html_content += f"""
                 <div class="stat-item">
-                    <div class="label">{label}</div>
-                    <div class="value">{value}</div>
+                    <div class="label">{{label}}</div>
+                    <div class="value">{{value}}</div>
                 </div>
         """
     html_content += """
@@ -160,11 +188,11 @@ def main():
     for district in sorted(grouped_files.keys()):
         html_content += f"""
             <div class="district-group">
-                <h3>{district}</h3>
+                <h3>{{district}}</h3>
                 <ul class="settlement-list">
         """
         for settlement in sorted(grouped_files[district], key=lambda x: x['name']):
-            html_content += f'<li><a href="{settlement["path"]}">{settlement["name"]}</a></li>'
+            html_content += f'<li><a href="{{settlement[\'path\']}}">{{settlement["name"]}}</a> <span class="percentage">{{settlement["match_percentage"]}}</span></li>'
         html_content += """
                 </ul>
             </div>
