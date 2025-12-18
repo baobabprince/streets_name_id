@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-
-# --- Force IPv4 for all network requests ---
-# This is a monkey-patch to address network environments where IPv6 is configured
-# but not properly routed, causing "Network is unreachable" errors. By forcing
-# getaddrinfo to resolve to AF_INET (IPv4), we ensure that libraries like
-# requests and urllib3 will use the working IPv4 connection.
-import socket
-_original_getaddrinfo = socket.getaddrinfo
-
-def getaddrinfo_ipv4(host, port, family=0, type=0, proto=0, flags=0):
-    """Force getaddrinfo to use IPv4"""
-    return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
-
-socket.getaddrinfo = getaddrinfo_ipv4
-# --- End of IPv4 patch ---
 """
 Batch Settlement Processing Script
 
@@ -41,7 +26,7 @@ from pathlib import Path
 # Import local modules
 from settlement_matcher import SettlementMatcher, SettlementMatch
 from lamas_streets import fetch_all_LAMAS_data
-from pipeline import run_pipeline, PipelineStatus
+from pipeline import run_pipeline
 
 
 # Output directory for reports
@@ -49,7 +34,7 @@ REPORTS_DIR = os.path.join(os.path.dirname(__file__), "batch_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
-def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_local_ai: bool, bbox: Optional[Tuple[float, float, float, float]] = None) -> Dict[str, Any]:
+def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_local_ai: bool) -> Dict[str, Any]:
     """
     Worker function to run the pipeline in a separate process.
     Captures success/failure and returns a result dictionary.
@@ -72,27 +57,21 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
         
         pipeline_result = run_pipeline(
             place=place_string,
-            bbox=bbox,
             force_refresh=False,
             use_ai=use_ai,
             use_local_ai=use_local_ai,
             output_name=settlement_name
         )
         
-        # Check the specific return status from the pipeline
-        result['pipeline_success'] = (pipeline_result == PipelineStatus.SUCCESS)
-        
+        # Ensure pipeline_success is always a boolean
+        result['pipeline_success'] = bool(pipeline_result)
         if result['pipeline_success']:
             result['status'] = 'success'
             result['message'] = 'Pipeline completed successfully'
-        elif pipeline_result == PipelineStatus.NO_DATA:
+        else:
             result['status'] = 'failed_pipeline'
-            result['message'] = 'Pipeline returned no data'
-            result['error_type'] = 'NoOSMData'
-        else: # Covers FAILURE and any other case
-            result['status'] = 'failed_pipeline'
-            result['message'] = 'Pipeline returned a failure status'
-            result['error_type'] = 'PipelineReturnedFailure'
+            result['message'] = 'Pipeline returned False (likely no OSM data or empty dataset)'
+            result['error_type'] = 'PipelineReturnedFalse'
             
     except Exception as e:
         error_trace = traceback.format_exc()
@@ -218,8 +197,7 @@ class BatchProcessor:
             'lat': match.lat,
             'lon': match.lon,
             'place_type': match.place_type,
-            'osm_id': match.osm_id,
-            'bbox': match.bbox
+            'osm_id': match.osm_id
         }
         return result
 
@@ -376,8 +354,7 @@ class BatchProcessor:
                     settlement, 
                     match_data['display_name'], 
                     self.use_ai,
-                    self.use_local_ai,
-                    match_data.get('bbox')
+                    self.use_local_ai
                 )
                 
                 # Store context with future
@@ -459,57 +436,17 @@ Examples:
                        help='Reduce console output')
     parser.add_argument('--workers', type=int, default=1,
                        help='Number of parallel workers (default: 1)')
-    parser.add_argument('--reprocess-failed', action='store_true',
-                       help='Reprocess failed settlements from the latest batch report')
-
+    
     args = parser.parse_args()
-
-    # Step 1: Fetch LAMAS data or determine settlements to reprocess
-    settlements = []
-    if args.reprocess_failed:
-        print("--- Reprocessing failed settlements ---")
-        try:
-            # Find the latest batch report
-            report_files = sorted(Path(REPORTS_DIR).glob("batch_summary_*.json"), reverse=True)
-            if not report_files:
-                print("Error: No batch reports found to reprocess.")
-                sys.exit(1)
-            
-            latest_report_path = report_files[0]
-            print(f"Loading latest report: {latest_report_path}")
-            
-            with open(latest_report_path, 'r', encoding='utf-8') as f:
-                report_data = json.load(f)
-            
-            # Extract failed settlements
-            failed_settlements = [
-                r['settlement'] for r in report_data.get('results', [])
-                if r['status'] in ['failed_nominatim', 'failed_pipeline']
-            ]
-            
-            if not failed_settlements:
-                print("No failed settlements found in the latest report. Nothing to do.")
-                sys.exit(0)
-            
-            settlements = sorted(failed_settlements)
-            args.force = True  # Force reprocessing
-            print(f"Found {len(settlements)} failed settlements to reprocess.")
-
-        except Exception as e:
-            print(f"Error loading or parsing report: {e}")
-            sys.exit(1)
-    else:
-        # Default behavior: process all settlements from LAMAS data
-        print("Fetching LAMAS data...")
-        lamas_df = fetch_all_LAMAS_data()
-        if lamas_df.empty:
-            print("Error: Failed to fetch LAMAS data")
-            sys.exit(1)
-        
-        # This will be initialized properly inside the BatchProcessor
-        processor_for_settlement_list = BatchProcessor()
-        settlements = processor_for_settlement_list.get_unique_settlements(lamas_df)
-
+    
+    # Step 1: Fetch LAMAS data
+    print("Fetching LAMAS data...")
+    lamas_df = fetch_all_LAMAS_data()
+    
+    if lamas_df.empty:
+        print("Error: Failed to fetch LAMAS data")
+        sys.exit(1)
+    
     # Step 2: Initialize batch processor
     
     # FORCE WORKERS=1 if using Local AI to prevent OOM/CUDA errors
@@ -526,9 +463,11 @@ Examples:
         workers=args.workers
     )
     
-    # Step 3: Check if there are settlements to process
+    # Step 3: Get unique settlements
+    settlements = processor.get_unique_settlements(lamas_df)
+    
     if not settlements:
-        print("Error: No settlements to process.")
+        print("Error: No settlements found in LAMAS data")
         sys.exit(1)
     
     # Step 4: Run batch processing

@@ -1,425 +1,491 @@
-import os
-import re
-import json
-import glob
-from collections import defaultdict
 
-# --- Configuration ---
+import os
+import pandas as pd
+import glob
+import json
+from pathlib import Path
+
+# Configuration
+DATA_DIR = 'data'
 HTML_DIR = 'HTML'
 OUTPUT_FILE = 'index.html'
-STREET_DATA_FILE = 'street_data.json'
 
-def load_district_map():
+def get_vital_statistics(csv_path):
     """
-    Load settlement -> district mapping from street_data.json.
+    Parses a diagnostic report CSV and calculates vital statistics.
+    Returns a dictionary of stats.
     """
-    mapping = {}
-    if os.path.exists(STREET_DATA_FILE):
-        try:
-            with open(STREET_DATA_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                for entry in data:
-                    settlement_str = entry.get('settlement', '')
-                    if not settlement_str:
-                        continue
-                    
-                    # Extract name: "Name, District, ..."
-                    parts = settlement_str.split(',')
-                    name = parts[0].strip()
-                    district = "Unknown District"
-                    
-                    for p in parts:
-                        if 'מחוז' in p:
-                            district = p.strip()
-                            break
-                    
-                    # Add to mapping (prefer identified district over existing unknown)
-                    if name not in mapping or mapping[name] == "Unknown District":
-                        mapping[name] = district
-        except Exception as e:
-            print(f"Warning: Could not read {STREET_DATA_FILE}: {e}")
-    return mapping
-
-def parse_html_report(filepath):
-    """
-    Parse an HTML report to extract:
-    - Settlement Name (from filename)
-    - Matched Count (Unique street names)
-    - Unmatched Count
-    """
-    filename = os.path.basename(filepath)
-    # Filename format: Name_roads.html
-    # Some names have underscores in them originally, but we assume the last part is _roads.html
-    name_part = filename.replace('_roads.html', '')
-    # Revert underscores to spaces for display, but keep in mind some keys might be different
-    display_name = name_part.replace('_', ' ') 
-    
-    matched_names = set()
-    unmatched_count = 0
-    
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
+        df = pd.read_csv(csv_path)
+        
+        # Ensure we're working with strings for IDs and names
+        if 'normalized_name' not in df.columns:
+            return None
             
-        # 1. Extract Matched Names from data-tooltip
-        # Format: data-tooltip="Name#10;..."
-        # Regex to find data-tooltip value
-        tooltips = re.findall(r'data-tooltip="([^"]+)"', content)
-        for t in tooltips:
-            # Extract name before first '#' or ';' or just take the whole thing if simple
-            # Based on inspection: "הצאלון#10;..."
-            street_name = t.split('#')[0].strip()
-            if street_name:
-                matched_names.add(street_name)
-                
-        # 2. Extract Unmatched Count from <li>
-        # Start search from <div class="unmatched-list">
-        unmatched_div_match = re.search(r'<div class="unmatched-list">(.*?)</div>', content, re.DOTALL)
-        if unmatched_div_match:
-            list_content = unmatched_div_match.group(1)
-            unmatched_count = len(re.findall(r'<li', list_content))
+        # Total unique normalized streets
+        total_streets = df['normalized_name'].dropna().nunique()
+        
+        # Matched streets (those with a final_LAMAS_id)
+        # Check if column exists first
+        if 'final_LAMAS_id' not in df.columns:
+            matched_count = 0
+        else:
+            # Filter for valid IDs (not NaN, not 'None', not empty)
+            valid_ids = df['final_LAMAS_id'].dropna().astype(str)
+            valid_ids = valid_ids[~valid_ids.isin(['None', 'nan', ''])]
             
+            # Get the subset of the dataframe with valid matches
+            matched_df = df[df['final_LAMAS_id'].astype(str).isin(valid_ids)]
+            matched_count = matched_df['normalized_name'].nunique()
+
+        match_percentage = (matched_count / total_streets * 100) if total_streets > 0 else 0
+        
+        # Determine status tiers
+        if match_percentage >= 95:
+            tier = 'Excellent'
+            color_class = 'status-excellent'
+        elif match_percentage >= 80:
+            tier = 'Good'
+            color_class = 'status-good'
+        elif match_percentage >= 50:
+            tier = 'Fair'
+            color_class = 'status-fair'
+        else:
+            tier = 'Poor'
+            color_class = 'status-poor'
+
+        return {
+            'total_streets': total_streets,
+            'matched_count': matched_count,
+            'match_percentage': match_percentage,
+            'tier': tier,
+            'color_class': color_class
+        }
     except Exception as e:
-        print(f"Error parsing {filepath}: {e}")
+        print(f"Error processing {csv_path}: {e}")
         return None
 
-    return {
-        'name': display_name,
-        'filename': filename,
-        'matched': len(matched_names),
-        'unmatched': unmatched_count,
-        'total': len(matched_names) + unmatched_count
-    }
+def generate_index_html():
+    print("Generating index.html...")
+    
+    # Find all diagnostic reports
+    report_files = glob.glob(os.path.join(DATA_DIR, 'diagnostic_report_*.csv'))
+    
+    settlements_data = []
+    
+    # Global Stats
+    total_processed_settlements = 0
+    global_total_streets = 0
+    global_matched_streets = 0
+    
+    for report_path in report_files:
+        filename = os.path.basename(report_path)
+        # filename format: diagnostic_report_SETTLEMENT.csv
+        settlement_name = filename.replace('diagnostic_report_', '').replace('.csv', '')
+        
+        # Calculate stats
+        stats = get_vital_statistics(report_path)
+        if not stats:
+            continue
+            
+        total_processed_settlements += 1
+        global_total_streets += stats['total_streets']
+        global_matched_streets += stats['matched_count']
+        
+        # Check if HTML map exists
+        # The HTML filename logic from generate_html.py is: {safe_name}_roads.html
+        # Settlement name in report filename is ALREADY safe (mostly), but let's just check
+        safe_name = settlement_name # assumed to be safe as it came from filename
+        html_map_path = os.path.join(HTML_DIR, f"{safe_name}_roads.html")
+        has_map = os.path.exists(html_map_path)
+        
+        settlements_data.append({
+            'name': settlement_name.replace('_', ' '), # Display name
+            'safe_name': safe_name,
+            'stats': stats,
+            'has_map': has_map,
+            'map_link': f"{HTML_DIR}/{safe_name}_roads.html" if has_map else "#"
+        })
+    
+    # Sort by match percentage (descending)
+    settlements_data.sort(key=lambda x: x['stats']['match_percentage'], reverse=True)
+    
+    global_match_rate = (global_matched_streets / global_total_streets * 100) if global_total_streets > 0 else 0
 
-def generate_index_html(reports, district_map):
-    """
-    Generate the HTML index page.
-    """
-    # Group by District
-    grouped = defaultdict(list)
-    
-    # Statistics
-    total_settlements = 0
-    total_streets = 0
-    total_matched = 0
-    
-    for r in reports:
-        # Determine District
-        # Try exact match or fuzzy match
-        district = district_map.get(r['name'], "Unknown District")
-        
-        # If not found, try to strip common prefixes/suffixes if needed? 
-        # For now, stick to direct lookup.
-        
-        grouped[district].append(r)
-        
-        total_settlements += 1
-        total_streets += r['total']
-        total_matched += r['matched']
-
-    overall_accuracy = (total_matched / total_streets * 100) if total_streets > 0 else 0
-    
     # HTML Template
-    html = f"""<!DOCTYPE html>
+    html_content = f"""
+<!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Street Matching Reports Index</title>
+    <title>Street Matcher Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700&family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
     <style>
         :root {{
-            --primary: #3b82f6;
-            --bg: #f8fafc;
-            --card-bg: #ffffff;
-            --text: #1e293b;
-            --text-light: #64748b;
-            --success: #22c55e;
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent: #3b82f6;
+            --success: #10b981;
             --warning: #f59e0b;
             --danger: #ef4444;
-            --border: #e2e8f0;
+            --glass-bg: rgba(30, 41, 59, 0.7);
+            --glass-border: rgba(255, 255, 255, 0.1);
         }}
-        
+
         body {{
-            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-            background-color: var(--bg);
-            color: var(--text);
+            font-family: 'Heebo', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
             margin: 0;
-            padding: 20px;
+            padding: 0;
+            min-height: 100vh;
         }}
-        
-        .container {{
-            max-width: 1200px;
+
+        .dashboard {{
+            max-width: 1400px;
             margin: 0 auto;
+            padding: 40px 20px;
         }}
-        
+
+        /* Header Section */
         header {{
             text-align: center;
-            margin-bottom: 40px;
-            padding: 40px 0;
-            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
-            border-radius: 16px;
-            color: white;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            margin-bottom: 60px;
+            position: relative;
         }}
-        
-        h1 {{ margin: 0; font-size: 2.5rem; letter-spacing: -0.05em; }}
-        .subtitle {{ color: #94a3b8; margin-top: 10px; font-size: 1.1rem; }}
-        
+
+        h1 {{
+            font-family: 'Outfit', sans-serif;
+            font-size: 3.5rem;
+            margin: 0 0 10px 0;
+            background: linear-gradient(135deg, #60a5fa, #c084fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 800;
+        }}
+
+        .subtitle {{
+            color: var(--text-secondary);
+            font-size: 1.2rem;
+            letter-spacing: 0.5px;
+        }}
+
+        /* Global Stats Cards */
         .stats-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
             gap: 20px;
-            margin-bottom: 40px;
+            margin-bottom: 50px;
         }}
-        
+
         .stat-card {{
             background: var(--card-bg);
-            padding: 20px;
-            border-radius: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 25px;
+            border-radius: 16px;
+            border: 1px solid var(--glass-border);
             text-align: center;
-            border: 1px solid var(--border);
+            transition: transform 0.3s ease;
         }}
-        
-        .stat-value {{ font-size: 2rem; font-weight: bold; color: var(--primary); }}
-        .stat-label {{ color: var(--text-light); font-size: 0.9rem; }}
-        
-        .filters {{
-            display: flex;
-            gap: 10px;
-            margin-bottom: 30px;
-            flex-wrap: wrap;
-            justify-content: center;
+
+        .stat-card:hover {{
+            transform: translateY(-5px);
         }}
-        
-        .search-box {{
-            padding: 10px 20px;
-            border-radius: 999px;
-            border: 1px solid var(--border);
-            width: 300px;
-            font-size: 1rem;
+
+        .stat-value {{
+            font-size: 2.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            font-family: 'Outfit', sans-serif;
+        }}
+
+        .stat-label {{
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-top: 5px;
+        }}
+
+        /* Search Filter */
+        .search-container {{
+            margin-bottom: 40px;
+            position: relative;
+        }}
+
+        .search-input {{
+            width: 100%;
+            padding: 15px 25px;
+            font-size: 1.1rem;
+            background: var(--card-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            color: var(--text-primary);
             outline: none;
+            transition: all 0.3s;
+            font-family: 'Heebo', sans-serif;
         }}
-        
-        .district-section {{ margin-bottom: 40px; }}
-        .district-title {{ 
-            font-size: 1.5rem; 
-            margin-bottom: 20px; 
-            padding-right: 15px; 
-            border-right: 4px solid var(--primary);
-            color: var(--text);
+
+        .search-input:focus {{
+            border-color: var(--accent);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.2);
         }}
-        
-        .reports-grid {{
+
+        /* Settlements Grid */
+        .settlements-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
+            gap: 25px;
         }}
-        
-        .report-card {{
-            background: var(--card-bg);
-            border-radius: 12px;
-            padding: 20px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-            transition: transform 0.2s, box-shadow 0.2s;
-            border: 1px solid var(--border);
-            text-decoration: none;
-            color: inherit;
-            display: block;
+
+        .settlement-card {{
+            background: var(--glass-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 25px;
             position: relative;
+            transition: all 0.3s ease;
             overflow: hidden;
+            display: flex;
+            flex-direction: column;
         }}
-        
-        .report-card:hover {{
-            transform: translateY(-4px);
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-            border-color: var(--primary);
+
+        .settlement-card:hover {{
+            transform: translateY(-5px);
+            border-color: rgba(255, 255, 255, 0.2);
+            box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.5);
         }}
-        
-        .card-header {{ display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px; }}
-        .settlement-name {{ font-size: 1.2rem; font-weight: bold; }}
-        .match-badge {{ 
-            padding: 4px 12px; 
-            border-radius: 99px; 
-            font-size: 0.85rem; 
-            font-weight: bold;
-        }}
-        
-        .progress-container {{
-            height: 8px;
-            background-color: #f1f5f9;
-            border-radius: 4px;
-            overflow: hidden;
-            margin: 15px 0;
-        }}
-        
-        .progress-bar {{
-            height: 100%;
-            border-radius: 4px;
-            transition: width 1s ease-in-out;
-        }}
-        
-        .card-stats {{
+
+        .card-header {{
             display: flex;
             justify-content: space-between;
+            align-items: start;
+            margin-bottom: 20px;
+        }}
+
+        .settlement-name {{
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin: 0;
+            line-height: 1.2;
+        }}
+
+        .badge {{
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }}
+
+        .status-excellent {{ background: rgba(16, 185, 129, 0.2); color: #34d399; }}
+        .status-good {{ background: rgba(59, 130, 246, 0.2); color: #60a5fa; }}
+        .status-fair {{ background: rgba(245, 158, 11, 0.2); color: #fbbf24; }}
+        .status-poor {{ background: rgba(239, 68, 68, 0.2); color: #f87171; }}
+
+        .progress-container {{
+            margin-bottom: 20px;
+        }}
+
+        .progress-bar-bg {{
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }}
+
+        .progress-bar-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), #c084fc);
+            border-radius: 4px;
+            transition: width 1s ease-out;
+        }}
+
+        .match-stats {{
+            display: flex;
+            justify-content: space-between;
+            color: var(--text-secondary);
             font-size: 0.9rem;
-            color: var(--text-light);
+            margin-bottom: 5px;
+        }}
+
+        .vital-stats {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 25px;
+            padding: 15px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+        }}
+
+        .vital-item {{
+            text-align: center;
+        }}
+
+        .vital-val {{
+            display: block;
+            font-size: 1.2rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }}
+
+        .vital-lbl {{
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }}
+
+        .actions {{
+            margin-top: auto;
+            display: flex;
+            gap: 10px;
+        }}
+
+        .btn {{
+            flex: 1;
+            padding: 12px;
+            border-radius: 10px;
+            text-align: center;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.2s;
+            font-size: 0.95rem;
+            border: 1px solid transparent;
+        }}
+
+        .btn-primary {{
+            background: var(--accent);
+            color: white;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+        }}
+
+        .btn-primary:hover {{
+            background: #2563eb;
+            transform: translateY(-2px);
+        }}
+
+        .btn-disabled {{
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.2);
+            cursor: not-allowed;
+            pointer-events: none;
         }}
         
-        /* Utility classes for colors based on percentage */
-        .color-high {{ background-color: var(--success); color: white; }}
-        .color-med {{ background-color: var(--warning); color: white; }}
-        .color-low {{ background-color: var(--danger); color: white; }}
-        
-        .bg-high {{ background-color: var(--success); }}
-        .bg-med {{ background-color: var(--warning); }}
-        .bg-low {{ background-color: var(--danger); }}
-        
-        .text-high {{ color: var(--success); }}
-        .text-med {{ color: var(--warning); }}
-        .text-low {{ color: var(--danger); }}
+        /* Loading animation */
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: translateY(20px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
 
+        .settlement-card {{
+            animation: fadeIn 0.5s ease-out forwards;
+        }}
     </style>
 </head>
 <body>
 
-<div class="container">
-    <header>
-        <h1>Street Matching Report Index</h1>
-        <div class="subtitle">Visualizing matches between LAMAS and OSM data</div>
-    </header>
+    <div class="dashboard">
+        <header>
+            <h1>Street Matcher Dashboard</h1>
+            <div class="subtitle">ניתוח ומיפוי השוואתי של רחובות ישראל - OSM מול למ"ס</div>
+        </header>
 
-    <div class="stats-grid">
-        <div class="stat-card">
-            <div class="stat-value">{total_settlements}</div>
-            <div class="stat-label">Settlements</div>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{total_processed_settlements}</div>
+                <div class="stat-label">יישובים עובדו</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{global_match_rate:.1f}%</div>
+                <div class="stat-label">אחוז התאמה ארצי</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{global_total_streets:,}</div>
+                <div class="stat-label">סה"כ רחובות נבדקו</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{global_matched_streets:,}</div>
+                <div class="stat-label">רחובות זוהו ודאית</div>
+            </div>
         </div>
-        <div class="stat-card">
-            <div class="stat-value">{total_streets:,}</div>
-            <div class="stat-label">Total Streets</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-value">{overall_accuracy:.1f}%</div>
-            <div class="stat-label">Overall Match Rate</div>
-        </div>
-    </div>
 
-    <div class="filters">
-        <input type="text" class="search-box" id="searchInput" placeholder="Search settlement...">
-    </div>
+        <div class="search-container">
+            <input type="text" class="search-input" id="search" placeholder="חפש יישוב...">
+        </div>
 
-    <div id="grid-container">
+        <div class="settlements-grid" id="grid">
 """
     
-    # Sort districts (Unknown last)
-    sorted_districts = sorted(grouped.keys())
-    if "Unknown District" in sorted_districts:
-        sorted_districts.remove("Unknown District")
-        sorted_districts.append("Unknown District")
+    # Generate Cards
+    for item in settlements_data:
+        stats = item['stats']
+        map_btn_class = "btn-primary" if item['has_map'] else "btn-disabled"
+        map_btn_text = "צפה במפה" if item['has_map'] else "אין מפה"
         
-    for district in sorted_districts:
-        items = grouped[district]
-        # Sort items by name
-        items.sort(key=lambda x: x['name'])
-        
-        html += f'<div class="district-section" data-district="{district}">'
-        html += f'<div class="district-title">{district} ({len(items)})</div>'
-        html += '<div class="reports-grid">'
-        
-        for r in items:
-            total = r['total']
-            matched = r['matched']
-            percent = (matched / total * 100) if total > 0 else 0
-            
-            # Determine Color
-            if percent >= 95:
-                color_cls = "high"
-            elif percent >= 80:
-                color_cls = "med"
-            else:
-                color_cls = "low"
-            
-            html += f"""
-            <a href="{HTML_DIR}/{r['filename']}" class="report-card" data-name="{r['name']}">
+        html_content += f"""
+            <div class="settlement-card" data-name="{item['name']}">
                 <div class="card-header">
-                    <div class="settlement-name">{r['name']}</div>
-                    <div class="match-badge color-{color_cls}">{percent:.1f}%</div>
+                    <h3 class="settlement-name">{item['name']}</h3>
+                    <span class="badge {stats['color_class']}">{stats['tier']}</span>
                 </div>
                 
                 <div class="progress-container">
-                    <div class="progress-bar bg-{color_cls}" style="width: {percent}%"></div>
+                    <div class="match-stats">
+                        <span>אחוז התאמה</span>
+                        <span>{stats['match_percentage']:.1f}%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" style="width: {stats['match_percentage']}%"></div>
+                    </div>
                 </div>
-                
-                <div class="card-stats">
-                    <span>Matched: {matched}</span>
-                    <span>Total: {total}</span>
+
+                <div class="vital-stats">
+                    <div class="vital-item">
+                        <span class="vital-val">{stats['total_streets']}</span>
+                        <span class="vital-lbl">רחובות</span>
+                    </div>
+                    <div class="vital-item">
+                        <span class="vital-val">{stats['matched_count']}</span>
+                        <span class="vital-lbl">זוהו</span>
+                    </div>
                 </div>
-            </a>
-            """
-        
-        html += '</div></div>' # Close grid and section
 
-    html += """
-    </div> <!-- grid-container -->
-</div>
+                <div class="actions">
+                    <a href="{item['map_link']}" class="btn {map_btn_class}">{map_btn_text}</a>
+                </div>
+            </div>
+"""
 
-<script>
-    const searchInput = document.getElementById('searchInput');
-    const cards = document.querySelectorAll('.report-card');
-    const sections = document.querySelectorAll('.district-section');
+    html_content += """
+        </div>
+    </div>
 
-    searchInput.addEventListener('input', (e) => {
-        const term = e.target.value.toLowerCase();
-        
-        cards.forEach(card => {
-            const name = card.getAttribute('data-name').toLowerCase();
-            const visible = name.includes(term);
-            card.style.display = visible ? 'block' : 'none';
-        });
-
-        // Hide empty sections
-        sections.forEach(section => {
-            const visibleCards = section.querySelectorAll('.report-card[style="display: block"]');
-            // Note: If style isn't set yet (initial load), it's visible. 
-            // Better to check offsetParent or computed style if needed, but simple display check works usually.
-            // Actually, we need to check if ANY card is visible.
+    <script>
+        document.getElementById('search').addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const cards = document.querySelectorAll('.settlement-card');
             
-            let hasVisible = false;
-            section.querySelectorAll('.report-card').forEach(c => {
-                 if (c.style.display !== 'none') hasVisible = true;
+            cards.forEach(card => {
+                const name = card.getAttribute('data-name').toLowerCase();
+                if (name.includes(searchTerm)) {
+                    card.style.display = 'flex';
+                } else {
+                    card.style.display = 'none';
+                }
             });
-            
-            section.style.display = hasVisible ? 'block' : 'none';
         });
-    });
-</script>
-
+    </script>
 </body>
 </html>
 """
 
     with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        f.write(html)
+        f.write(html_content)
     
-    print(f"Generated {OUTPUT_FILE} with {total_settlements} settlements.")
-
-def main():
-    print("Loading district map...")
-    district_map = load_district_map()
-    
-    print("Scanning HTML reports...")
-    files = glob.glob(os.path.join(HTML_DIR, '*.html'))
-    reports = []
-    
-    for i, f in enumerate(files):
-        if i % 50 == 0:
-            print(f"Processed {i}/{len(files)}...")
-        r = parse_html_report(f)
-        if r:
-            reports.append(r)
-            
-    print("Generating Index...")
-    generate_index_html(reports, district_map)
+    print(f"Successfully generated {OUTPUT_FILE} with {total_processed_settlements} settlements.")
 
 if __name__ == "__main__":
-    main()
+    generate_index_html()

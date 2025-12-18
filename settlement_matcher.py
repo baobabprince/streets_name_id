@@ -43,7 +43,6 @@ class SettlementMatch:
     lat: float
     lon: float
     boundingbox: Tuple[float, float, float, float]
-    bbox: Optional[Tuple[float, float, float, float]]
     place_type: str
     importance: float
     is_valid: bool
@@ -112,20 +111,17 @@ class SettlementMatcher:
         if not name:
             return ""
         
-        # 1️⃣ Strip whitespace
+        # 1️⃣ Strip whitespace and generic punctuation
         normalized = name.strip()
-
-        # 2️⃣ Replace apostrophe-like characters with a space
-        normalized = re.sub(r"['׳״]", ' ', normalized).strip()
-
-        # 3️⃣ Remove parenthetical content (e.g., "תל אביב (יפו)" → "תל אביב")
+        
+        # 2️⃣ Remove parenthetical content (e.g., "תל אביב (יפו)" → "תל אביב")
         normalized = re.sub(r'\([^)]*\)', '', normalized).strip()
         
-        # 4️⃣ Normalise dashes and collapse multiple spaces
+        # 3️⃣ Normalise dashes and collapse multiple spaces
         normalized = re.sub(r'[־\-–—]', ' ', normalized)
         normalized = re.sub(r'\s+', ' ', normalized).strip()
         
-        # 5️⃣ Strip common administrative prefixes and suffixes
+        # 4️⃣ Strip common administrative prefixes and suffixes
         prefixes_to_remove = ['עיריית', 'מועצה מקומית', 'מועצה אזורית']
         suffixes_to_remove = ['מושב', 'קיבוץ', 'יישוב', 'עיר']
         for prefix in prefixes_to_remove:
@@ -135,7 +131,7 @@ class SettlementMatcher:
             if normalized.endswith(suffix):
                 normalized = normalized[: -len(suffix)].strip()
         
-        # 6️⃣ No special‑case overrides – rely on generic fallback later.
+        # 5️⃣ No special‑case overrides – rely on generic fallback later.
         return normalized
     
     def _rate_limit(self):
@@ -294,7 +290,6 @@ class SettlementMatcher:
                     is_valid, validation_msg = self._validate_result(result, original_name)
                     
                     if is_valid:
-                        bbox_buffer = 0.01
                         match = SettlementMatch(
                             settlement_name=original_name,
                             osm_id=result.get('osm_id', ''),
@@ -302,12 +297,6 @@ class SettlementMatcher:
                             lat=float(result.get('lat', 0)),
                             lon=float(result.get('lon', 0)),
                             boundingbox=tuple(map(float, result.get('boundingbox', [0, 0, 0, 0]))),
-                            bbox=(
-                                float(result.get('lat', 0)) + bbox_buffer,
-                                float(result.get('lat', 0)) - bbox_buffer,
-                                float(result.get('lon', 0)) + bbox_buffer,
-                                float(result.get('lon', 0)) - bbox_buffer
-                            ),
                             place_type=result.get('type', ''),
                             importance=float(result.get('importance', 0)),
                             is_valid=True,
@@ -335,7 +324,6 @@ class SettlementMatcher:
                         best_match = result
                 if best_match and best_score > 0.5:
                     print(f"  ↺ Fuzzy fallback selected (score {best_score:.2f}) for '{query_name}'")
-                    bbox_buffer = 0.01
                     match = SettlementMatch(
                         settlement_name=original_name,
                         osm_id=best_match.get('osm_id', ''),
@@ -343,12 +331,6 @@ class SettlementMatcher:
                         lat=float(best_match.get('lat', 0)),
                         lon=float(best_match.get('lon', 0)),
                         boundingbox=tuple(map(float, best_match.get('boundingbox', [0, 0, 0, 0]))),
-                        bbox=(
-                            float(best_match.get('lat', 0)) + bbox_buffer,
-                            float(best_match.get('lat', 0)) - bbox_buffer,
-                            float(best_match.get('lon', 0)) + bbox_buffer,
-                            float(best_match.get('lon', 0)) - bbox_buffer
-                        ),
                         place_type=best_match.get('type', ''),
                         importance=float(best_match.get('importance', 0)),
                         is_valid=True,
@@ -379,7 +361,6 @@ class SettlementMatcher:
             'lat': match.lat,
             'lon': match.lon,
             'boundingbox': list(match.boundingbox),
-            'bbox': list(match.bbox) if match.bbox else None,
             'place_type': match.place_type,
             'importance': match.importance,
             'is_valid': match.is_valid,
@@ -395,7 +376,6 @@ class SettlementMatcher:
             lat=data.get('lat', 0),
             lon=data.get('lon', 0),
             boundingbox=tuple(data.get('boundingbox', [0, 0, 0, 0])),
-            bbox=tuple(data.get('bbox')) if data.get('bbox') else None,
             place_type=data.get('place_type', ''),
             importance=data.get('importance', 0),
             is_valid=data.get('is_valid', True),

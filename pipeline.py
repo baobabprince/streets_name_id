@@ -149,7 +149,7 @@ def load_or_fetch_LAMAS(force_refresh: bool = False, max_age_days: int = SIX_MON
         pass
     return df
 
-def load_or_fetch_osm(place: str | dict, bbox: tuple | None = None, force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
+def load_or_fetch_osm(place: str | dict, force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS):
     """Load OSM GeoDataFrame from cache if fresh, otherwise fetch and cache it."""
     
     if isinstance(place, dict):
@@ -166,10 +166,7 @@ def load_or_fetch_osm(place: str | dict, bbox: tuple | None = None, force_refres
         except Exception:
             pass
 
-    if bbox:
-        gdf = fetch_osm_street_data_by_bbox(bbox)
-    else:
-        gdf = fetch_osm_street_data(place)
+    gdf = fetch_osm_street_data(place) # pass the object (str or dict)
     
     if gdf is None:
         return None
@@ -260,7 +257,7 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
 #                                 ORCHESTRATION START
 # ----------------------------------------------------------------------------------
 
-def run_pipeline(place: str | dict | None = None, bbox: tuple | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False, output_name: str = None):
+def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False, output_name: str = None):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
     'place' can be a string for a search query, or a dict from Nominatim.
@@ -302,7 +299,7 @@ def run_pipeline(place: str | dict | None = None, bbox: tuple | None = None, for
         LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
         
         # Pass the correct object (dict or string) to the fetcher
-        osm_gdf = load_or_fetch_osm(place_obj_for_osm, bbox=bbox, force_refresh=force_refresh)
+        osm_gdf = load_or_fetch_osm(place_obj_for_osm, force_refresh=force_refresh)
 
         # Check if OSM data was successfully fetched
         if osm_gdf is None:
