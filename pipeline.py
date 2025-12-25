@@ -7,7 +7,7 @@ import numpy as np
 import requests
 import time
 import json
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 import re
 import datetime
 import sys
@@ -20,10 +20,10 @@ class PipelineStatus(Enum):
 
 # --- Import necessary utility functions (assuming these files exist in the project) ---
 from lamas_streets import fetch_all_LAMAS_data
-from OSM_streets import fetch_osm_street_data, place_name as OSM_PLACE_NAME
+from OSM_streets import fetch_osm_street_data, is_hebrew, place_name as OSM_PLACE_NAME
 from map_of_adjacents import build_adjacency_map
-from map_of_adjacents import build_adjacency_map
-from normalization import normalize_street_name, find_fuzzy_candidates
+from settlement_matcher import SettlementMatcher
+from normalization import normalize_street_name, normalize_city_name, find_fuzzy_candidates
 from local_ai_resolver import LocalAIResolver, get_local_ai_resolution
 
 
@@ -42,54 +42,69 @@ SIX_MONTHS_DAYS = 182
 
 
 # --- פונקציות עזר לקריאת API ---
-def get_ai_resolution(prompt, osm_id):
+def get_ai_resolution_batch(settlement_name, streets_data):
     """
-    מבצע קריאת API אמיתית למודל Gemini כדי להכריע בזיהוי רחובות.
-    כולל מנגנון Retry פשוט.
+    מבצע קריאת API אחת עבור רשימת רחובות באותה עיר.
+    streets_data: רשימה של מילונים, כל אחד מכיל:
+        - street_name: שם הרחוב ב-OSM
+        - candidates: רשימת מועמדים מהלמ"ס
+        - adjacent: רשימת רחובות סמוכים
     """
     if not API_KEY:
-        print("  -> ERROR: GEMINI_API_KEY not found or is empty. Skipping AI resolution.")
-        return 'None'
+        print("  -> ERROR: GEMINI_API_KEY not found. Skipping batch AI resolution.")
+        return {}
         
-    print(f"  -> Consulting AI for OSM ID: {osm_id}...")
+    print(f"  -> Consulting AI for {len(streets_data)} streets in {settlement_name} (BATCH)...")
     
-    # הגדרות פרומפט ופרסונה עבור המודל
-    system_prompt = "אתה מערכת GIS אוטומטית שתפקידה למצוא את המזהה המספרי היחיד של רחוב (LAMAS ID) מתוך רשימת מועמדים, על בסיס שם וקונטקסט גיאוגרפי (שמות רחובות משיקים). השב עם המספר של ה-ID בלבד, או עם המילה 'None' אם לא נמצאה התאמה ודאית."
+    # בניית ה-Prompt המרוכז
+    streets_formatted = []
+    for i, s in enumerate(streets_data, 1):
+        streets_formatted.append(
+            f"Street #{i}:\n"
+            f"OSM Name: '{s['street_name']}'\n"
+            f"Adjacent: {', '.join(s['adjacent']) if s['adjacent'] else 'None'}\n"
+            f"LAMAS Candidates:\n{s['candidates']}\n"
+        )
+    
+    full_prompt = (
+        f"In the city of '{settlement_name}', resolve the following {len(streets_data)} ambiguous street matches.\n\n"
+        + "\n".join(streets_formatted) +
+        "\nIMPORTANT: Respond ONLY with a valid JSON object where keys are the 'OSM Name' and values are the chosen 'LAMAS ID' (as a string) or null if no match is found."
+        "\nExample: {\"Street A\": \"123\", \"Street B\": null}"
+    )
+
+    system_prompt = """You are an automated GIS expert. Your task is to reconcile OpenStreetMap (OSM) street names with official LAMAS records.
+    Guidelines:
+    1. Identify the most likely LAMAS ID for each provided street.
+    2. Use adjacent streets for geographical context.
+    3. BE STRICT: If an OSM name is 'Herzl', do not match it to 'Herzl Rosenblum' unless context confirms it.
+    4. Exact matches like 'Ben Gurion' to 'David Ben Gurion' are generally safe.
+    5. Return ONLY a JSON object mapping names to IDs."""
     
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": [{"parts": [{"text": full_prompt}]}],
         "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "tools": [{"google_search": {}}] # מאפשר שימוש בחיפוש להקשר היסטורי/כינויים
+        "generationConfig": {"response_mime_type": "application/json"}
     }
 
     for attempt in range(MAX_RETRIES):
         try:
-            response = requests.post(
-                GEMINI_API_URL, 
-                headers={'Content-Type': 'application/json'},
-                data=json.dumps(payload)
-            )
-            response.raise_for_status() # שגיאות HTTP יעלו חריגה
-            
+            response = requests.post(GEMINI_API_URL, json=payload, timeout=60)
+            response.raise_for_status()
             result = response.json()
-            # חילוץ הטקסט
-            text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', 'None').strip()
             
-            # ניקוי התשובה - ודא שרק ה-ID המספרי או 'None' מוחזר
-            clean_text = ''.join(filter(str.isdigit, text))
-            if not clean_text:
-                return 'None'
-            
-            return clean_text
+            raw_text = result.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}').strip()
+            # Parse JSON response
+            return json.loads(raw_text)
 
-        except requests.exceptions.RequestException as e:
-            print(f"API Error (Attempt {attempt+1}/{MAX_RETRIES}) for {osm_id}: {e}")
+        except Exception as e:
+            print(f"Batch API Error (Attempt {attempt+1}/{MAX_RETRIES}): {e}")
             if attempt < MAX_RETRIES - 1:
-                time.sleep(2 ** attempt) # Exponential backoff
+                time.sleep(2 ** attempt)
             else:
-                return 'None' # החזרת None לאחר כל הניסיונות
+                return {}
 
-    return 'None'
+    return {}
 
 
 # --- 1. פונקציות עזר לטיפול ב-CACHE וטעינת נתונים ---
@@ -104,10 +119,11 @@ def _safe_place_name(place: str) -> str:
     return re.sub(r'[^0-9A-Za-z_\-\u0590-\u05FF]', '_', place)
 
 def _normalize_city(col: pd.Series) -> pd.Series:
-    """Robustly normalizes city names."""
+    """Robustly normalizes city names by removing punctuation and extra whitespace."""
     return (
         col.astype(str)
         .str.replace(r'[\u2010\u2011\u2012\u2013\u2014\-]', ' ', regex=True)  # various dashes -> space
+        .str.replace(r'[.,;:!?\'"(){}[\]]', '', regex=True) # remove punctuation
         .str.replace(r'\s+', ' ', regex=True) # multiple spaces -> single space
         .str.replace(r'עיריית', '', regex=False) # remove common suffix/prefix
         .str.strip()
@@ -272,24 +288,42 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
     
     # STEP 1: Data Acquisition (with caching)
     try:
+        # Resolve place to a valid settlement using SettlementMatcher for better city filtering
+        matcher = SettlementMatcher()
+        match = None
+        
+        if isinstance(place, str):
+            print(f"Resolving settlement name: '{place}'")
+            match = matcher.search_settlement(place)
+        elif isinstance(place, dict):
+            # If already a dict (e.g. from batch processing), we might still want to validate/standardize it
+            pass
+
         # Determine the object to use for OSM fetching and the string for display/caching
-        place_obj_for_osm = place
-        if isinstance(place, dict):
+        if match:
+            # If we found a valid match, use its details
+            place_obj_for_osm = match.display_name
+            chosen_place_str = match.settlement_name # The original Hebrew name from LAMAS if possible
+            # Ensure chosen_place_str is Hebrew if it's the LAMAS name
+            print(f"Resolved to: {match.display_name}")
+        elif isinstance(place, dict):
             # If a dict is provided, use it directly for OSM. Use its display_name for logging.
+            place_obj_for_osm = place
             chosen_place_str = place.get('display_name', 'unknown_place')
         elif isinstance(place, str):
             # If a string is provided, append ", Israel" for disambiguation if country not present
             chosen_place_str = place
             lower_place = chosen_place_str.lower()
             if "israel" not in lower_place and "palestine" not in lower_place and "ישראל" not in chosen_place_str and "פלסטין" not in chosen_place_str:
-                chosen_place_str = f"{chosen_place_str}, Israel"
-            place_obj_for_osm = chosen_place_str
+                place_obj_for_osm = f"{chosen_place_str}, Israel"
+            else:
+                place_obj_for_osm = chosen_place_str
         else:
             # Default fallback if place is None
             chosen_place_str = OSM_PLACE_NAME or "Tel Aviv-Yafo, Israel"
             place_obj_for_osm = chosen_place_str
 
-        print(f"Using place: {chosen_place_str}")
+        print(f"Using place for display/cache: {chosen_place_str}")
         
         # Determine the identifier to use for file naming (reports, cache, html)
         # If output_name is provided, use that (e.g. for batch processing unique settlements)
@@ -347,9 +381,13 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
             osm_gdf['city'] = city_label
 
         # Normalize city name formatting in both dataframes (CRITICAL FIX)
+        # Using a specialized normalization to handle 'Tel Aviv-Yafo' vs 'תל אביב -יפו'
         if 'city' in LAMAS_df.columns:
-            LAMAS_df['city'] = _normalize_city(LAMAS_df['city'])
-        osm_gdf['city'] = _normalize_city(osm_gdf['city'])
+            LAMAS_df['city'] = LAMAS_df['city'].apply(normalize_city_name)
+        osm_gdf['city'] = osm_gdf['city'].apply(normalize_city_name)
+        
+        # Also normalize the initial city label we'll use for filtering
+        osm_city_label = normalize_city_name(osm_gdf['city'].iloc[0])
         
         # Save intermediate normalized data
         _save_intermediate_df(LAMAS_df, "step1_lamas_raw", file_identifier)
@@ -397,14 +435,31 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
     
     # OPTIMIZATION: Filter LAMAS data to the relevant city BEFORE fuzzy matching
     # This prevents matching against the entire country's street list
-    osm_city_label = osm_gdf['city'].iloc[0]
+    # Use normalized city names for matching
+    osm_city_label = normalize_city_name(osm_gdf['city'].iloc[0])
     print(f"Filtering LAMAS data for city: '{osm_city_label}'")
     
+    # city names are already normalized in LAMAS_df in Step 1
     lamas_city_df = LAMAS_df[LAMAS_df['city'] == osm_city_label].copy()
     
     if lamas_city_df.empty:
-        print(f"WARNING: No LAMAS data found for city '{osm_city_label}'. Fuzzy matching will fail.")
-        # Fallback? Or just proceed (will result in MISSING)
+        print(f"WARNING: No exact LAMAS match found for city '{osm_city_label}'. Trying fuzzy match fallback...")
+        # Fallback: Find the best matching city name in LAMAS data
+        unique_lamas_cities = LAMAS_df['city'].dropna().unique()
+        best_city_match = None
+        best_city_score = 0
+        
+        for l_city in unique_lamas_cities:
+            score = fuzz.token_set_ratio(osm_city_label, l_city)
+            if score > best_city_score:
+                best_city_score = score
+                best_city_match = l_city
+        
+        if best_city_match and best_city_score > 90: # High threshold for city matching
+            print(f"  -> Found best city match: '{best_city_match}' (score: {best_city_score})")
+            lamas_city_df = LAMAS_df[LAMAS_df['city'] == best_city_match].copy()
+        else:
+            print(f"  -> No high-confidence city match found in LAMAS data.")
     
     candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
     
@@ -444,103 +499,88 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
         
         print(f"Found {len(unique_ai_streets)} unique street names requiring AI resolution.")
 
-        # Cache for AI decisions to avoid re-processing the same name
-        ai_decision_cache = {}
-
+        # Prepare data for batching
+        streets_to_resolve = []
         for _, row in unique_ai_streets.iterrows():
             normalized_street_name = row['normalized_name']
-            
-            # Use the first osm_id as a representative for this street name (for logging/context)
-            representative_osm_id = row['osm_id']
-
-            # --- Information Gathering for the unique street ---
-            # 1. Get all OSM IDs for this street name
             all_osm_ids_for_street = osm_gdf_in_city[osm_gdf_in_city['normalized_name'] == normalized_street_name]['osm_id'].tolist()
-            
-            # 2. Get all unique adjacent street names for this street
             all_adjacent_ids = set()
             for osm_id in all_osm_ids_for_street:
                 all_adjacent_ids.update(map_of_adjacents.get(osm_id, []))
             
             adjacent_names = osm_gdf_in_city[osm_gdf_in_city['osm_id'].isin(all_adjacent_ids)]['normalized_name'].unique().tolist()
-
-            # 3. All other info (candidates, city) is the same for the whole street
-            lamas_candidates_str = row['all_candidates']
-            city_name = osm_gdf_in_city['city'].iloc[0]
-
-
-            ai_decision_id = 'None'
-            confidence = 0.0
-            reasoning = ""
-            method = "none"
-
-            # Try Local AI first
-            if local_resolver:
-                print(f" -> Consulting Local AI for street: '{normalized_street_name}'...")
-                # We need to construct the candidates list for the local AI from the string
-                local_lamas_candidates = []
-                if pd.notna(lamas_candidates_str):
-                    for line in lamas_candidates_str.split('\n'):
-                        id_match = re.search(r'ID:\s*(\d+)', line)
-                        name_match = re.search(r"Name:\s*['\"]([^'\"]+)['\"]", line)
-                        score_match = re.search(r'Score:\s*([\d.]+)', line)
-                        if id_match and name_match:
-                            local_lamas_candidates.append({
-                                'id': id_match.group(1), 'name': name_match.group(1), 
-                                'score': float(score_match.group(1)) if score_match else 0.0
-                            })
-                
-                local_result = local_resolver.resolve_street(
-                    representative_osm_id, normalized_street_name, city_name,
-                    local_lamas_candidates, adjacent_names
-                )
-
-                ai_decision_id = local_result.get('lamas_id')
-                confidence = local_result.get('confidence', 0.0)
-                reasoning = local_result.get('reasoning', '')
-                method = "local_ai"
-                
-                if str(ai_decision_id) == 'None':
-                     print(f"    Local AI found no match for '{normalized_street_name}'. Confidence: {confidence}")
-                else:
-                     print(f"    Local AI matched '{normalized_street_name}' to {ai_decision_id}. Confidence: {confidence}")
-
-            # Fallback to Gemini if Local AI didn't run or found no match
-            if (str(ai_decision_id) == 'None' or method == "none") and API_KEY:
-                if method == "local_ai":
-                     print(f"    Falling back to Gemini API for '{normalized_street_name}'...")
-                
-                prompt = (f"OSM Street Name: '{normalized_street_name}'. "
-                          f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
-                          f"LAMAS Candidates: {lamas_candidates_str}. Choose the best LAMAS ID (number only or 'None').")
-
-                ai_decision_id = get_ai_resolution(prompt, representative_osm_id) # Pass representative_osm_id for logging
-                method = "gemini"
-                confidence = 0.0 # Gemini function doesn't return confidence currently
             
-            # Cache the decision for this unique street name
-            ai_decision_cache[normalized_street_name] = {
-                'ai_LAMAS_id': ai_decision_id,
-                'ai_confidence': confidence,
-                'ai_reasoning': reasoning,
-                'ai_method': method
-            }
+            # Parse LAMAS candidates for this street
+            lamas_candidates_list = []
+            lamas_candidates_str = row['all_candidates']
+            if pd.notna(lamas_candidates_str):
+                for line in lamas_candidates_str.split('\n'):
+                    id_match = re.search(r'ID:\s*(\d+)', line)
+                    name_match = re.search(r"Name:\s*['\"]([^'\"]+)['\"]", line)
+                    score_match = re.search(r'Score:\s*([\d.]+)', line)
+                    if id_match and name_match:
+                        lamas_candidates_list.append({
+                            'id': id_match.group(1), 'name': name_match.group(1), 
+                            'score': float(score_match.group(1)) if score_match else 0.0
+                        })
 
-        # Now, apply the cached decisions to all relevant segments
+            streets_to_resolve.append({
+                'street_name': normalized_street_name,
+                'adjacent': adjacent_names,
+                'candidates': lamas_candidates_str,
+                'lamas_candidates': lamas_candidates_list # for local ai
+            })
+
+        batch_results = {}
+        city_name = str(osm_gdf_in_city['city'].iloc[0])
+
+        if streets_to_resolve:
+            # 1. Try Local AI Batch
+            if local_resolver:
+                print(f" -> Consulting Local AI for {len(streets_to_resolve)} streets (BATCH)...")
+                batch_results = local_resolver.resolve_batch(city_name, streets_to_resolve)
+                # Convert results to standard format
+                for name, res in batch_results.items():
+                    if isinstance(res, dict):
+                        res['ai_method'] = 'local_ai'
+                        res['ai_prompt'] = f"Resolved via Local AI Batch"
+                    else: # If it just returned the ID
+                        batch_results[name] = {'lamas_id': res, 'confidence': 0.5, 'reasoning': '', 'ai_method': 'local_ai', 'ai_prompt': 'Local AI (Simple)'}
+
+            # 2. Try Gemini Batch for remaining or if local failed
+            remaining_streets = [s for s in streets_to_resolve if str(batch_results.get(s['street_name'], {}).get('lamas_id')) in ('None', 'nan', 'null', '')]
+            
+            if remaining_streets and API_KEY:
+                print(f" -> Consulting Gemini API for {len(remaining_streets)} remaining streets (BATCH)...")
+                gemini_batch_results = get_ai_resolution_batch(city_name, remaining_streets)
+                for name, lid in gemini_batch_results.items():
+                    batch_results[name] = {
+                        'lamas_id': lid,
+                        'confidence': 0.0,
+                        'reasoning': 'Gemini Batch Resolution',
+                        'ai_method': 'gemini',
+                        'ai_prompt': 'Gemini Batch Prompt'
+                    }
+
+        # Map batch results back to segments
         for _, row in ai_candidates_to_process.iterrows():
             street_name = row['normalized_name']
-            cached_result = ai_decision_cache.get(street_name)
-            if cached_result:
-                ai_results.append({
-                    'osm_id': row['osm_id'],
-                    **cached_result
-                })
+            res = batch_results.get(street_name, {'lamas_id': None, 'confidence': 0.0, 'reasoning': 'No AI response', 'ai_method': 'none', 'ai_prompt': ''})
+            
+            ai_results.append({
+                'osm_id': row['osm_id'],
+                'ai_LAMAS_id': res.get('lamas_id'),
+                'ai_confidence': res.get('confidence', 0.0),
+                'ai_reasoning': res.get('reasoning', ''),
+                'ai_method': res.get('ai_method', 'none'),
+                'ai_prompt': res.get('ai_prompt', '')
+            })
     else:
         # AI disabled — produce empty results
         ai_results = []
 
     # ensure DataFrame has expected columns even if empty
-    ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id', 'ai_confidence', 'ai_reasoning', 'ai_method'])
+    ai_decisions_df = pd.DataFrame(ai_results, columns=['osm_id', 'ai_LAMAS_id', 'ai_confidence', 'ai_reasoning', 'ai_method', 'ai_prompt'])
     _save_intermediate_df(ai_decisions_df, "step5_ai_decisions", file_identifier)
 
     # STEP 6: Final Merge and Mapping
@@ -549,6 +589,23 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
     # Merge AI decisions back into the candidates table
     ai_decisions_merged = candidates_df.merge(ai_decisions_df, on='osm_id', how='left')
     
+    # Update the JSON diagnostics with AI info
+    def update_diag_with_ai(row):
+        if pd.isna(row['diagnostics']):
+            return None
+        
+        diag = json.loads(row['diagnostics'])
+        if row['status'] == 'NEEDS_AI' and pd.notna(row['ai_LAMAS_id']):
+            diag['ai_resolution'] = {
+                'prompt': row.get('ai_prompt'),
+                'response': row['ai_LAMAS_id'],
+                'reasoning': row.get('ai_reasoning'),
+                'method': row.get('ai_method')
+            }
+        return json.dumps(diag, ensure_ascii=False)
+
+    ai_decisions_merged['diagnostics'] = ai_decisions_merged.apply(update_diag_with_ai, axis=1)
+
     # Convert all ID columns to string for safe merging and final output consistency
     ai_decisions_merged['osm_id'] = ai_decisions_merged['osm_id'].astype(str)
     osm_gdf['osm_id'] = osm_gdf['osm_id'].astype(str)
@@ -567,7 +624,7 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
     ).astype(str)
 
     # Select key diagnostic columns from candidates/AI merge
-    diagnostic_cols = ['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'all_candidates', 'ai_LAMAS_id', 'ai_reasoning']
+    diagnostic_cols = ['osm_id', 'status', 'best_score', 'best_LAMAS_name', 'all_candidates', 'ai_LAMAS_id', 'ai_reasoning', 'diagnostics']
     
     # Create the full diagnostic table by merging OSM data with the candidates/AI data
     osm_cols_for_diag = ['osm_id', 'osm_name', 'normalized_name', 'city', 'geometry']
@@ -611,6 +668,28 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
 
     diagnostics = calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf)
     print(f"-> Diagnostic Summary: {diagnostics}")
+
+    # STEP 6.6: Save detailed diagnostic JSON
+    print("\n[Step 6.6/7] Saving persistent diagnostic logs...")
+    try:
+        os.makedirs("batch_reports", exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create a dictionary structure optimized for lookup: { settlement: { osm_id: diagnostic_data } }
+        detailed_logs = {}
+        city_name = str(osm_gdf['city'].iloc[0])
+        detailed_logs[city_name] = {}
+        
+        for _, row in diagnostic_df_full.iterrows():
+            if pd.notna(row['diagnostics']):
+                detailed_logs[city_name][str(row['osm_id'])] = json.loads(row['diagnostics'])
+        
+        log_path = os.path.join("batch_reports", f"diagnostics_{file_identifier}_{timestamp}.json")
+        with open(log_path, 'w', encoding='utf-8') as f:
+            json.dump(detailed_logs, f, ensure_ascii=False, indent=2)
+        print(f"  -> Detailed diagnostic logs saved to {log_path}")
+    except Exception as e:
+        print(f"  -> Warning: Failed to save diagnostic logs: {e}")
 
     # STEP 7: Generate HTML Visualization
     if not skip_html:

@@ -287,7 +287,7 @@ class BatchProcessor:
                   force: bool = False, dry_run: bool = False):
         """
         Run batch processing on a list of settlements.
-        Supports parallel execution for the pipeline phase.
+        Overlaps location resolution and matching pipeline execution for maximum speed.
         """
         if limit:
             settlements = settlements[:limit]
@@ -310,94 +310,92 @@ class BatchProcessor:
         print(f"AI Resolution: {'ENABLED' if self.use_ai else 'DISABLED'}")
         print(f"{'='*70}")
         
-        # Use ProcessPoolExecutor for parallel pipeline execution
-        # We use a 'producer-consumer' pattern where the main thread resolves locations (producer)
-        # and the executor runs the pipelines (consumer)
+        # We use a nested executor approach:
+        # 1. ThreadPoolExecutor manages concurrent location resolutions (I/O bound)
+        # 2. ProcessPoolExecutor manages matching pipelines (CPU bound)
         
-        with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as executor:
-            future_to_settlement = {}
-            
-            for i, settlement in enumerate(settlements, 1):
-                print(f"\n[{i}/{len(settlements)}] Processing: {settlement}")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as pipeline_executor:
+            # We use a ThreadPool for resolution because it's mostly waiting on Nominatim
+            # and our thread-safe rate limiter.
+            resolution_threads = min(32, len(settlements))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=resolution_threads) as resolution_executor:
                 
-                # Check if already processed
-                if not force and settlement in self.processed_settlements:
-                    print(f"  ⏭ Skipping - already processed")
-                    self.stats['skipped_already_processed'] += 1
-                    self.results.append({
-                        'settlement': settlement,
-                        'status': 'skipped',
-                        'message': 'Already processed'
-                    })
-                    continue
+                # Maps to track progress
+                res_future_to_name = {}
+                pipe_future_to_name = {}
+                name_to_res_result = {}
                 
-                # Step 1: Resolve location (Sequential - Main Thread)
-                # This respects the Nominatim rate limit inside SettlementMatcher
-                resolve_result = self.resolve_settlement(settlement)
+                # Submit all resolution tasks
+                for settlement in settlements:
+                    if not force and settlement in self.processed_settlements:
+                        self.stats['skipped_already_processed'] += 1
+                        self.results.append({'settlement': settlement, 'status': 'skipped', 'message': 'Already processed'})
+                        continue
+                    
+                    future = resolution_executor.submit(self.resolve_settlement, settlement)
+                    res_future_to_name[future] = settlement
+
+                print(f"\nInitiated {len(res_future_to_name)} location resolution tasks...")
                 
-                if resolve_result['status'] != 'ready_for_pipeline':
-                    # Failed resolution, record result and continue
-                    self.results.append(resolve_result)
-                    if resolve_result['status'] == 'failed_nominatim':
+                # As each resolution finishes, immediately submit its pipeline task
+                # We use as_completed on the resolution futures
+                for res_future in concurrent.futures.as_completed(res_future_to_name):
+                    name = res_future_to_name[res_future]
+                    try:
+                        res = res_future.result()
+                        name_to_res_result[name] = res
+                        
+                        if res['status'] == 'ready_for_pipeline':
+                            self.stats['matched'] += 1
+                            match_data = res['match']
+                            
+                            # OVERLAP: Submit pipeline immediately!
+                            print(f"  → Resolved {name}. Submitting pipeline task...")
+                            pipe_future = pipeline_executor.submit(
+                                worker_wrapper, 
+                                name, 
+                                match_data['display_name'], 
+                                self.use_ai,
+                                self.use_local_ai
+                            )
+                            pipe_future_to_name[pipe_future] = name
+                        else:
+                            self.results.append(res)
+                            if res['status'] == 'failed_nominatim':
+                                self.stats['failed_nominatim'] += 1
+                            elif res['status'] == 'failed_validation':
+                                self.stats['failed_validation'] += 1
+                                
+                    except Exception as e:
+                        print(f"  ✗ Error resolving {name}: {e}")
                         self.stats['failed_nominatim'] += 1
-                    elif resolve_result['status'] == 'failed_validation':
-                        self.stats['failed_validation'] += 1
-                    continue
-                
-                # Step 2: Submit pipeline task (Parallel - Worker Process)
-                self.stats['matched'] += 1
-                match_data = resolve_result['match']
-                
-                print(f"  → Submitting pipeline task for {settlement}...")
-                future = executor.submit(
-                    worker_wrapper, 
-                    settlement, 
-                    match_data['display_name'], 
-                    self.use_ai,
-                    self.use_local_ai
-                )
-                
-                # Store context with future
-                future_to_settlement[future] = {
-                    'settlement': settlement,
-                    'resolve_result': resolve_result
-                }
-            
-            # Step 3: Collect results as they complete
-            print(f"\n{'='*70}")
-            print("Waiting for pending pipeline tasks...")
-            print(f"{'='*70}")
-            
-            for future in concurrent.futures.as_completed(future_to_settlement):
-                context = future_to_settlement[future]
-                settlement = context['settlement']
-                resolve_result = context['resolve_result']
-                
-                try:
-                    worker_result = future.result()
-                    
-                    # Merge resolve info with worker result
-                    final_result = resolve_result.copy()
-                    final_result.update(worker_result)
-                    
-                    if worker_result['status'] == 'success':
-                        print(f"  ✓ Task completed: {settlement} (Success)")
-                        self.stats['successful'] += 1
-                        self._save_processed_settlement(settlement)
-                    else:
-                        print(f"  ✗ Task completed: {settlement} (Failed: {worker_result['message']})")
-                        self.stats['failed_pipeline'] += 1
-                    
-                    self.results.append(final_result)
-                    
-                except Exception as e:
-                    print(f"  ✗ Exception in worker for {settlement}: {e}")
-                    self.stats['failed_pipeline'] += 1
-                    resolve_result['status'] = 'failed_pipeline'
-                    resolve_result['message'] = f"Worker exception: {e}"
-                    self.results.append(resolve_result)
-                
-                # Intermediate reporting could go here
+
+                # Wait for all submitted pipelines to finish
+                if pipe_future_to_name:
+                    print(f"\nWaiting for {len(pipe_future_to_name)} matching pipelines to complete...")
+                    for pipe_future in concurrent.futures.as_completed(pipe_future_to_name):
+                        name = pipe_future_to_name[pipe_future]
+                        resolve_result = name_to_res_result[name]
+                        try:
+                            worker_result = pipe_future.result()
+                            final_result = resolve_result.copy()
+                            final_result.update(worker_result)
+                            
+                            if worker_result['status'] == 'success':
+                                print(f"  ✓ {name}: Success ({worker_result['duration_seconds']:.1f}s)")
+                                self.stats['successful'] += 1
+                                self._save_processed_settlement(name)
+                            else:
+                                print(f"  ✗ {name}: Failed ({worker_result['message']})")
+                                self.stats['failed_pipeline'] += 1
+                            
+                            self.results.append(final_result)
+                        except Exception as e:
+                            print(f"  ✗ {name}: Worker exception: {e}")
+                            self.stats['failed_pipeline'] += 1
+        
+        # Generate final summary
+        self.generate_summary_report()
         
         # Generate final summary
         self.generate_summary_report()

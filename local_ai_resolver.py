@@ -133,6 +133,10 @@ class LocalAIResolver:
     - שינויי איות או תרגומים
     - תוספת/השמטה של תואר (למשל "הרב", "דוקטור")
     - **במקרה של "בן עמר" מול "תאודור בן עמר" - זוהי התאמה טובה!**
+    - **אזהרה חמורה:** אל תבצע התאמה אם המועמד הוא אישיות שונה, גם אם השם מוכל בתוכו!
+      * דוגמה: "הרצל" אינו "הרצל רוזנבלום".
+      * דוגמה: "נורדאו" אינו "נורדאו מקס".
+      אם יש ספק שמדובר באדם אחר - אל תבצע התאמה.
 4. **התאמה בין ערבית לעברית:** שמות בערבית ובעברית יכולים להיות תרגומים או תעתיקים זה של זה. למשל, 'شارع السلام' בערבית הוא 'רחוב השלום' בעברית. כמו כן, 'אלסלאם' הוא תעתיק של 'السلام'. חפש התאמות כאלו.
 
 **פורמט התשובה (JSON בלבד):**
@@ -150,7 +154,92 @@ class LocalAIResolver:
         
         return prompt
     
-    def _clean_json_string(self, json_str: str) -> str:
+    def prepare_batch_prompt(
+        self,
+        city_name: str,
+        streets_data: list
+    ) -> str:
+        """
+        Prepare a text prompt for multiple streets in a city.
+        
+        Args:
+            city_name: The city name
+            streets_data: List of dictionaries with 'street_name', 'candidates', 'adjacent'
+            
+        Returns:
+            Formatted prompt string
+        """
+        prompt = f"""אתה מערכת GIS אוטומטית המתמחה בזיהוי רחובות בישראל.
+
+המשימה: עבור העיר {city_name}, עליך למצוא את המזהה (LAMAS ID) הנכון עבור כל אחד מהרחובות הבאים מתוך רשימת המועמדים שלהם.
+
+"""
+        for i, s in enumerate(streets_data, 1):
+            prompt += f"**רחוב #{i}:**\n"
+            prompt += f"- שם ב-OSM: \"{s['street_name']}\"\n"
+            prompt += f"- רחובות סמוכים: {', '.join(s['adjacent']) if s['adjacent'] else 'אין מידע'}\n"
+            prompt += "- מועמדים מלמ\"ס:\n"
+            for j, c in enumerate(s['lamas_candidates'], 1):
+                prompt += f"  {j}. ID: {c['id']}, שם: \"{c['name']}\" (ציון: {c['score']:.1f})\n"
+            prompt += "\n"
+
+        prompt += """
+**הוראות:**
+1. זהה את ה-LAMAS ID המתאים ביותר לכל רחוב.
+2. השתמש ברחובות סמוכים כהקשר גיאוגרפי.
+3. היה זהיר: אל תתאים שמות של אנשים שונים (למשל 'הרצל' ל-'הרצל רוזנבלום').
+4. החזר את התשובה בפורמט JSON בלבד, שבו המפתח הוא שם הרחוב ב-OSM והערך הוא אובייקט עם ה-ID וההסבר.
+
+**פורמט התשובה (JSON בלבד):**
+```json
+{
+  "שם רחוב א": {"lamas_id": "123", "confidence": 0.9, "reasoning": "התאמה מדויקת"},
+  "שם רחוב ב": {"lamas_id": null, "confidence": 0.0, "reasoning": "אין מועמד מתאים"}
+}
+```
+"""
+        return prompt
+
+    def resolve_batch(
+        self,
+        city_name: str,
+        streets_data: list
+    ) -> Dict[str, Any]:
+        """
+        Use the local AI model to resolve multiple street matches in one call.
+        """
+        if not self.is_available():
+            return {}
+        
+        try:
+            prompt = self.prepare_batch_prompt(city_name, streets_data)
+            
+            messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = self.processor(text=[text], return_tensors="pt", padding=True)
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                generated_ids = self.model.generate(**inputs, max_new_tokens=2048, do_sample=False)
+            
+            generated_ids_trimmed = [out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)]
+            generated_text = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+            
+            print(f"    [DEBUG] Local AI Batch Raw Response: {generated_text[:200]}...")
+            
+            # Extract JSON
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', generated_text, re.DOTALL)
+            if not json_match:
+                json_match = re.search(r'(\{.*?\})', generated_text, re.DOTALL)
+            
+            if json_match:
+                return json.loads(self._clean_json_string(json_match.group(1)))
+            
+            return {}
+            
+        except Exception as e:
+            print(f"Error during local AI batch resolution: {e}")
+            return {}
         """Clean common JSON formatting issues from LLM output."""
         # Remove comments // ...
         json_str = re.sub(r'//.*$', '', json_str, flags=re.MULTILINE)

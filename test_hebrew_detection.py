@@ -1,47 +1,40 @@
-#!/usr/bin/env python3
-"""
-Test script to verify Hebrew name prioritization logic
-"""
-import pandas as pd
+import unittest
 import sys
 import os
 
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add parent directory to path to find OSM_streets
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from OSM_streets import is_hebrew
 
-# Test cases
-test_cases = [
-    ("שדרות רוטשילד", True, "Hebrew street name"),
-    ("Abu Ghosh", False, "Arabic/English name"),
-    ("شارع الرئيسي", False, "Arabic name"),
-    ("Main Street", False, "English name"),
-    ("רח' הרצל", True, "Hebrew with abbreviation"),
-    ("", False, "Empty string"),
-    (None, False, "None value"),
-    ("123", False, "Numbers only"),
-    ("רחוב 123", True, "Hebrew with numbers"),
-]
+class TestHebrewDetection(unittest.TestCase):
 
-print("Testing is_hebrew() function:")
-print("=" * 60)
+    def test_hebrew_street_name(self):
+        self.assertTrue(is_hebrew("שדרות רוטשילד"), "Failed on Hebrew street name")
 
-all_passed = True
-for text, expected, description in test_cases:
-    result = is_hebrew(text)
-    status = "✓ PASS" if result == expected else "✗ FAIL"
-    if result != expected:
-        all_passed = False
-    print(f"{status}: {description}")
-    print(f"  Input: {repr(text)}")
-    print(f"  Expected: {expected}, Got: {result}")
-    print()
+    def test_arabic_english_name(self):
+        self.assertFalse(is_hebrew("Abu Ghosh"), "Failed on Arabic/English name")
 
-print("=" * 60)
-if all_passed:
-    print("All tests passed! ✓")
-    sys.exit(0)
-else:
-    print("Some tests failed! ✗")
-    sys.exit(1)
+    def test_arabic_name(self):
+        self.assertFalse(is_hebrew("شارع الرئيسي"), "Failed on Arabic name")
+
+    def test_english_name(self):
+        self.assertFalse(is_hebrew("Main Street"), "Failed on English name")
+
+    def test_hebrew_with_abbreviation(self):
+        self.assertTrue(is_hebrew("רח' הרצל"), "Failed on Hebrew with abbreviation")
+
+    def test_empty_string(self):
+        self.assertFalse(is_hebrew(""), "Failed on empty string")
+
+    def test_none_value(self):
+        self.assertFalse(is_hebrew(None), "Failed on None value")
+
+    def test_numbers_only(self):
+        self.assertFalse(is_hebrew("123"), "Failed on numbers only")
+
+    def test_hebrew_with_numbers(self):
+        self.assertTrue(is_hebrew("רחוב 123"), "Failed on Hebrew with numbers")
+
+if __name__ == '__main__':
+    unittest.main(argv=['first-arg-is-ignored'], exit=False)

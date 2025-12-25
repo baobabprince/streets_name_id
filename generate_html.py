@@ -181,6 +181,11 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
             tooltip = "&#10;".join(tooltip_lines)  # &#10; is newline in HTML
             safe_tooltip = re.sub(r'[<>&"]', '', tooltip)
             
+            # Get diagnostics JSON
+            diagnostics_json = row.get('diagnostics', '')
+            if pd.isna(diagnostics_json):
+                diagnostics_json = ''
+            
             # Create path element with data attributes for interactivity
             path_element = (
                 f'<path d="{path_data}" '
@@ -189,7 +194,8 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
                 f'stroke-dasharray="{stroke_dasharray}" '
                 f'fill="none" '
                 f'class="street-path" '
-                f'data-tooltip="{safe_tooltip}">'
+                f'data-tooltip="{safe_tooltip}" '
+                f'data-diagnostics=\'{diagnostics_json}\'>'
                 f'</path>'
             )
             
@@ -206,37 +212,63 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         body {{
             margin: 0;
             padding: 20px;
-            font-family: Arial, sans-serif;
-            background-color: #f5f5f5;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
             direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
         }}
         
+        .main-layout {{
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }}
+
         .container {{
-            max-width: 1200px;
-            margin: 0 auto;
+            flex: 3;
             background: white;
             padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }}
+
+        .debug-panel {{
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
         }}
         
-        h1 {{
-            text-align: center;
-            color: #333;
-            margin-bottom: 10px;
+        h1, h2, h3 {{
+            color: #1a1a1a;
+            margin-top: 0;
+        }}
+
+        .debug-panel h2 {{
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
         }}
         
         .legend {{
-            margin: 20px 0;
-            padding: 15px;
-            background: #f9f9f9;
-            border-radius: 5px;
-            text-align: center;
-        }}
-        
-        .legend-title {{
-            font-weight: bold;
-            margin-bottom: 10px;
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
         }}
         
         .legend-items {{
@@ -250,18 +282,21 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
             display: flex;
             align-items: center;
             gap: 8px;
+            font-size: 0.9em;
         }}
         
         .legend-color {{
-            width: 30px;
+            width: 24px;
             height: 4px;
+            border-radius: 2px;
         }}
         
         svg {{
             width: 100%;
             height: auto;
-            border: 1px solid #ddd;
-            background: #f0f0f0;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
         }}
         
         .street-path {{
@@ -270,202 +305,283 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         }}
         
         .street-path:hover {{
-            stroke-width: 10 !important;
-            filter: drop-shadow(0 0 3px rgba(0,0,0,0.5));
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
         }}
         
         .street-path.pinned {{
-            stroke-width: 8 !important;
-            filter: drop-shadow(0 0 5px rgba(255,215,0,0.8));
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
         }}
         
         #tooltip {{
             position: fixed;
-            background: rgba(0, 0, 0, 0.9);
+            background: rgba(33, 37, 41, 0.95);
             color: white;
-            padding: 12px 18px;
-            border-radius: 6px;
+            padding: 8px 12px;
+            border-radius: 4px;
             pointer-events: none;
             opacity: 0;
-            transition: opacity 0.2s;
+            transition: opacity 0.15s;
             z-index: 1000;
             white-space: pre-line;
-            font-size: 15px;
-            max-width: 350px;
-            direction: rtl;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
         }}
         
         #tooltip.visible {{
             opacity: 1;
         }}
-        
-        .stats {{
-            margin-top: 20px;
-            padding: 15px;
-            background: #e8f4f8;
-            border-radius: 5px;
+
+        /* Debug UI Components */
+        .debug-section {{
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }}
+        .debug-section h4 {{
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }}
+        .debug-card {{
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }}
+        .trace-item {{
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }}
+        .trace-label {{ color: #6c757d; }}
+        .trace-value {{ font-weight: 600; color: #212529; }}
+
+        .score-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }}
+        .score-table th, .score-table td {{
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }}
+        .score-table th {{ color: #6c757d; font-weight: normal; }}
+        .score-row.selected {{ background: #e7f5ff; font-weight: bold; }}
+        .final-score {{ color: #0056b3; font-weight: bold; }}
+
+        .ai-reasoning {{
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }}
+
+        .empty-state {{
+            color: #adb5bd;
             text-align: center;
+            margin-top: 50px;
         }}
-        .diagnostics {{
-            margin-top: 20px;
-            padding: 15px;
-            background: #fff;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-        }}
-        .diagnostics h2 {{
-            text-align: center;
-            color: #333;
-            margin-top: 0;
-        }}
+
         .diagnostics-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
         }}
         .diagnostics-card {{
-            background: #f9f9f9;
-            padding: 15px;
-            border-radius: 5px;
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
             text-align: center;
         }}
-        .diagnostics-card .label {{
-            font-weight: bold;
-            color: #555;
-        }}
-        .diagnostics-card .value {{
-            font-size: 1.5em;
-            color: #0056b3;
-        }}
-        .unmatched-list {{
-            margin-top: 20px;
-            padding: 15px;
-            background: #fff8f8;
-            border: 1px solid #f2dede;
-            border-radius: 5px;
-        }}
-        .unmatched-list h3 {{
-            margin-top: 0;
-            color: #a94442;
-        }}
-        .unmatched-list ul {{
-            columns: 3;
-            padding-right: 20px;
-            list-style-type: none;
-        }}
-        .unmatched-list li {{
-            margin-bottom: 5px;
-        }}
+        .diagnostics-card .label {{ font-size: 0.8em; color: #6c757d; }}
+        .diagnostics-card .value {{ font-size: 1.3em; font-weight: bold; color: #0d6efd; }}
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>מפת רחובות - {place_name}</h1>
-        
-        <div class="legend">
-            <div class="legend-title">מקרא צבעים</div>
-            <div class="legend-items">
-                <div class="legend-item">
-                    <span class="legend-color" style="background: #000000;"></span>
-                    <span>התאמה מלאה (100)</span>
-                </div>
-                <div class="legend-item">
-                    <span class="legend-color" style="background: linear-gradient(to left, #c06666, #ffcccc);"></span>
-                    <span>התאמה חלקית (0-99)</span>
-                </div>
-                <div class="legend-item">
-                    <span class="legend-color" style="background: #00BFFF;"></span>
-                    <span>התאמה ע"י AI</span>
-                </div>
-                <div class="legend-item">
-                    <span class="legend-color" style="background: #FF8C00;"></span>
-                    <span>שם קיים, ללא התאמה</span>
-                </div>
-                <div class="legend-item">
-                    <span class="legend-color" style="background: repeating-linear-gradient(to right, #CCCCCC 0px, #CCCCCC 5px, transparent 5px, transparent 10px);"></span>
-                    <span>ללא שם</span>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - {place_name}</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
                 </div>
             </div>
-        </div>
-        
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" id="street-map">
-            <rect x="0" y="0" width="{width}" height="{height}" fill="#f0f0f0" />
-            {chr(10).join(svg_paths)}
-        </svg>
-        
-        <div class="stats">
-            <strong>הוראות:</strong> העבר את העכבר מעל רחוב כדי לראות את שמו ופרטי ההתאמה. <strong>לחץ על רחוב</strong> כדי לנעוץ את המידע (שימושי בערים גדולות).
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" id="street-map">
+                <rect x="0" y="0" width="{width}" height="{height}" fill="#fdfdfd" />
+                {chr(10).join(svg_paths)}
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            {_build_diagnostics_html(diagnostics) if diagnostics else ""}
         </div>
 
-        {_build_diagnostics_html(diagnostics) if diagnostics else ""}
-
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
     </div>
     
     <div id="tooltip"></div>
     
     <script>
         const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
         const paths = document.querySelectorAll('.street-path');
         let pinnedPath = null;
         
+        function updateDebugPanel(path) {{
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {{
+                debugContent.innerHTML = `<div class="debug-card"><strong>${{tooltipText}}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }}
+
+            try {{
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {{
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${{diag.normalization.osm_original || 'N/A'}}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${{diag.normalization.osm_normalized || 'N/A'}}</span></div>
+                        </div>
+                    </div>`;
+                }}
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {{
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${{diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${{i === 0 ? 'selected' : ''}}">
+                                        <td>${{m.lamas_name}} (ID ${{m.lamas_id}})</td>
+                                        <td class="final-score">${{m.final_score}}</td>
+                                        <td>${{m.fuzz_ratio}}</td>
+                                        <td>${{m.token_sort_ratio}}</td>
+                                        <td>${{m.token_set_ratio}}</td>
+                                    </tr>
+                                `).join('')}}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }}
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {{
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${{diag.ai_resolution.method || 'Unknown'}})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${{diag.ai_resolution.response}}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${{diag.ai_resolution.reasoning || 'לא סופק הסבר'}}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${{diag.ai_resolution.prompt}}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }}
+
+                debugContent.innerHTML = html;
+            }} catch (e) {{
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${{e.message}}</div>`;
+            }}
+        }}
+
         paths.forEach(path => {{
-            // Click to pin/unpin tooltip
             path.addEventListener('click', (e) => {{
                 e.stopPropagation();
                 
                 if (pinnedPath === path) {{
-                    // Unpin current
                     path.classList.remove('pinned');
-                    tooltip.classList.remove('visible');
                     pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
                 }} else {{
-                    // Unpin previous if exists
-                    if (pinnedPath) {{
-                        pinnedPath.classList.remove('pinned');
-                    }}
-                    
-                    // Pin new
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
                     path.classList.add('pinned');
                     pinnedPath = path;
-                    const tooltipText = path.getAttribute('data-tooltip');
-                    tooltip.textContent = tooltipText;
-                    tooltip.classList.add('visible');
-                    tooltip.style.left = (e.clientX + 15) + 'px';
-                    tooltip.style.top = (e.clientY + 15) + 'px';
+                    updateDebugPanel(path);
                 }}
             }});
             
-            // Hover to show tooltip (only if not pinned)
             path.addEventListener('mouseenter', (e) => {{
-                if (pinnedPath !== path) {{
-                    const tooltipText = path.getAttribute('data-tooltip');
-                    tooltip.textContent = tooltipText;
-                    tooltip.classList.add('visible');
-                }}
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
             }});
             
             path.addEventListener('mousemove', (e) => {{
-                if (pinnedPath !== path) {{
-                    tooltip.style.left = (e.clientX + 15) + 'px';
-                    tooltip.style.top = (e.clientY + 15) + 'px';
-                }}
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
             }});
             
             path.addEventListener('mouseleave', () => {{
-                if (pinnedPath !== path) {{
-                    tooltip.classList.remove('visible');
-                }}
+                tooltip.classList.remove('visible');
             }});
         }});
         
-        // Click anywhere else to unpin
         document.addEventListener('click', () => {{
             if (pinnedPath) {{
                 pinnedPath.classList.remove('pinned');
-                tooltip.classList.remove('visible');
                 pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
             }}
         }});
     </script>
