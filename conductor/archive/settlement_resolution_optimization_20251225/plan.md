@@ -9,10 +9,10 @@
 - [x] Task: Create integration tests for parallel settlement resolution using `ThreadPoolExecutor`. (0eceb1c)
 - [x] Task: Update `BatchProcessor.run_batch` in `batch_process_settlements.py` to initiate location resolution in parallel. (3437751)
 - [x] Task: Refactor `run_batch` logic to submit matching pipeline tasks immediately after each location is resolved. (3437751)
-- [~] Task: Conductor - User Manual Verification 'Parallel Resolution and Pipeline Overlap' (Protocol in workflow.md)
+- [x] Task: Conductor - User Manual Verification 'Parallel Resolution and Pipeline Overlap' (Protocol in workflow.md) (84ba54f)
 
-## Phase 3: Simplified Query Variants [checkpoint: ]
-- [ ] Task: Create unit tests for "Selective Fallback" query strategy in `SettlementMatcher.search_settlement`.
-- [ ] Task: Refactor `search_settlement` to use full name primary query and parenthetical fallback.
-- [ ] Task: Remove redundant variants (", Israel", dash-splitting) from `SettlementMatcher`.
-- [ ] Task: Conductor - User Manual Verification 'Simplified Query Variants' (Protocol in workflow.md)
+## Phase 3: Simplified Query Variants [checkpoint: 84ba54f]
+- [x] Task: Create unit tests for "Selective Fallback" query strategy in `SettlementMatcher.search_settlement`. (84ba54f)
+- [x] Task: Refactor `search_settlement` to use full name primary query and parenthetical fallback. (84ba54f)
+- [x] Task: Remove redundant variants (", Israel", dash-splitting) from `SettlementMatcher`. (84ba54f)
+- [x] Task: Conductor - User Manual Verification 'Simplified Query Variants' (Protocol in workflow.md) (84ba54f)

@@ -250,6 +250,34 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
             overflow-y: auto;
             border-right: 4px solid #00BFFF;
         }}
+
+        /* Responsive Adjustments */
+        @media (max-width: 768px) {{
+            body {{
+                height: auto;
+                min-height: 100vh;
+                padding: 10px;
+            }}
+            
+            .main-layout {{
+                flex-direction: column;
+                flex: none;
+            }}
+
+            .container, .debug-panel {{
+                flex: none;
+                width: 100%;
+                min-height: 400px;
+                height: auto;
+            }}
+
+            .debug-panel {{
+                border-right: none;
+                border-top: 4px solid #00BFFF;
+            }}
+
+            h1 {{ font-size: 1.5rem; }}
+        }}
         
         h1, h2, h3 {{
             color: #1a1a1a;
@@ -645,11 +673,18 @@ def main():
         if 'geometry' not in gdf.columns or gdf.geometry.isnull().all():
              # Fallback for CSVs without embedded geometry: Load OSM data and merge
             print("Geometry not found in report, loading from OSM pickle.")
-            osm_path = f"data/osm_data_{safe_name}.pkl"
-            if not os.path.exists(osm_path):
-                print(f"OSM data not found at {osm_path} and geometry not in report. Aborting.")
+            
+            # Robustly find the OSM pickle file
+            import glob
+            osm_pattern = f"data/osm_data_{safe_name}*.pkl"
+            matching_files = glob.glob(osm_pattern)
+            
+            if not matching_files:
+                print(f"OSM data not found at {osm_pattern} and geometry not in report. Aborting.")
                 return
 
+            osm_path = matching_files[0]
+            print(f"Loading OSM data from {osm_path}")
             osm_gdf = pd.read_pickle(osm_path)
             diagnostic_df = pd.read_csv(report_path, encoding='utf-8')
 

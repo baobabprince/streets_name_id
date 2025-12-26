@@ -135,20 +135,36 @@ def generate_index_html():
             --glass-border: rgba(255, 255, 255, 0.1);
         }}
 
-        body {{
+        body {
             font-family: 'Heebo', sans-serif;
             background-color: var(--bg-color);
             color: var(--text-primary);
             margin: 0;
             padding: 0;
             min-height: 100vh;
-        }}
+        }
 
-        .dashboard {{
+        .dashboard {
             max-width: 1400px;
             margin: 0 auto;
             padding: 40px 20px;
-        }}
+        }
+
+        /* Responsive Adjustments */
+        @media (max-width: 768px) {
+            .dashboard {
+                padding: 20px 10px;
+            }
+            h1 {
+                font-size: 2rem !important;
+            }
+            .subtitle {
+                font-size: 1rem !important;
+            }
+            .stat-value {
+                font-size: 1.8rem !important;
+            }
+        }
 
         /* Header Section */
         header {{

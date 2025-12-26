@@ -32,7 +32,7 @@ This project is primarily built using **Python**, leveraging a suite of powerful
 *   `data/nominatim_cache.json`: JSON files are used for caching external API responses.
 
 ## Architecture Pattern
-The project follows a **parallelized data pipeline/batch processing** architecture. A hybrid parallel model is used: multi-threaded I/O for settlement resolution and multi-process execution for street-level pipelines. AI resolution is batched at the city level for maximum efficiency.
+The project follows a **parallelized data pipeline/batch processing** architecture. A hybrid parallel model is used: multi-threaded I/O for settlement resolution (protected by a **thread-safe global rate limiter**) and multi-process execution for street-level pipelines. AI resolution is batched at the city level for maximum efficiency.
 
 ## Key Integrations
 *   **OpenStreetMap (OSM):** Data source for street geometries.
