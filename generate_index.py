@@ -1,4 +1,3 @@
-
 import os
 import pandas as pd
 import glob
@@ -93,9 +92,7 @@ def generate_index_html():
         global_matched_streets += stats['matched_count']
         
         # Check if HTML map exists
-        # The HTML filename logic from generate_html.py is: {safe_name}_roads.html
-        # Settlement name in report filename is ALREADY safe (mostly), but let's just check
-        safe_name = settlement_name # assumed to be safe as it came from filename
+        safe_name = settlement_name 
         html_map_path = os.path.join(HTML_DIR, f"{safe_name}_roads.html")
         has_map = os.path.exists(html_map_path)
         
@@ -112,8 +109,8 @@ def generate_index_html():
     
     global_match_rate = (global_matched_streets / global_total_streets * 100) if global_total_streets > 0 else 0
 
-    # HTML Template
-    html_content = f"""
+    # HTML Template with format placeholders
+    html_template = """
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
 <head>
@@ -135,36 +132,36 @@ def generate_index_html():
             --glass-border: rgba(255, 255, 255, 0.1);
         }}
 
-        body {
+        body {{
             font-family: 'Heebo', sans-serif;
             background-color: var(--bg-color);
             color: var(--text-primary);
             margin: 0;
             padding: 0;
             min-height: 100vh;
-        }
+        }}
 
-        .dashboard {
+        .dashboard {{
             max-width: 1400px;
             margin: 0 auto;
             padding: 40px 20px;
-        }
+        }}
 
         /* Responsive Adjustments */
-        @media (max-width: 768px) {
-            .dashboard {
+        @media (max-width: 768px) {{
+            .dashboard {{
                 padding: 20px 10px;
-            }
-            h1 {
+            }}
+            h1 {{
                 font-size: 2rem !important;
-            }
-            .subtitle {
+            }}
+            .subtitle {{
                 font-size: 1rem !important;
-            }
-            .stat-value {
+            }}
+            .stat-value {{
                 font-size: 1.8rem !important;
-            }
-        }
+            }}
+        }}
 
         /* Header Section */
         header {{
@@ -303,7 +300,7 @@ def generate_index_html():
         .status-poor {{ background: rgba(239, 68, 68, 0.2); color: #f87171; }}
 
         .progress-container {{
-            margin-bottom: 20px;
+            margin-top: 1rem;
         }}
 
         .progress-bar-bg {{
@@ -434,6 +431,13 @@ def generate_index_html():
 
         <div class="settlements-grid" id="grid">
 """
+    
+    html_content = html_template.format(
+        total_processed_settlements=total_processed_settlements,
+        global_match_rate=global_match_rate,
+        global_total_streets=global_total_streets,
+        global_matched_streets=global_matched_streets
+    )
     
     # Generate Cards
     for item in settlements_data:

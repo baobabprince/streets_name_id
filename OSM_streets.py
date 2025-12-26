@@ -49,14 +49,29 @@ def fetch_osm_street_data(place):
     osm_gdf['osm_id'] = osm_gdf.apply(lambda row: f"{row['u']}-{row['v']}-{row['key']}", axis=1)
     
     # נבחר את השדות החיוניים להמשך העבודה
-    cols_to_keep = ['osm_id', 'name', 'highway', 'geometry']
-    if 'name:he' in osm_gdf.columns:
+    # ודא שהעמודות קיימות לפני הבחירה
+    available_cols = osm_gdf.columns.tolist()
+    cols_to_keep = ['osm_id', 'geometry']
+    
+    # OSM uses 'name' by default. oxmnx graph_to_gdfs usually includes it.
+    name_col = 'name' if 'name' in available_cols else None
+    if name_col:
+        cols_to_keep.append(name_col)
+    
+    if 'highway' in available_cols:
+        cols_to_keep.append('highway')
+        
+    if 'name:he' in available_cols:
         cols_to_keep.append('name:he')
 
     osm_gdf = osm_gdf[cols_to_keep].copy()
     
     # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
-    osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
+    if 'name' in osm_gdf.columns:
+        osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
+    elif 'osm_name' not in osm_gdf.columns:
+        # If no name column found, create empty one
+        osm_gdf['osm_name'] = None
     
     # ב-OSM, שם הרחוב (name) יכול להיות מחרוזת בודדת או רשימה של שמות.
     # נטפל בכך כדי לקבל מחרוזת אחידה
