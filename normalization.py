@@ -145,12 +145,28 @@ def normalize_street_name(name):
         # Polish with AI
         name = polish_transliteration_with_ai(name, algorithmic_hebrew)
     
-    # Hebrew-transliterated Arabic prefixes (e.g. אל-סלאם, א-סלאם)
+    # Remove common street type prefixes at the beginning
+    # This helps match "חטיבת הנגב" with "שדרות חטיבת הנגב"
+    street_type_prefixes = [
+        r'^\s*שדרות\s+',
+        r'^\s*רחוב\s+',
+        r'^\s*סמטה\s+',
+        r'^\s*סמטת\s+',
+        r'^\s*דרך\s+',
+        r'^\s*משעול\s+',
+        r'^\s*שביל\s+',
+        r'^\s*מעלה\s+',
+        r'^\s*כיכר\s+',
+    ]
+    
+    for prefix_pattern in street_type_prefixes:
+        name = re.sub(prefix_pattern, '', name)
+
+    # Hebrew-transliterated Arabic prefixes (e.g. אל-סלאם, א-סלאם, אל סלאם)
     # We remove these to match the core name. 
-    # We only remove if there's a dash to avoid hijacking Hebrew names like אלעזר.
     hebrew_arabic_prefixes = [
-        (r'\bאל\s*[-־]\s*', ''),
-        (r'\bא\s*[-־]\s*', ''),
+        (r'\bאל\s*[-־\s]\s*', ''),
+        (r'\bא\s*[-־\s]\s*', ''),
     ]
     for pattern, replacement in hebrew_arabic_prefixes:
         name = re.sub(pattern, replacement, name)
@@ -428,19 +444,20 @@ def find_fuzzy_candidates(osm_gdf, lamas_df,
             best_lamas_id = matches[0]['lamas_id']
             best_lamas_name = matches[0]['lamas_name']
             all_candidates = f"ID: {best_lamas_id}, Name: '{best_lamas_name}', Score: {best_score}"
-        elif matches[0]['score'] >= confident_threshold and len(matches) > 1:
-            # Multiple matches, top one is high confidence but there are others
-            if len(matches) == 1 or matches[0]['score'] - matches[1]['score'] >= 5:
+        elif matches[0]['score'] >= confident_threshold:
+            # Multiple matches, top one is high confidence
+            # If top score is very high (>= 98), we're more permissive about the margin
+            if matches[0]['score'] >= 98:
                 status = 'CONFIDENT'
-                best_score = matches[0]['score']
-                best_lamas_id = matches[0]['lamas_id']
-                best_lamas_name = matches[0]['lamas_name']
+            # Otherwise, require a margin of at least 5 points to the second best
+            elif len(matches) == 1 or matches[0]['score'] - matches[1]['score'] >= 5:
+                status = 'CONFIDENT'
             else:
                 status = 'NEEDS_AI'
-                best_score = matches[0]['score']
-                best_lamas_id = matches[0]['lamas_id']
-                best_lamas_name = matches[0]['lamas_name']
             
+            best_score = matches[0]['score']
+            best_lamas_id = matches[0]['lamas_id']
+            best_lamas_name = matches[0]['lamas_name']
             all_candidates = '\n'.join([
                 f"ID: {m['lamas_id']}, Name: '{m['lamas_name']}', Score: {round(m['score'], 2)}"
                 for m in matches[:5]

@@ -89,6 +89,15 @@ if __name__ == "__main__":
         osm_df = pd.read_pickle(osm_file)
         lamas_df = pd.read_pickle(lamas_file)
         
+        # Force re-normalization to reflect code changes
+        print("Re-normalizing names...")
+        if 'osm_name' in osm_df.columns:
+            osm_df['normalized_name'] = osm_df['osm_name'].apply(normalize_street_name)
+        else:
+            osm_df['normalized_name'] = osm_df['normalized_name'].apply(normalize_street_name)
+            
+        lamas_df['normalized_name'] = lamas_df['LAMAS_name'].apply(normalize_street_name)
+        
         # Filter LAMAS data for the specific city if needed
         # (The pipeline does this in step 4, we should replicate or rely on correct data)
         if 'city' in osm_df.columns and not osm_df.empty:
