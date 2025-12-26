@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - אושה</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - אושה</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 580.4309569448233 453.2113144379109" id="street-map">
+                <rect x="0" y="0" width="580.4309569448233" height="453.2113144379109" fill="#fdfdfd" />
+                <path d="M 0.0,394.4668526179157 L 7.113315461669117,392.3877488481812" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 118.84468836989254,9.190736712422222 L 217.38470162078738,14.2231255332008" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 118.84468836989254,9.190736712422222 L 112.91135951178148,7.786964711267501" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 494.0470320894383,28.36677522910759 L 501.02676416235045,29.21433422062546" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 494.0470320894383,28.36677522910759 L 481.9688673382625,27.71786283282563" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 501.02676416235045,29.21433422062546 L 508.2959269108251,30.790264061652124" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 501.02676416235045,29.21433422062546 L 494.0470320894383,28.36677522910759" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 508.2959269108251,30.790264061652124 L 516.7339443136007,33.18726618587971" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 508.2959269108251,30.790264061652124 L 501.02676416235045,29.21433422062546" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 516.7339443136007,33.18726618587971 L 524.1478223996237,36.3788538929075" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 516.7339443136007,33.18726618587971 L 508.2959269108251,30.790264061652124" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 524.1478223996237,36.3788538929075 L 575.4549757060595,62.4015180664137" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 524.1478223996237,36.3788538929075 L 516.7339443136007,33.18726618587971" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 577.0023166281171,63.39474838413298 L 578.1934351804666,64.73229841236025" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 577.0023166281171,63.39474838413298 L 575.4549757060595,62.4015180664137" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 578.1934351804666,64.73229841236025 L 579.0839911061339,66.08309135725722" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 578.1934351804666,64.73229841236025 L 577.0023166281171,63.39474838413298" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 579.0839911061339,66.08309135725722 L 579.6851163562387,67.57955786958337" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 579.0839911061339,66.08309135725722 L 578.1934351804666,64.73229841236025" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.2862416068092,71.0095113683492 L 580.4309569448233,72.65165091399103" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.2862416068092,71.0095113683492 L 579.6851163562387,67.57955786958337" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.4309569448233,72.65165091399103 L 580.4309569448233,74.43946386920288" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.4309569448233,72.65165091399103 L 580.2862416068092,71.0095113683492" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.4309569448233,74.43946386920288 L 580.2862416068092,76.08160293661058" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.4309569448233,74.43946386920288 L 580.4309569448233,72.65165091399103" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.2862416068092,76.08160293661058 L 580.130394319538,77.88265842618421" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.2862416068092,76.08160293661058 L 580.4309569448233,74.43946386920288" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.130394319538,77.88265842618421 L 579.6851163562387,80.2664079121314" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 580.130394319538,77.88265842618421 L 580.2862416068092,76.08160293661058" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 579.6851163562387,80.2664079121314 L 578.9392757681198,83.10042056348175" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 579.6851163562387,80.2664079121314 L 580.130394319538,77.88265842618421" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 578.9392757681198,83.10042056348175 L 561.3841920699924,127.87508132914081" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 578.9392757681198,83.10042056348175 L 579.6851163562387,80.2664079121314" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 495.01551165850833,286.6443118280731 L 487.5125779793598,298.827699247282" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 495.01551165850833,286.6443118280731 L 501.36072263494134,275.1892675966956" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 487.5125779793598,298.827699247282 L 476.67005957616493,315.55335079226643" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 487.5125779793598,298.827699247282 L 495.01551165850833,286.6443118280731" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 476.67005957616493,315.55335079226643 L 471.33785596722737,323.6844190489501" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 476.67005957616493,315.55335079226643 L 487.5125779793598,298.827699247282" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 465.32660346478224,332.86166035430506 L 452.79202880105004,347.79949237778783" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 465.32660346478224,332.86166035430506 L 471.33785596722737,323.6844190489501" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 452.79202880105004,347.79949237778783 L 445.0219283439219,357.9434348815121" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 452.79202880105004,347.79949237778783 L 465.32660346478224,332.86166035430506" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 445.0219283439219,357.9434348815121 L 434.86959078302607,367.50468861404806" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 445.0219283439219,357.9434348815121 L 452.79202880105004,347.79949237778783" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 434.86959078302607,367.50468861404806 L 423.52613467210904,375.8608472221531" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 434.86959078302607,367.50468861404806 L 445.0219283439219,357.9434348815121" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 423.52613467210904,375.8608472221531 L 413.97492236224934,379.44962350605056" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 423.52613467210904,375.8608472221531 L 434.86959078302607,367.50468861404806" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 413.97492236224934,379.44962350605056 L 409.2327120541595,381.11820546351373" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 413.97492236224934,379.44962350605056 L 423.52613467210904,375.8608472221531" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 403.8225848018192,383.0251559833996 L 397.8447281457484,385.42208640743047" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 403.8225848018192,383.0251559833996 L 409.2327120541595,381.11820546351373" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 397.8447281457484,385.42208640743047 L 391.87800343940035,388.99761707149446" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 397.8447281457484,385.42208640743047 L 403.8225848018192,383.0251559833996" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 391.87800343940035,388.99761707149446 L 385.911278732121,394.3741537309252" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 391.87800343940035,388.99761707149446 L 397.8447281457484,385.42208640743047" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 385.911278732121,394.3741537309252 L 372.7644468699582,405.72314054192975" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 385.911278732121,394.3741537309252 L 391.87800343940035,388.99761707149446" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 372.7644468699582,405.72314054192975 L 367.98884071502835,408.70274436753243" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 372.7644468699582,405.72314054192975 L 385.911278732121,394.3741537309252" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 367.98884071502835,408.70274436753243 L 363.8143598102033,411.099669564981" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 367.98884071502835,408.70274436753243 L 372.7644468699582,405.72314054192975" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 363.8143598102033,411.099669564981 L 360.4191153408028,414.88707523513585" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 363.8143598102033,411.099669564981 L 367.98884071502835,408.70274436753243" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 360.4191153408028,414.88707523513585 L 350.67865989683196,412.8874311344698" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 360.4191153408028,414.88707523513585 L 363.8143598102033,411.099669564981" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 350.67865989683196,412.8874311344698 L 333.0345206060447,407.70954317599535" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 350.67865989683196,412.8874311344698 L 360.4191153408028,414.88707523513585" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 316.0360343614593,402.7302932739258 L 310.65930295642465,402.1343722655438" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 316.0360343614593,402.7302932739258 L 333.0345206060447,407.70954317599535" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 310.65930295642465,402.1343722655438 L 306.4848220515996,402.7302932739258" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 310.65930295642465,402.1343722655438 L 316.0360343614593,402.7302932739258" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 306.4848220515996,402.7302932739258 L 302.2992091984488,403.3262142506428" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 306.4848220515996,402.7302932739258 L 310.65930295642465,402.1343722655438" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 302.2992091984488,403.3262142506428 L 298.12472829269245,405.72314054192975" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 302.2992091984488,403.3262142506428 L 306.4848220515996,402.7302932739258" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 298.12472829269245,405.72314054192975 L 261.4560880260542,436.65801287582144" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 298.12472829269245,405.72314054192975 L 302.2992091984488,403.3262142506428" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 261.4560880260542,436.65801287582144 L 254.28711281856522,440.3262265091762" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 261.4560880260542,436.65801287582144 L 298.12472829269245,405.72314054192975" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 254.28711281856522,440.3262265091762 L 244.72476855944842,444.1665933476761" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 254.28711281856522,440.3262265091762 L 261.4560880260542,436.65801287582144" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 244.72476855944842,444.1665933476761 L 234.8952575228177,447.3315843883902" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 244.72476855944842,444.1665933476761 L 254.28711281856522,440.3262265091762" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 234.8952575228177,447.3315843883902 L 226.25686503667384,449.8079575370066" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 234.8952575228177,447.3315843883902 L 244.72476855944842,444.1665933476761" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 226.25686503667384,449.8079575370066 L 221.5369186270982,450.89385361922905" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 226.25686503667384,449.8079575370066 L 234.8952575228177,447.3315843883902" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 214.1119085913524,452.6153959855437 L 203.04675120674074,453.2113144379109" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 214.1119085913524,452.6153959855437 L 221.5369186270982,450.89385361922905" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 203.04675120674074,453.2113144379109 L 190.81273916875944,452.1916317329742" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 203.04675120674074,453.2113144379109 L 214.1119085913524,452.6153959855437" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 190.81273916875944,452.1916317329742 L 180.30417923768982,449.83444280875847" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 190.81273916875944,452.1916317329742 L 203.04675120674074,453.2113144379109" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 125.54612171649933,432.5925184530206 L 89.58992618974298,418.4890822954476" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 125.54612171649933,432.5925184530206 L 145.23853963706642,438.8960206070915" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 64.9549228772521,408.8219285039231 L 50.20509034721181,403.0348751102574" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 64.9549228772521,408.8219285039231 L 70.85485588945448,411.13939760252833" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 575.4549757060595,62.4015180664137 L 577.0023166281171,63.39474838413298" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 575.4549757060595,62.4015180664137 L 524.1478223996237,36.3788538929075" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 471.33785596722737,323.6844190489501 L 465.32660346478224,332.86166035430506" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 471.33785596722737,323.6844190489501 L 476.67005957616493,315.55335079226643" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 579.6851163562387,67.57955786958337 L 580.2862416068092,71.0095113683492" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 579.6851163562387,67.57955786958337 L 579.0839911061339,66.08309135725722" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 91.05934346886352,0.0 L 112.91135951178148,7.786964711267501" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 112.91135951178148,7.786964711267501 L 118.84468836989254,9.190736712422222" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 112.91135951178148,7.786964711267501 L 91.05934346886352,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 561.3841920699924,127.87508132914081 L 550.4526180741377,156.02966103889048" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 561.3841920699924,127.87508132914081 L 578.9392757681198,83.10042056348175" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 531.6396241299808,202.89642499946058 L 520.8861613194458,230.2827381636016" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 531.6396241299808,202.89642499946058 L 550.4526180741377,156.02966103889048" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 550.4526180741377,156.02966103889048 L 531.6396241299808,202.89642499946058" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 550.4526180741377,156.02966103889048 L 561.3841920699924,127.87508132914081" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 481.9688673382625,27.71786283282563 L 494.0470320894383,28.36677522910759" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 481.9688673382625,27.71786283282563 L 366.508291487582,21.82467719959095" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 34.35319485794753,396.8108099317178 L 21.05051570897922,391.9772251294926" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 34.35319485794753,396.8108099317178 L 50.20509034721181,403.0348751102574" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 89.58992618974298,418.4890822954476 L 70.85485588945448,411.13939760252833" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 89.58992618974298,418.4890822954476 L 125.54612171649933,432.5925184530206" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 145.23853963706642,438.8960206070915 L 125.54612171649933,432.5925184530206" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 145.23853963706642,438.8960206070915 L 180.30417923768982,449.83444280875847" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 70.85485588945448,411.13939760252833 L 64.9549228772521,408.8219285039231" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 70.85485588945448,411.13939760252833 L 89.58992618974298,418.4890822954476" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 7.113315461669117,392.3877488481812 L 0.0,394.4668526179157" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 7.113315461669117,392.3877488481812 L 21.05051570897922,391.9772251294926" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 21.05051570897922,391.9772251294926 L 7.113315461669117,392.3877488481812" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 21.05051570897922,391.9772251294926 L 34.35319485794753,396.8108099317178" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 180.30417923768982,449.83444280875847 L 145.23853963706642,438.8960206070915" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 180.30417923768982,449.83444280875847 L 190.81273916875944,452.1916317329742" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 501.36072263494134,275.1892675966956 L 495.01551165850833,286.6443118280731" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 501.36072263494134,275.1892675966956 L 506.8821693775244,264.091769028455" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 506.8821693775244,264.091769028455 L 501.36072263494134,275.1892675966956" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 506.8821693775244,264.091769028455 L 513.7839778065681,248.3592591038905" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 513.7839778065681,248.3592591038905 L 506.8821693775244,264.091769028455" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 513.7839778065681,248.3592591038905 L 520.8861613194458,230.2827381636016" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 221.5369186270982,450.89385361922905 L 214.1119085913524,452.6153959855437" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 221.5369186270982,450.89385361922905 L 226.25686503667384,449.8079575370066" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 409.2327120541595,381.11820546351373 L 403.8225848018192,383.0251559833996" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 409.2327120541595,381.11820546351373 L 413.97492236224934,379.44962350605056" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 50.20509034721181,403.0348751102574 L 34.35319485794753,396.8108099317178" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 50.20509034721181,403.0348751102574 L 64.9549228772521,408.8219285039231" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 333.0345206060447,407.70954317599535 L 316.0360343614593,402.7302932739258" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 333.0345206060447,407.70954317599535 L 350.67865989683196,412.8874311344698" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 520.8861613194458,230.2827381636016 L 513.7839778065681,248.3592591038905" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 520.8861613194458,230.2827381636016 L 531.6396241299808,202.89642499946058" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 366.508291487582,21.82467719959095 L 481.9688673382625,27.71786283282563" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 366.508291487582,21.82467719959095 L 335.14959093090147,20.222259922884405" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 217.38470162078738,14.2231255332008 L 335.14959093090147,20.222259922884405" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 217.38470162078738,14.2231255332008 L 118.84468836989254,9.190736712422222" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 335.14959093090147,20.222259922884405 L 366.508291487582,21.82467719959095" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+<path d="M 335.14959093090147,20.222259922884405 L 217.38470162078738,14.2231255332008" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש ראשי עוקף אושה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש ראשי עוקף אושה", "osm_normalized": "כביש ראשי עוקף אושה"}, "scoring_breakdown": []}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">1</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">33</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">1</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (1)</h3>
+            <ul><li>כביש ראשי עוקף אושה</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (33 - 100.0%)</h3>
+            <ul><li>האבוקדו</li><li>האסם</li><li>הבאר</li><li>הבית של פיסטוק</li><li>הבציר</li><li>הברושים</li><li>הגנים</li><li>הגפן</li><li>הדס</li><li>הזית</li><li>החיטה</li><li>החקלאים</li><li>הטנא</li><li>הכותנה</li><li>הכרם</li><li>הכרמל</li><li>המייסדים</li><li>הנגרייה</li><li>הנוער הציוני</li><li>הנעורים</li><li>הרפתנים</li><li>השדה</li><li>השעורה</li><li>השקדיה</li><li>זבולון</li><li>מיץ פטל</li><li>מפלס</li><li>סלע</li><li>ציפורי</li><li>רחוב סומסום</li><li>שביל הבריכה</li><li>שביל החלב</li><li>שנת שרות</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

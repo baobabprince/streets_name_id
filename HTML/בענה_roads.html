@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - בענה</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - בענה</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1424.065717922058 572.4721315321513" id="street-map">
+                <rect x="0" y="0" width="1424.065717922058" height="572.4721315321513" fill="#fdfdfd" />
+                <path d="M 1145.6445394996554,5.451236751396209 L 1163.6449011606164,12.520598399918526" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1145.6445394996554,5.451236751396209 L 1128.813032490667,0.26526705268770456" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1163.6449011606164,12.520598399918526 L 1188.6249948944896,21.672298524528742" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1163.6449011606164,12.520598399918526 L 1145.6445394996554,5.451236751396209" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1217.2897637733258,41.80601366655901 L 1234.855979421176,54.83057251526043" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1217.2897637733258,41.80601366655901 L 1188.6249948944896,21.672298524528742" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1273.5617663701996,101.68968551466241 L 1299.7107147565112,169.53095110552385" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1273.5617663701996,101.68968551466241 L 1263.3871649107896,84.23525148490444" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1299.7107147565112,169.53095110552385 L 1320.9727374981157,213.92266759555787" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1299.7107147565112,169.53095110552385 L 1273.5617663701996,101.68968551466241" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1320.9727374981157,213.92266759555787 L 1341.9453295632266,250.06458939472213" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1320.9727374981157,213.92266759555787 L 1299.7107147565112,169.53095110552385" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1354.8138626995496,284.6944144186564 L 1367.7937153251842,332.46775478543714" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1354.8138626995496,284.6944144186564 L 1341.9453295632266,250.06458939472213" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1367.7937153251842,332.46775478543714 L 1354.8138626995496,284.6944144186564" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1424.065717922058,570.3633611383848 L 1377.3671915344894,572.4721315321513" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 884.9899518070742,323.0908263097517 L 864.6852766862139,301.5915037347004" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 884.9899518070742,323.0908263097517 L 905.2946269274689,327.8655008687638" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 864.6852766862139,301.5915037347004 L 884.9899518070742,323.0908263097517" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 1039.0561270643957,432.9741638917476 L 1097.5879153236747,450.89227862190455" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1039.0561270643957,432.9741638917476 L 978.2868170402944,425.8254783558659" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1320.99500139663,529.858980789315 L 1351.3852223833092,562.5914116366766" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1320.99500139663,529.858980789315 L 1252.8452091333456,498.6649422645569" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 873.0453704441898,440.13610792485997 L 939.9372524619102,435.3614790546708" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 873.0453704441898,440.13610792485997 L 813.3335955832154,437.7487937323749" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 494.44778225710616,413.8623622087762 L 474.14310713578016,397.13785233628005" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 687.9321892042644,419.8306589294225 L 813.3335955832154,437.7487937323749" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 687.9321892042644,419.8306589294225 L 666.4363955324516,419.8306589294225" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 666.4363955324516,419.8306589294225 L 687.9321892042644,419.8306589294225" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 905.2946269274689,327.8655008687638 L 884.9899518070742,323.0908263097517" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 905.2946269274689,327.8655008687638 L 936.3527648588642,318.31614980706945" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 1097.5879153236747,450.89227862190455 L 1104.6789668872952,452.9745448064059" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1097.5879153236747,450.89227862190455 L 1039.0561270643957,432.9741638917476" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 201.83336875773966,424.6052941195667 L 269.9163693264127,409.08772264653817" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 201.83336875773966,424.6052941195667 L 0.0,494.831995585002" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1377.3671915344894,572.4721315321513 L 1424.065717922058,570.3633611383848" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1377.3671915344894,572.4721315321513 L 1351.3852223833092,562.5914116366766" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 813.3335955832154,437.7487937323749 L 873.0453704441898,440.13610792485997" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 813.3335955832154,437.7487937323749 L 687.9321892042644,419.8306589294225" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1252.8452091333456,498.6649422645569 L 1320.99500139663,529.858980789315" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1252.8452091333456,498.6649422645569 L 1211.0447403392754,484.32785847363994" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 0.0,494.831995585002 L 201.83336875773966,424.6052941195667" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 957.8485585311428,423.4116355050355 L 978.2868170402944,425.8254783558659" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 957.8485585311428,423.4116355050355 L 939.9372524619102,435.3614790546708" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 383.37319434294477,387.58855765592307 L 440.70273210154846,387.58855765592307" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 383.37319434294477,387.58855765592307 L 269.9163693264127,409.08772264653817" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 269.9163693264127,409.08772264653817 L 383.37319434294477,387.58855765592307" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 269.9163693264127,409.08772264653817 L 201.83336875773966,424.6052941195667" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 474.14310713578016,397.13785233628005 L 494.44778225710616,413.8623622087762" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 474.14310713578016,397.13785233628005 L 440.70273210154846,387.58855765592307" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 939.9372524619102,435.3614790546708 L 957.8485585311428,423.4116355050355" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 939.9372524619102,435.3614790546708 L 873.0453704441898,440.13610792485997" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 440.70273210154846,387.58855765592307 L 474.14310713578016,397.13785233628005" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 440.70273210154846,387.58855765592307 L 383.37319434294477,387.58855765592307" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 936.3527648588642,318.31614980706945 L 905.2946269274689,327.8655008687638" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 978.2868170402944,425.8254783558659 L 1039.0561270643957,432.9741638917476" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 978.2868170402944,425.8254783558659 L 957.8485585311428,423.4116355050355" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1211.0447403392754,484.32785847363994 L 1252.8452091333456,498.6649422645569" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1211.0447403392754,484.32785847363994 L 1104.6789668872952,452.9745448064059" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1128.813032490667,0.26526705268770456 L 1145.6445394996554,5.451236751396209" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1128.813032490667,0.26526705268770456 L 1098.5007351478562,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 1351.3852223833092,562.5914116366766 L 1377.3671915344894,572.4721315321513" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1351.3852223833092,562.5914116366766 L 1320.99500139663,529.858980789315" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1234.855979421176,54.83057251526043 L 1263.3871649107896,84.23525148490444" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1234.855979421176,54.83057251526043 L 1217.2897637733258,41.80601366655901" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1104.6789668872952,452.9745448064059 L 1211.0447403392754,484.32785847363994" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1104.6789668872952,452.9745448064059 L 1097.5879153236747,450.89227862190455" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלעריד#10;ציון: 100.0#10;מזהה: 6756" data-diagnostics='{"normalization": {"osm_original": "אלעריד", "osm_normalized": "אלעריד"}, "scoring_breakdown": [{"lamas_id": "6756", "lamas_name": "אלעריד", "lamas_normalized": "אלעריד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1188.6249948944896,21.672298524528742 L 1217.2897637733258,41.80601366655901" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1188.6249948944896,21.672298524528742 L 1163.6449011606164,12.520598399918526" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1098.5007351478562,0.0 L 1128.813032490667,0.26526705268770456" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع الشاغور#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع الشاغور", "osm_normalized": "شارع الشاغور"}, "scoring_breakdown": []}'></path>
+<path d="M 1341.9453295632266,250.06458939472213 L 1354.8138626995496,284.6944144186564" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1341.9453295632266,250.06458939472213 L 1320.9727374981157,213.92266759555787" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1263.3871649107896,84.23525148490444 L 1273.5617663701996,101.68968551466241" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+<path d="M 1263.3871649107896,84.23525148490444 L 1234.855979421176,54.83057251526043" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="אלג׳בל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "אלג׳בל", "osm_normalized": "אלג׳בל"}, "scoring_breakdown": []}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">3</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">1</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">1</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">2</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (2)</h3>
+            <ul><li>אלג׳בל</li><li>شارع الشاغور</li></ul>
+        </div>
+        
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

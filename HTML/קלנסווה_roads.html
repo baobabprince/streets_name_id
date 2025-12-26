@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - קלנסווה</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - קלנסווה</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2681.040880162269 3374.4888552296907" id="street-map">
+                <rect x="0" y="0" width="2681.040880162269" height="3374.4888552296907" fill="#fdfdfd" />
+                <path d="M 696.4703941480257,766.0510374992155 L 694.5000391607173,815.7812806316651" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 696.4703941480257,766.0510374992155 L 717.8214724813588,531.673405081965" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 614.4724572286941,1660.2550455480814 L 606.9138638041914,1693.6782416761853" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 614.4724572286941,1660.2550455480814 L 629.010782726109,1598.2809756337665" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 534.7899657189846,1875.4893078720197 L 464.5918948245235,2034.1997033488005" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 534.7899657189846,1875.4893078720197 L 549.5843260460533,1837.2862997092307" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 235.4629869251512,2560.989314352628 L 223.64085700269789,2582.084644676186" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 235.4629869251512,2560.989314352628 L 261.3781643821858,2494.2530301394872" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 112.21004671929404,2825.0337964012288 L 85.17054240545258,2886.0270835733972" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 112.21004671929404,2825.0337964012288 L 122.59615520946681,2802.622108723037" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 0.0,3096.52527107019 L 85.17054240545258,2886.0270835733972" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 1249.7505272878334,3206.9082685122266 L 1424.410808342509,3205.947046765592" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1249.7505272878334,3206.9082685122266 L 1211.445490506012,3205.1965037048794" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1501.944833680056,3205.9602141883224 L 1532.3907144120894,3206.842431408353" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1501.944833680056,3205.9602141883224 L 1424.410808342509,3205.947046765592" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1501.944833680056,3205.9602141883224 L 1499.1952422577888,3194.6098912958987" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1501.944833680056,3205.9602141883224 L 1546.4281022008508,3332.827648271341" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.5959924245253,3082.896856949199 L 1499.6739160683937,3041.735001607798" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.5959924245253,3082.896856949199 L 1500.9429582632147,3110.851548565086" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1511.384726499673,2956.4217984508723 L 1530.6096025593579,2882.9458239460364" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1511.384726499673,2956.4217984508723 L 1506.5423286496662,2979.2413952960633" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1530.6096025593579,2882.9458239460364 L 1511.384726499673,2956.4217984508723" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1530.6096025593579,2882.9458239460364 L 1535.062382190954,2868.974803445395" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1553.3187786811031,3346.94296602346 L 1546.4281022008508,3332.827648271341" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1553.3187786811031,3346.94296602346 L 1559.4970104205422,3355.370013443753" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1591.5013640234247,3374.4888552296907 L 1572.9666688065045,3366.0749885453843" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1135.915216003079,3200.192882094998 L 1211.445490506012,3205.1965037048794" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1135.915216003079,3200.192882094998 L 994.3836154080927,3187.4204700537957" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1734.3354026600718,2650.413770234678 L 1854.037251109723,2604.088535656687" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1734.3354026600718,2650.413770234678 L 1717.0920135364868,2659.618222671561" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2277.3630106989294,2559.0140942488797 L 2290.7658773902804,2564.8212404213846" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2277.3630106989294,2559.0140942488797 L 2270.4055425245315,2556.828183620237" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1424.410808342509,3205.947046765592 L 1501.944833680056,3205.9602141883224" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1424.410808342509,3205.947046765592 L 1249.7505272878334,3206.9082685122266" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1616.0250478456728,3209.2784039927647 L 1623.594773218967,3210.3581322222017" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1616.0250478456728,3209.2784039927647 L 1574.0242039682344,3208.0538340536878" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 2299.41540182475,2635.7314029484987 L 2311.8497889460996,2622.2341435523704" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2299.41540182475,2635.7314029484987 L 2281.292588724289,2653.916466848459" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2004.674786052201,2971.3934603896923 L 2025.1353084594011,2977.1082322900183" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 987.4372791829519,3186.788432815112 L 994.3836154080927,3187.4204700537957" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 987.4372791829519,3186.788432815112 L 964.3718806905672,3186.8147677001543" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 2187.9066678979434,3014.7018825057894 L 2194.329802516848,3016.176657263655" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 1854.037251109723,2604.088535656687 L 1878.1824486637488,2595.858479444869" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1854.037251109723,2604.088535656687 L 1734.3354026600718,2650.413770234678" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2055.681376732886,2548.5849266848527 L 2057.6962595162913,2548.361068190541" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2055.681376732886,2548.5849266848527 L 2043.7924551167525,2549.8754049828276" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1670.3378274026327,3265.3583057150245 L 1654.6640430996194,3243.487307042815" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 2457.522474599071,2402.7073073582724 L 2452.913847679738,2409.989379183855" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1546.1386715248227,2841.164391640108 L 1541.5968363005668,2851.066591147799" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1546.1386715248227,2841.164391640108 L 1554.554425029084,2824.9942928762175" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2406.460224172566,2485.4961695829406 L 2409.8554686410353,2476.5681156669743" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 314.74472826812416,2369.3519378695637 L 281.76076314691454,2446.557690808084" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 314.74472826812416,2369.3519378695637 L 359.75119839562103,2271.3132121344097" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 550.2967707868665,3206.078720981721 L 601.982410362456,3203.787589411717" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 663.2637900435366,3198.2441025837325 L 668.5625978051685,3197.572563624941" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 663.2637900435366,3198.2441025837325 L 630.0571859404445,3202.4576795045286" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 723.9217805769295,3191.14685559785 L 728.4413519031368,3190.9361765864305" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 723.9217805769295,3191.14685559785 L 706.7563150972128,3192.740115492139" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1211.445490506012,3205.1965037048794 L 1249.7505272878334,3206.9082685122266" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1211.445490506012,3205.1965037048794 L 1135.915216003079,3200.192882094998" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 694.5000391607173,815.7812806316651 L 695.1011644108221,826.9363146624528" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 694.5000391607173,815.7812806316651 L 696.4703941480257,766.0510374992155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 690.7263084216975,867.7107069049962 L 690.058391477447,875.3888149242848" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 690.7263084216975,867.7107069049962 L 695.1011644108221,826.9363146624528" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 359.75119839562103,2271.3132121344097 L 314.74472826812416,2369.3519378695637" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 359.75119839562103,2271.3132121344097 L 403.46636243071407,2174.6563801337034" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 2270.4055425245315,2556.828183620237 L 2277.3630106989294,2559.0140942488797" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2270.4055425245315,2556.828183620237 L 2259.9860381861217,2553.5493169263937" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 223.64085700269789,2582.084644676186 L 188.68653689417988,2650.993163729552" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 223.64085700269789,2582.084644676186 L 235.4629869251512,2560.989314352628" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 418.30525055294856,2141.840285938699 L 403.46636243071407,2174.6563801337034" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 418.30525055294856,2141.840285938699 L 454.6176684498787,2056.7445203457028" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 606.9138638041914,1693.6782416761853 L 601.8042991766706,1717.8566656489857" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 606.9138638041914,1693.6782416761853 L 614.4724572286941,1660.2550455480814" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 631.8939575385302,1578.8300590505823 L 629.010782726109,1598.2809756337665" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 631.8939575385302,1578.8300590505823 L 642.1910104365088,1459.2793151261285" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 642.1910104365088,1459.2793151261285 L 631.8939575385302,1578.8300590505823" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 642.1910104365088,1459.2793151261285 L 665.8241383321583,1190.3450269815512" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 665.8241383321583,1190.3450269815512 L 642.1910104365088,1459.2793151261285" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 665.8241383321583,1190.3450269815512 L 674.1063084467314,1058.0420415047556" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 727.3170250458643,427.44262877106667 L 726.4821288650855,436.6883068261668" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 727.3170250458643,427.44262877106667 L 734.9201462673955,323.7904486199841" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 695.1011644108221,826.9363146624528 L 690.7263084216975,867.7107069049962" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 695.1011644108221,826.9363146624528 L 694.5000391607173,815.7812806316651" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 2681.040880162269,3120.239991315175 L 2675.6530168084428,3122.3204586952925" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2409.8554686410353,2476.5681156669743 L 2414.119005138986,2467.1001573908143" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2301.0184024926275,2569.7724557882175 L 2317.6495344173163,2578.581926990766" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2301.0184024926275,2569.7724557882175 L 2290.7658773902804,2564.8212404213846" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2348.6408806541003,2582.980076099746 L 2353.249507573433,2578.6609356724657" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2326.254531055223,2569.3115714667365 L 2319.875924233347,2570.3913575652987" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2324.874169369228,2585.3371673217043 L 2326.332454698626,2592.131908126641" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1623.594773218967,3210.3581322222017 L 1630.285074615851,3212.543923219666" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1623.594773218967,3210.3581322222017 L 1616.0250478456728,3209.2784039927647" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1635.62841017358,3216.902336599771 L 1654.6640430996194,3243.487307042815" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1635.62841017358,3216.902336599771 L 1630.285074615851,3212.543923219666" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 800.1422359226272,3189.079567648936 L 934.7720280885696,3186.827935144771" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 800.1422359226272,3189.079567648936 L 743.6030665487051,3190.2514697774313" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 2042.1337947035208,2981.6115759643726 L 2074.0045649171807,2990.052048858721" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 1990.826641397085,2968.6809179289266 L 1997.1161926267669,2969.4446435384452" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 1996.4260117844678,2951.8394390670583 L 1995.5465878071263,2946.282667568885" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2025.1353084594011,2977.1082322900183 L 2042.1337947035208,2981.6115759643726" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 1997.1161926267669,2969.4446435384452 L 2004.674786052201,2971.3934603896923" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2074.0045649171807,2990.052048858721 L 2091.1700303982943,2994.2261962750927" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2091.1700303982943,2994.2261962750927 L 2114.9144777841866,2999.598598374985" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2114.9144777841866,2999.598598374985 L 2170.897049704101,3011.251962268725" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2170.897049704101,3011.251962268725 L 2183.888034279458,3013.780148188118" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2183.888034279458,3013.780148188118 L 2187.9066678979434,3014.7018825057894" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2194.329802516848,3016.176657263655 L 2204.938549988903,3019.1657091188245" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2204.938549988903,3019.1657091188245 L 2213.7439217111096,3022.1415925994515" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2213.7439217111096,3022.1415925994515 L 2225.3879404477775,3026.618584050797" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2225.3879404477775,3026.618584050797 L 2324.9632249623537,3064.396424486302" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2324.9632249623537,3064.396424486302 L 2332.143332118634,3067.056274903938" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2341.0822872295976,3070.3613357348368 L 2343.4645243319683,3071.111887270119" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2357.2124814447016,3075.444017141126 L 2374.533794212155,3080.2238424997777" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2374.533794212155,3080.2238424997777 L 2392.1111418087967,3084.6481419536285" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2396.474865847733,3085.7410490061156 L 2419.6181879835203,3091.561106568668" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2419.6181879835203,3091.561106568668 L 2439.7670158171095,3095.7483860449865" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2439.7670158171095,3095.7483860449865 L 2446.579768653959,3097.091475378722" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2459.4705656869337,3099.6328106638975 L 2467.9865067335777,3101.1997476932593" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2490.2281409935094,3105.294851061888 L 2510.5328161148354,3108.7315766005777" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2510.5328161148354,3108.7315766005777 L 2536.8710076361895,3112.8398449113593" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2553.6802507466637,3115.4470144519582 L 2663.107310195919,3132.920302693732" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2663.107310195919,3132.920302693732 L 2667.1370757622644,3133.670850297902" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2667.1370757622644,3133.670850297902 L 2671.0221259910613,3134.711082864087" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2671.0221259910613,3134.711082864087 L 2674.450766307302,3136.8047152217478" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2674.450766307302,3136.8047152217478 L 2678.9480737359263,3141.5581810325384" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2675.6530168084428,3122.3204586952925 L 2669.831007440109,3123.5187024022453" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2669.831007440109,3123.5187024022453 L 2664.4542760346085,3123.808387674857" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2664.4542760346085,3123.808387674857 L 2648.034651142545,3122.4653013478965" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2648.034651142545,3122.4653013478965 L 2627.1288507711142,3119.4762753495015" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2627.1288507711142,3119.4762753495015 L 2538.318161016796,3105.7162121017464" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2485.597250176128,3097.539171789307 L 2471.270431711804,3095.142679042183" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2471.270431711804,3095.142679042183 L 2468.7768751177937,3094.6291448194534" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2452.457437767647,3091.2714205118828 L 2402.597437841352,3079.7761454400606" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2402.597437841352,3079.7761454400606 L 2363.4797687768005,3069.4659408596344" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2363.4797687768005,3069.4659408596344 L 2348.8523876867257,3065.146976397373" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2348.8523876867257,3065.146976397373 L 2346.2809074493125,3064.2647487074137" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2331.686922205612,3059.313738377299 L 2313.018643599935,3052.2954143662937" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2313.018643599935,3052.2954143662937 L 2291.4894540808164,3044.171007873956" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2231.209949816577,3021.4042056114413 L 2216.282006100286,3015.873801747337" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2216.282006100286,3015.873801747337 L 2209.068503097631,3013.266610467341" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2207.1760717537254,3012.5950611052103 L 2194.185087178368,3009.303151924163" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2194.185087178368,3009.303151924163 L 2096.8473244286142,2988.708947486244" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2096.8473244286142,2988.708947486244 L 2008.7602113634348,2964.51992927026" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2008.7602113634348,2964.51992927026 L 2003.238764620386,2961.6757083400153" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2003.238764620386,2961.6757083400153 L 1999.509561679326,2958.6998097896576" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 1999.509561679326,2958.6998097896576 L 1997.7952415202744,2955.5790658225305" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2536.8710076361895,3112.8398449113593 L 2553.6802507466637,3115.4470144519582" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2538.318161016796,3105.7162121017464 L 2485.597250176128,3097.539171789307" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2397.8218316864222,2514.176510003861 L 2406.460224172566,2485.4961695829406" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2392.845850448124,2529.1092219599523 L 2393.75867027184,2526.3702426822856" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2386.9570493856445,2541.776992945932 L 2392.845850448124,2529.1092219599523" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2379.4986435016617,2552.640715153422 L 2386.9570493856445,2541.776992945932" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2369.3129100934602,2563.952143894974 L 2379.4986435016617,2552.640715153422" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2358.904537705239,2573.2356716999784 L 2369.3129100934602,2563.952143894974" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2353.249507573433,2578.6609356724657 L 2358.904537705239,2573.2356716999784" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2414.119005138986,2467.1001573908143 L 2418.8612154456787,2459.1860446431674" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2418.8612154456787,2459.1860446431674 L 2423.8483286336996,2452.3912281817757" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2423.8483286336996,2452.3912281817757 L 2425.8966072648764,2450.04727897048" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2428.601670891512,2446.9659068360925 L 2452.8136601382867,2426.1468716999516" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2452.8136601382867,2426.1468716999516 L 2458.4686902700923,2422.301732839551" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2458.4686902700923,2422.301732839551 L 2463.667310490273,2419.8129265480675" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2463.667310490273,2419.8129265480675 L 2469.177625284996,2418.6936219604686" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2452.913847679738,2409.989379183855 L 2447.1474980576895,2416.191646623891" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2447.1474980576895,2416.191646623891 L 2437.195535580162,2426.1468716999516" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2437.195535580162,2426.1468716999516 L 2419.7740352707915,2444.0293847867288" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2419.7740352707915,2444.0293847867288 L 2412.983546332456,2452.1673678830266" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2412.983546332456,2452.1673678830266 L 2406.6494673062116,2461.22712247679" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2406.6494673062116,2461.22712247679 L 2402.352534961421,2468.4696539063007" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2402.352534961421,2468.4696539063007 L 2399.4025684557855,2477.068508246448" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2399.4025684557855,2477.068508246448 L 2384.1963260136545,2523.0913676242344" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2381.7584291649982,2530.465543196071 L 2375.869628102053,2541.776992945932" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2375.869628102053,2541.776992945932 L 2369.991958987899,2551.732113311067" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2369.991958987899,2551.732113311067 L 2364.3369288560934,2559.435474564787" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2364.3369288560934,2559.435474564787 L 2357.7690788987093,2563.7282856884412" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2357.7690788987093,2563.7282856884412 L 2351.657638854347,2565.7693456499837" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2351.657638854347,2565.7693456499837 L 2346.9042965979315,2566.2170619820245" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2346.9042965979315,2566.2170619820245 L 2341.21587061882,2565.8878587982617" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2393.75867027184,2526.3702426822856 L 2397.8218316864222,2514.176510003861" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2384.1963260136545,2523.0913676242344 L 2381.7584291649982,2530.465543196071" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2012.6897893883288,2916.90547480667 L 2026.3486909097992,2903.9089079289697" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2012.6897893883288,2916.90547480667 L 2001.6580278514884,2928.1770552946255" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2026.3486909097992,2903.9089079289697 L 2050.861242781859,2881.773891658988" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2026.3486909097992,2903.9089079289697 L 2012.6897893883288,2916.90547480667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2259.685475561302,2675.0906410366297 L 2281.292588724289,2653.916466848459" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2259.685475561302,2675.0906410366297 L 2257.113995323889,2677.684738154523" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2235.729521142319,2699.2407416333444 L 2257.113995323889,2677.684738154523" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2235.729521142319,2699.2407416333444 L 2203.947806521319,2730.040608217474" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2203.947806521319,2730.040608217474 L 2235.729521142319,2699.2407416333444" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2281.292588724289,2653.916466848459 L 2299.41540182475,2635.7314029484987" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2281.292588724289,2653.916466848459 L 2259.685475561302,2675.0906410366297" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2311.8497889460996,2622.2341435523704 L 2319.541965761222,2611.8181992876343" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2311.8497889460996,2622.2341435523704 L 2299.41540182475,2635.7314029484987" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2319.541965761222,2611.8181992876343 L 2324.6181345409714,2604.74693991011" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2319.541965761222,2611.8181992876343 L 2311.8497889460996,2622.2341435523704" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2325.8760447860695,2602.9955845191143 L 2331.7537138997577,2596.214017991908" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2331.7537138997577,2596.214017991908 L 2337.720438607037,2591.486671277322" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2326.332454698626,2592.131908126641 L 2326.098683767952,2596.661733182147" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2326.098683767952,2596.661733182147 L 2324.6181345409714,2604.74693991011" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2324.6181345409714,2604.74693991011 L 2319.541965761222,2611.8181992876343" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2324.6181345409714,2604.74693991011 L 2325.8760447860695,2602.9955845191143" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2108.213044438977,2829.984903869685 L 2127.3266010079533,2812.0502973850816" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2108.213044438977,2829.984903869685 L 2100.4318120325916,2837.0165263740346" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2127.3266010079533,2812.0502973850816 L 2141.3083290513605,2797.4734718287364" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2127.3266010079533,2812.0502973850816 L 2108.213044438977,2829.984903869685" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2141.3083290513605,2797.4734718287364 L 2158.195495804772,2780.0655321776867" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2141.3083290513605,2797.4734718287364 L 2127.3266010079533,2812.0502973850816" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2160.4107536715455,2777.7743188668974 L 2191.468891602475,2743.7747685178183" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2160.4107536715455,2777.7743188668974 L 2158.195495804772,2780.0655321776867" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2191.468891602475,2743.7747685178183 L 2160.4107536715455,2777.7743188668974" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2001.6580278514884,2928.1770552946255 L 2012.6897893883288,2916.90547480667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2001.6580278514884,2928.1770552946255 L 1999.164471257478,2930.665755627211" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1991.4722944437526,2938.3688724180683 L 1987.2198898955248,2942.306019080337" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1995.5465878071263,2946.282667568885 L 1995.5465878071263,2941.7529751458205" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1995.5465878071263,2941.7529751458205 L 1996.6820466127247,2937.4602999263443" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1996.6820466127247,2937.4602999263443 L 1999.164471257478,2930.665755627211" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1999.164471257478,2930.665755627211 L 2001.6580278514884,2928.1770552946255" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1999.164471257478,2930.665755627211 L 1991.4722944437526,2938.3688724180683" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2050.861242781859,2881.773891658988 L 2052.7759380233474,2880.03574468242" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2050.861242781859,2881.773891658988 L 2026.3486909097992,2903.9089079289697" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1546.4281022008508,3332.827648271341 L 1501.944833680056,3205.9602141883224" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1546.4281022008508,3332.827648271341 L 1553.3187786811031,3346.94296602346" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1559.4970104205422,3355.370013443753 L 1553.3187786811031,3346.94296602346" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1559.4970104205422,3355.370013443753 L 1565.2856239411049,3361.5981243564747" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1565.2856239411049,3361.5981243564747 L 1559.4970104205422,3355.370013443753" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1565.2856239411049,3361.5981243564747 L 1572.9666688065045,3366.0749885453843" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1572.9666688065045,3366.0749885453843 L 1565.2856239411049,3361.5981243564747" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1572.9666688065045,3366.0749885453843 L 1591.5013640234247,3374.4888552296907" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1630.285074615851,3212.543923219666 L 1635.62841017358,3216.902336599771" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1630.285074615851,3212.543923219666 L 1623.594773218967,3210.3581322222017" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 934.7720280885696,3186.827935144771 L 964.3718806905672,3186.8147677001543" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 934.7720280885696,3186.827935144771 L 800.1422359226272,3189.079567648936" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 964.3718806905672,3186.8147677001543 L 987.4372791829519,3186.788432815112" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 964.3718806905672,3186.8147677001543 L 934.7720280885696,3186.827935144771" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 706.7563150972128,3192.740115492139 L 723.9217805769295,3191.14685559785" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 706.7563150972128,3192.740115492139 L 668.5625978051685,3197.572563624941" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 743.6030665487051,3190.2514697774313 L 800.1422359226272,3189.079567648936" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 743.6030665487051,3190.2514697774313 L 728.4413519031368,3190.9361765864305" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 630.0571859404445,3202.4576795045286 L 663.2637900435366,3198.2441025837325" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 630.0571859404445,3202.4576795045286 L 601.982410362456,3203.787589411717" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 601.982410362456,3203.787589411717 L 630.0571859404445,3202.4576795045286" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 601.982410362456,3203.787589411717 L 550.2967707868665,3206.078720981721" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.1952422577888,3194.6098912958987 L 1498.3380821784958,3183.7204182413407" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.1952422577888,3194.6098912958987 L 1501.944833680056,3205.9602141883224" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1498.3380821784958,3183.7204182413407 L 1499.3065617484972,3164.0087349899113" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1498.3380821784958,3183.7204182413407 L 1499.1952422577888,3194.6098912958987" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1500.9429582632147,3110.851548565086 L 1499.5959924245253,3082.896856949199" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1500.9429582632147,3110.851548565086 L 1500.8872985173948,3132.3014300735667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1500.8872985173948,3132.3014300735667 L 1500.9429582632147,3110.851548565086" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1500.8872985173948,3132.3014300735667 L 1499.3065617484972,3164.0087349899113" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.3065617484972,3164.0087349899113 L 1500.8872985173948,3132.3014300735667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.3065617484972,3164.0087349899113 L 1498.3380821784958,3183.7204182413407" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.6739160683937,3041.735001607798 L 1501.1544652953744,3017.638264211826" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1499.6739160683937,3041.735001607798 L 1499.5959924245253,3082.896856949199" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1501.1544652953744,3017.638264211826 L 1503.414250958711,3000.3491543587297" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1501.1544652953744,3017.638264211826 L 1499.6739160683937,3041.735001607798" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1503.414250958711,3000.3491543587297 L 1506.5423286496662,2979.2413952960633" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1503.414250958711,3000.3491543587297 L 1501.1544652953744,3017.638264211826" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1506.5423286496662,2979.2413952960633 L 1511.384726499673,2956.4217984508723" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1506.5423286496662,2979.2413952960633 L 1503.414250958711,3000.3491543587297" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1535.062382190954,2868.974803445395 L 1541.5968363005668,2851.066591147799" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1535.062382190954,2868.974803445395 L 1530.6096025593579,2882.9458239460364" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1541.5968363005668,2851.066591147799 L 1546.1386715248227,2841.164391640108" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1541.5968363005668,2851.066591147799 L 1535.062382190954,2868.974803445395" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1554.554425029084,2824.9942928762175 L 1565.3524156357162,2805.6375497621484" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1554.554425029084,2824.9942928762175 L 1546.1386715248227,2841.164391640108" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1565.3524156357162,2805.6375497621484 L 1575.270982265938,2788.5193154197186" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1565.3524156357162,2805.6375497621484 L 1554.554425029084,2824.9942928762175" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1599.783534138929,2740.2984341345727 L 1600.3957913378254,2745.8421335611492" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1616.2699507251382,2738.9816405428573 L 1630.7303525791503,2719.809109404683" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1575.270982265938,2788.5193154197186 L 1576.4287049700506,2786.8996658232063" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1575.270982265938,2788.5193154197186 L 1565.3524156357162,2805.6375497621484" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1586.5253827855922,2772.704678654205 L 1596.3660257710144,2760.208335536532" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1586.5253827855922,2772.704678654205 L 1583.5308884824626,2776.918405734934" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1599.3159922775812,2756.468647595495 L 1611.5166084677912,2743.3665626388974" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1600.3957913378254,2745.8421335611492 L 1599.7501382906921,2750.8327776365913" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1599.7501382906921,2750.8327776365913 L 1596.3660257710144,2760.208335536532" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1596.3660257710144,2760.208335536532 L 1586.5253827855922,2772.704678654205" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1596.3660257710144,2760.208335536532 L 1599.3159922775812,2756.468647595495" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1926.2502047875896,2581.123372631613 L 1878.1824486637488,2595.858479444869" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2317.6495344173163,2578.581926990766 L 2323.3268284471706,2581.8607868105173" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2319.875924233347,2570.3913575652987 L 2311.2152678496204,2570.5888794017956" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2311.2152678496204,2570.5888794017956 L 2301.0184024926275,2569.7724557882175" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2259.9860381861217,2553.5493169263937 L 2270.4055425245315,2556.828183620237" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2259.9860381861217,2553.5493169263937 L 2236.341778341215,2548.071368956007" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2236.341778341215,2548.071368956007 L 2259.9860381861217,2553.5493169263937" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2236.341778341215,2548.071368956007 L 2214.946172211319,2545.832783726044" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2214.946172211319,2545.832783726044 L 2236.341778341215,2548.071368956007" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2214.946172211319,2545.832783726044 L 2199.2723879078403,2544.3447827221826" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2199.2723879078403,2544.3447827221826 L 2214.946172211319,2545.832783726044" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2199.2723879078403,2544.3447827221826 L 2182.5410684417,2544.3579508746043" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2182.5410684417,2544.3579508746043 L 2199.2723879078403,2544.3447827221826" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2290.7658773902804,2564.8212404213846 L 2301.0184024926275,2569.7724557882175" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2290.7658773902804,2564.8212404213846 L 2277.3630106989294,2559.0140942488797" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1942.2022878187709,2575.7376141292043 L 1998.0735402475111,2559.488147102762" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1878.1824486637488,2595.858479444869 L 1926.2502047875896,2581.123372631613" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1878.1824486637488,2595.858479444869 L 1854.037251109723,2604.088535656687" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2022.563828221988,2553.3781310906634 L 2043.7924551167525,2549.8754049828276" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2022.563828221988,2553.3781310906634 L 2002.0253821709193,2558.5005369689316" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2043.7924551167525,2549.8754049828276 L 2055.681376732886,2548.5849266848527" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2043.7924551167525,2549.8754049828276 L 2022.563828221988,2553.3781310906634" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2066.6908743730746,2547.386625282932 L 2106.5098562291823,2545.674765929114" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2066.6908743730746,2547.386625282932 L 2057.6962595162913,2548.361068190541" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2165.943332364317,2543.12014459027 L 2106.5098562291823,2545.674765929114" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1998.0735402475111,2559.488147102762 L 2002.0253821709193,2558.5005369689316" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1998.0735402475111,2559.488147102762 L 1942.2022878187709,2575.7376141292043" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1717.0920135364868,2659.618222671561 L 1734.3354026600718,2650.413770234678" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1717.0920135364868,2659.618222671561 L 1679.4660256486386,2681.0294107613154" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1679.4660256486386,2681.0294107613154 L 1717.0920135364868,2659.618222671561" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1679.4660256486386,2681.0294107613154 L 1672.8647798439488,2685.7303860317916" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1659.9739828109741,2694.895307288971 L 1672.8647798439488,2685.7303860317916" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1659.9739828109741,2694.895307288971 L 1639.8251549769193,2712.0136758526787" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1639.8251549769193,2712.0136758526787 L 1659.9739828109741,2694.895307288971" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1639.8251549769193,2712.0136758526787 L 1630.7303525791503,2719.809109404683" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1630.7303525791503,2719.809109404683 L 1639.8251549769193,2712.0136758526787" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1630.7303525791503,2719.809109404683 L 1625.0975863449275,2723.0615945328027" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1625.0975863449275,2723.0615945328027 L 1618.3738891012035,2724.799764361698" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1618.3738891012035,2724.799764361698 L 1608.2438154392876,2724.575909169391" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2209.068503097631,3013.266610467341 L 2207.1760717537254,3012.5950611052103" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2346.2809074493125,3064.2647487074137 L 2331.686922205612,3059.313738377299" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2343.4645243319683,3071.111887270119 L 2357.2124814447016,3075.444017141126" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2468.7768751177937,3094.6291448194534 L 2452.457437767647,3091.2714205118828" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2467.9865067335777,3101.1997476932593 L 2490.2281409935094,3105.294851061888" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 994.3836154080927,3187.4204700537957 L 1135.915216003079,3200.192882094998" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 994.3836154080927,3187.4204700537957 L 987.4372791829519,3186.788432815112" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1532.3907144120894,3206.842431408353 L 1574.0242039682344,3208.0538340536878" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1532.3907144120894,3206.842431408353 L 1501.944833680056,3205.9602141883224" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1654.6640430996194,3243.487307042815 L 1670.3378274026327,3265.3583057150245" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1654.6640430996194,3243.487307042815 L 1635.62841017358,3216.902336599771" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1574.0242039682344,3208.0538340536878 L 1616.0250478456728,3209.2784039927647" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1574.0242039682344,3208.0538340536878 L 1532.3907144120894,3206.842431408353" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 728.4413519031368,3190.9361765864305 L 743.6030665487051,3190.2514697774313" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 728.4413519031368,3190.9361765864305 L 723.9217805769295,3191.14685559785" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 668.5625978051685,3197.572563624941 L 706.7563150972128,3192.740115492139" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 668.5625978051685,3197.572563624941 L 663.2637900435366,3198.2441025837325" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 2446.579768653959,3097.091475378722 L 2459.4705656869337,3099.6328106638975" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2392.1111418087967,3084.6481419536285 L 2396.474865847733,3085.7410490061156" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2332.143332118634,3067.056274903938 L 2341.0822872295976,3070.3613357348368" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="حائط البُراق#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "حائط البُراق", "osm_normalized": "حائط البُراق"}, "scoring_breakdown": []}'></path>
+<path d="M 2291.4894540808164,3044.171007873956 L 2231.209949816577,3021.4042056114413" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="شارع القدس#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "شارع القدس", "osm_normalized": "شارع القدس"}, "scoring_breakdown": []}'></path>
+<path d="M 2425.8966072648764,2450.04727897048 L 2428.601670891512,2446.9659068360925" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 1583.5308884824626,2776.918405734934 L 1586.5253827855922,2772.704678654205" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1583.5308884824626,2776.918405734934 L 1576.4287049700506,2786.8996658232063" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1576.4287049700506,2786.8996658232063 L 1583.5308884824626,2776.918405734934" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1576.4287049700506,2786.8996658232063 L 1575.270982265938,2788.5193154197186" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1672.8647798439488,2685.7303860317916 L 1679.4660256486386,2681.0294107613154" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1672.8647798439488,2685.7303860317916 L 1659.9739828109741,2694.895307288971" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2057.6962595162913,2548.361068190541 L 2066.6908743730746,2547.386625282932" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2057.6962595162913,2548.361068190541 L 2055.681376732886,2548.5849266848527" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2106.5098562291823,2545.674765929114 L 2165.943332364317,2543.12014459027" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2106.5098562291823,2545.674765929114 L 2066.6908743730746,2547.386625282932" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 1987.2198898955248,2942.306019080337 L 1982.9786172960885,2946.216829028446" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2100.4318120325916,2837.0165263740346 L 2108.213044438977,2829.984903869685" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2100.4318120325916,2837.0165263740346 L 2052.7759380233474,2880.03574468242" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2052.7759380233474,2880.03574468242 L 2100.4318120325916,2837.0165263740346" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2052.7759380233474,2880.03574468242 L 2050.861242781859,2881.773891658988" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2158.195495804772,2780.0655321776867 L 2160.4107536715455,2777.7743188668974" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2158.195495804772,2780.0655321776867 L 2141.3083290513605,2797.4734718287364" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2257.113995323889,2677.684738154523 L 2259.685475561302,2675.0906410366297" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2257.113995323889,2677.684738154523 L 2235.729521142319,2699.2407416333444" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Malik#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Malik", "osm_normalized": "al Malik"}, "scoring_breakdown": []}'></path>
+<path d="M 2002.0253821709193,2558.5005369689316 L 2022.563828221988,2553.3781310906634" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 2002.0253821709193,2558.5005369689316 L 1998.0735402475111,2559.488147102762" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="al-Qayrawan#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "al-Qayrawan", "osm_normalized": "al Qayrawan"}, "scoring_breakdown": []}'></path>
+<path d="M 454.6176684498787,2056.7445203457028 L 418.30525055294856,2141.840285938699" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 454.6176684498787,2056.7445203457028 L 464.5918948245235,2034.1997033488005" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 549.5843260460533,1837.2862997092307 L 534.7899657189846,1875.4893078720197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 549.5843260460533,1837.2862997092307 L 556.3970788819715,1824.9074980034493" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 556.3970788819715,1824.9074980034493 L 549.5843260460533,1837.2862997092307" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 556.3970788819715,1824.9074980034493 L 567.1728055910207,1803.1655503171496" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 567.1728055910207,1803.1655503171496 L 556.3970788819715,1824.9074980034493" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 567.1728055910207,1803.1655503171496 L 591.4404545836151,1742.693492445629" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 591.4404545836151,1742.693492445629 L 567.1728055910207,1803.1655503171496" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 591.4404545836151,1742.693492445629 L 601.8042991766706,1717.8566656489857" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 601.8042991766706,1717.8566656489857 L 591.4404545836151,1742.693492445629" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 601.8042991766706,1717.8566656489857 L 606.9138638041914,1693.6782416761853" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 629.010782726109,1598.2809756337665 L 614.4724572286941,1660.2550455480814" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 629.010782726109,1598.2809756337665 L 631.8939575385302,1578.8300590505823" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 168.28167423140258,2696.1726017901674 L 122.59615520946681,2802.622108723037" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 168.28167423140258,2696.1726017901674 L 188.68653689417988,2650.993163729552" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 85.17054240545258,2886.0270835733972 L 0.0,3096.52527107019" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 85.17054240545258,2886.0270835733972 L 112.21004671929404,2825.0337964012288" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 122.59615520946681,2802.622108723037 L 112.21004671929404,2825.0337964012288" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 122.59615520946681,2802.622108723037 L 168.28167423140258,2696.1726017901674" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 188.68653689417988,2650.993163729552 L 168.28167423140258,2696.1726017901674" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 188.68653689417988,2650.993163729552 L 223.64085700269789,2582.084644676186" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 261.3781643821858,2494.2530301394872 L 235.4629869251512,2560.989314352628" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 261.3781643821858,2494.2530301394872 L 281.76076314691454,2446.557690808084" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 281.76076314691454,2446.557690808084 L 261.3781643821858,2494.2530301394872" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 281.76076314691454,2446.557690808084 L 314.74472826812416,2369.3519378695637" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 674.1063084467314,1058.0420415047556 L 665.8241383321583,1190.3450269815512" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 674.1063084467314,1058.0420415047556 L 690.058391477447,875.3888149242848" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 734.9201462673955,323.7904486199841 L 727.3170250458643,427.44262877106667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 734.9201462673955,323.7904486199841 L 754.3231335128658,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 726.4821288650855,436.6883068261668 L 717.8214724813588,531.673405081965" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 726.4821288650855,436.6883068261668 L 727.3170250458643,427.44262877106667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 754.3231335128658,0.0 L 734.9201462673955,323.7904486199841" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 690.058391477447,875.3888149242848 L 674.1063084467314,1058.0420415047556" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 690.058391477447,875.3888149242848 L 690.7263084216975,867.7107069049962" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 403.46636243071407,2174.6563801337034 L 359.75119839562103,2271.3132121344097" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 403.46636243071407,2174.6563801337034 L 418.30525055294856,2141.840285938699" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 464.5918948245235,2034.1997033488005 L 454.6176684498787,2056.7445203457028" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 464.5918948245235,2034.1997033488005 L 534.7899657189846,1875.4893078720197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 717.8214724813588,531.673405081965 L 696.4703941480257,766.0510374992155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+<path d="M 717.8214724813588,531.673405081965 L 726.4821288650855,436.6883068261668" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ציר המוביל הארצי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ציר המוביל הארצי", "osm_normalized": "ציר המוביל הארצי"}, "scoring_breakdown": []}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">6</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">176</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">6</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (6)</h3>
+            <ul><li>al Malik</li><li>al Qayrawan</li><li>ציר המוביל הארצי</li><li>ابن سينا</li><li>حائط البُراق</li><li>شارع القدس</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (176 - 100.0%)</h3>
+            <ul><li>אבו בכר</li><li>אבו הורירה</li><li>אבו חניפה</li><li>אבן ח'ולדון</li><li>אבן חנבל</li><li>אבן מסעוד</li><li>אבן סינא</li><li>אבן קאת'יר</li><li>אבן רושד</li><li>אג'אנדין</li><li>אוחוד</li><li>אל-אבראר</li><li>אל-אמאן</li><li>אל-אנדלוס</li><li>אל-אסאלה</li><li>אל-אסבאט</li><li>אל-אספהאני</li><li>אל-אקסא</li><li>אל-ארקם</li><li>אל-בוח'ארי</li><li>אל-בורג'</li><li>אל-בטוף</li><li>אל-ביאדר</li><li>אל-ביסאן</li><li>אל-בירווה</li><li>אל-בירוני</li><li>אל-בלדיה</li><li>אל-בלוט</li><li>אל-בנפסג'</li><li>אל-בראק</li><li>אל-ג'ילאני</li><li>אל-ג'ליל</li><li>אל-דסוקי</li><li>אל-הודא</li><li>אל-ואדי</li><li>אל-ורוד</li><li>אל-זביר</li><li>אל-זגאריד</li><li>אל-זהרא</li><li>אל-זיתון</li><li>אל-זנבק</li><li>אל-זעתר</li><li>אל-ח'וארזמי</li><li>אל-ח'נדק</li><li>אל-חארה</li><li>אל-חג'אז</li><li>אל-חוריה</li><li>אל-חליל</li><li>אל-חמרא</li><li>אל-חפאייר</li><li>אל-טברי</li><li>אל-ירמוך</li><li>אל-כהף</li><li>אל-כרמל</li><li>אל-מדינה</li><li>אל-מהדי</li><li>אל-מואדה</li><li>אל-מלק</li><li>אל-מסק</li><li>אל-נכיל</li><li>אל-נענע</li><li>אל-סבר</li><li>אל-סובל</li><li>אל-סוסן</li><li>אל-עולום</li><li>אל-ענבר</li><li>אל-פאראבי</li><li>אל-פאתח</li><li>אל-פול</li><li>אל-פלוג'ה</li><li>אל-קובה</li><li>אל-קודס</li><li>אל-קורונפל</li><li>אל-קירואן</li><li>אל-קנדי</li><li>אל-ראזי</li><li>אל-ראפעי</li><li>אל-ראשידיה</li><li>אל-רבאט</li><li>אל-רחמה</li><li>אל-רמאן</li><li>אל-רשיד</li><li>אל-שפא</li><li>אל-תות</li><li>אל-תין</li><li>אלג'ורי</li><li>אלחואכיר</li><li>אלחסן בן עלי</li><li>אלמותלת</li><li>אלמעראג'</li><li>אלנרג'ס</li><li>אלסעאדה</li><li>אריחא</li><li>באב אל-עאמוד</li><li>באב חטה</li><li>בדר</li><li>בלאל</li><li>ג'דה</li><li>ג'עפר בן אבי טאלב</li><li>גרנאטה</li><li>דאר אלקוראן</li><li>ח'אלד בן אל וליד</li><li>חטין</li><li>חיפה</li><li>חמזה</li><li>טארק אבן זיאד</li><li>טלחה</li><li>מג'דל</li><li>מואתה</li><li>מכה</li><li>סוראקה</li><li>סלאח אל-דין</li><li>סעד בן וקאס</li><li>עומר בן אל-ח'טאב</li><li>עותמאן בן עפאן</li><li>עלי בן אבי טאלב</li><li>עסקלאן</li><li>קורטבה</li><li>רח 1</li><li>רח 11</li><li>רח 111</li><li>רח 112</li><li>רח 113</li><li>רח 114</li><li>רח 115</li><li>רח 116</li><li>רח 117</li><li>רח 118</li><li>רח 119</li><li>רח 12</li><li>רח 120</li><li>רח 121</li><li>רח 123</li><li>רח 124</li><li>רח 126</li><li>רח 127</li><li>רח 128</li><li>רח 129</li><li>רח 13</li><li>רח 131</li><li>רח 132</li><li>רח 133</li><li>רח 134</li><li>רח 135</li><li>רח 136</li><li>רח 137</li><li>רח 138</li><li>רח 139</li><li>רח 14</li><li>רח 146</li><li>רח 148</li><li>רח 149</li><li>רח 15</li><li>רח 150</li><li>רח 151</li><li>רח 152</li><li>רח 155</li><li>רח 156</li><li>רח 158</li><li>רח 16</li><li>רח 17</li><li>רח 18</li><li>רח 19</li><li>רח 2</li><li>רח 20</li><li>רח 21</li><li>רח 25</li><li>רח 3</li><li>רח 30</li><li>רח 4</li><li>רח 40</li><li>רח 41</li><li>רח 42</li><li>רח 44</li><li>רח 5</li><li>רח 6</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

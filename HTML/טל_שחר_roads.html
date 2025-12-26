@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - טל שחר</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - טל שחר</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2173.1902312156744 1173.1598383248784" id="street-map">
+                <rect x="0" y="0" width="2173.1902312156744" height="1173.1598383248784" fill="#fdfdfd" />
+                <path d="M 680.507179168053,381.927332370542 L 654.0242723096162,381.3116894089617" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2173.1902312156744,0.0 L 2113.2669493211433,26.591345737222582" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 964.7281030616723,969.1054703267291 L 1004.6695363586769,985.5043437592685" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1417.631451354362,1150.3039292865433 L 1463.4728176631033,1163.4018767084926" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1417.631451354362,1150.3039292865433 L 1390.2468566186726,1141.8557456806302" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 654.0242723096162,381.3116894089617 L 631.5266032190993,379.84462520387024" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 654.0242723096162,381.3116894089617 L 658.1987532135099,386.6297956579365" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 631.5266032190993,379.84462520387024 L 579.0728591573425,378.3382644527592" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 631.5266032190993,379.84462520387024 L 654.0242723096162,381.3116894089617" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 579.0728591573425,378.3382644527592 L 516.0214995723218,366.8768178089522" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 579.0728591573425,378.3382644527592 L 631.5266032190993,379.84462520387024" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 516.0214995723218,366.8768178089522 L 469.2005217447877,356.37157375132665" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 516.0214995723218,366.8768178089522 L 579.0728591573425,378.3382644527592" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 469.2005217447877,356.37157375132665 L 425.25158677995205,344.8970074770041" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 469.2005217447877,356.37157375132665 L 516.0214995723218,366.8768178089522" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 425.25158677995205,344.8970074770041 L 413.7856792276725,341.0721496338956" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 425.25158677995205,344.8970074770041 L 469.2005217447877,356.37157375132665" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 413.7856792276725,341.0721496338956 L 367.92204902134836,322.9302560733631" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 413.7856792276725,341.0721496338956 L 425.25158677995205,344.8970074770041" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 367.92204902134836,322.9302560733631 L 345.9475815379992,313.3680918449536" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 367.92204902134836,322.9302560733631 L 413.7856792276725,341.0721496338956" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 345.9475815379992,313.3680918449536 L 286.7033485388383,282.79531332384795" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 345.9475815379992,313.3680918449536 L 367.92204902134836,322.9302560733631" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 286.7033485388383,282.79531332384795 L 242.5651704389602,258.8767103832215" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 286.7033485388383,282.79531332384795 L 345.9475815379992,313.3680918449536" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 218.0192227186635,244.4285938097164 L 192.5493232253939,228.21210153307766" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 218.0192227186635,244.4285938097164 L 242.5651704389602,258.8767103832215" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 192.5493232253939,228.21210153307766 L 170.88655031705275,214.36650086613372" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 192.5493232253939,228.21210153307766 L 218.0192227186635,244.4285938097164" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 170.88655031705275,214.36650086613372 L 138.04730053292587,189.20335824647918" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 170.88655031705275,214.36650086613372 L 192.5493232253939,228.21210153307766" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 112.65532468259335,169.77753354329616 L 91.40443389024585,153.03697988996282" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 112.65532468259335,169.77753354329616 L 138.04730053292587,189.20335824647918" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 91.40443389024585,153.03697988996282 L 77.91251160623506,142.57084733480588" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 91.40443389024585,153.03697988996282 L 112.65532468259335,169.77753354329616" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 64.75454779481515,132.78585664648563 L 35.410730021540076,115.25930736260489" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 64.75454779481515,132.78585664648563 L 77.91251160623506,142.57084733480588" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 35.410730021540076,115.25930736260489 L 0.0,94.56275160517544" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 35.410730021540076,115.25930736260489 L 64.75454779481515,132.78585664648563" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 0.0,94.56275160517544 L 35.410730021540076,115.25930736260489" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1004.6695363586769,985.5043437592685 L 1131.9411101830192,1037.123975227587" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1004.6695363586769,985.5043437592685 L 964.7281030616723,969.1054703267291" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1390.814586022403,785.9133497979492 L 1418.2437085541897,735.9561442071572" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1390.814586022403,785.9133497979492 L 1367.2816456686705,830.3428675234318" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1532.1012837374583,525.5153735280037 L 1505.2955503547564,512.6787086678669" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1532.1012837374583,525.5153735280037 L 1608.5443780641071,394.6462469669059" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1532.1012837374583,525.5153735280037 L 1474.7717459788546,631.535225758329" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1505.2955503547564,512.6787086678669 L 1267.2499512420036,443.242594668176" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1505.2955503547564,512.6787086678669 L 1532.1012837374583,525.5153735280037" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 693.2198650171049,495.7552480646409 L 672.648023118265,499.14780127443373" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 693.2198650171049,495.7552480646409 L 912.4524701861665,414.6873520077206" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 672.648023118265,499.14780127443373 L 693.2198650171049,495.7552480646409" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1267.2499512420036,443.242594668176 L 1201.8831462478265,435.22617554990575" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1267.2499512420036,443.242594668176 L 1505.2955503547564,512.6787086678669" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 912.4524701861665,414.6873520077206 L 693.2198650171049,495.7552480646409" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 912.4524701861665,414.6873520077206 L 979.2330327122472,407.9414935596287" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 979.2330327122472,407.9414935596287 L 912.4524701861665,414.6873520077206" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 979.2330327122472,407.9414935596287 L 1043.430983052589,415.81384450849146" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 703.2720150360838,398.61517432611436 L 757.1283846814185,382.56917287036777" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 802.6357925175689,359.59388150135055 L 1009.1445798887871,327.89471918018535" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 802.6357925175689,359.59388150135055 L 757.1283846814185,382.56917287036777" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1682.5607074932195,262.16453867265955 L 1683.8074857904576,257.1607518387027" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1682.5607074932195,262.16453867265955 L 1679.2990464130417,272.1721061337739" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1217.0003330977634,277.4509636471048 L 1260.7377610299736,273.0366338249296" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1217.0003330977634,277.4509636471048 L 1113.6847136924043,302.5222306693904" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1683.017117405776,250.80777342617512 L 1681.8259988543577,242.64713853085414" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1683.017117405776,250.80777342617512 L 1683.8074857904576,257.1607518387027" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1591.5792876682244,239.64748162496835 L 1673.2098702662624,223.32619128050283" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1591.5792876682244,239.64748162496835 L 1260.7377610299736,273.0366338249296" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1673.2098702662624,223.32619128050283 L 1681.8259988543577,242.64713853085414" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1673.2098702662624,223.32619128050283 L 2113.2669493211433,26.591345737222582" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1673.2098702662624,223.32619128050283 L 1591.5792876682244,239.64748162496835" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1418.2437085541897,735.9561442071572 L 1474.7717459788546,631.535225758329" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1418.2437085541897,735.9561442071572 L 1390.814586022403,785.9133497979492" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 757.1283846814185,382.56917287036777 L 802.6357925175689,359.59388150135055" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 757.1283846814185,382.56917287036777 L 703.2720150360838,398.61517432611436" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1009.1445798887871,327.89471918018535 L 1113.6847136924043,302.5222306693904" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1009.1445798887871,327.89471918018535 L 802.6357925175689,359.59388150135055" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2113.2669493211433,26.591345737222582 L 2173.1902312156744,0.0" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2113.2669493211433,26.591345737222582 L 1673.2098702662624,223.32619128050283" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1248.359033654444,1083.504176966846 L 1327.3736082189716,1118.9211896015331" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1248.359033654444,1083.504176966846 L 1131.9411101830192,1037.123975227587" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1248.359033654444,1083.504176966846 L 1288.0555640705861,999.4407490822487" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1113.6847136924043,302.5222306693904 L 1217.0003330977634,277.4509636471048" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1113.6847136924043,302.5222306693904 L 1009.1445798887871,327.89471918018535" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1114.508477923926,424.5245097242296 L 1043.430983052589,415.81384450849146" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1114.508477923926,424.5245097242296 L 1169.8787926444784,431.30965512804687" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 77.91251160623506,142.57084733480588 L 64.75454779481515,132.78585664648563" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 77.91251160623506,142.57084733480588 L 91.40443389024585,153.03697988996282" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 138.04730053292587,189.20335824647918 L 112.65532468259335,169.77753354329616" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 138.04730053292587,189.20335824647918 L 170.88655031705275,214.36650086613372" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 242.5651704389602,258.8767103832215 L 218.0192227186635,244.4285938097164" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 242.5651704389602,258.8767103832215 L 286.7033485388383,282.79531332384795" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1327.3736082189716,1118.9211896015331 L 1360.446628934238,1131.7965054172091" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1327.3736082189716,1118.9211896015331 L 1248.359033654444,1083.504176966846" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1360.446628934238,1131.7965054172091 L 1390.2468566186726,1141.8557456806302" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1360.446628934238,1131.7965054172091 L 1327.3736082189716,1118.9211896015331" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1390.2468566186726,1141.8557456806302 L 1417.631451354362,1150.3039292865433" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1390.2468566186726,1141.8557456806302 L 1360.446628934238,1131.7965054172091" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1463.4728176631033,1163.4018767084926 L 1502.8576535061002,1173.1598383248784" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1463.4728176631033,1163.4018767084926 L 1417.631451354362,1150.3039292865433" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1502.8576535061002,1173.1598383248784 L 1463.4728176631033,1163.4018767084926" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1131.9411101830192,1037.123975227587 L 1248.359033654444,1083.504176966846" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1131.9411101830192,1037.123975227587 L 1004.6695363586769,985.5043437592685" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל הבשור#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "נחל הבשור", "osm_normalized": "נחל הבשור"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "נחל הבשור", "lamas_normalized": "נחל הבשור", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1681.8259988543577,242.64713853085414 L 1673.2098702662624,223.32619128050283" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1681.8259988543577,242.64713853085414 L 1683.017117405776,250.80777342617512" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1683.8074857904576,257.1607518387027 L 1683.017117405776,250.80777342617512" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1683.8074857904576,257.1607518387027 L 1682.5607074932195,262.16453867265955" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1288.0555640705861,999.4407490822487 L 1333.2290134346113,904.858871161472" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1288.0555640705861,999.4407490822487 L 1248.359033654444,1083.504176966846" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1333.2290134346113,904.858871161472 L 1367.2816456686705,830.3428675234318" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1333.2290134346113,904.858871161472 L 1288.0555640705861,999.4407490822487" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1367.2816456686705,830.3428675234318 L 1390.814586022403,785.9133497979492" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1367.2816456686705,830.3428675234318 L 1333.2290134346113,904.858871161472" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1474.7717459788546,631.535225758329 L 1532.1012837374583,525.5153735280037" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1474.7717459788546,631.535225758329 L 1418.2437085541897,735.9561442071572" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1608.5443780641071,394.6462469669059 L 1679.2990464130417,272.1721061337739" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1608.5443780641071,394.6462469669059 L 1532.1012837374583,525.5153735280037" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1679.2990464130417,272.1721061337739 L 1682.5607074932195,262.16453867265955" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1679.2990464130417,272.1721061337739 L 1608.5443780641071,394.6462469669059" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל שורק#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "נחל שורק", "osm_normalized": "נחל שורק"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "נחל שורק", "lamas_normalized": "נחל שורק", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "109", "lamas_name": "נחל שניר", "lamas_normalized": "נחל שניר", "final_score": 75.0, "fuzz_ratio": 75.0, "token_sort_ratio": 75.0, "token_set_ratio": 75.0}]}'></path>
+<path d="M 1043.430983052589,415.81384450849146 L 979.2330327122472,407.9414935596287" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1043.430983052589,415.81384450849146 L 1114.508477923926,424.5245097242296" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1169.8787926444784,431.30965512804687 L 1114.508477923926,424.5245097242296" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1169.8787926444784,431.30965512804687 L 1201.8831462478265,435.22617554990575" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1201.8831462478265,435.22617554990575 L 1169.8787926444784,431.30965512804687" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1201.8831462478265,435.22617554990575 L 1267.2499512420036,443.242594668176" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נחל דן#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "נחל דן", "osm_normalized": "נחל דן"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "נחל דן", "lamas_normalized": "נחל דן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 658.1987532135099,386.6297956579365 L 670.7444598260336,393.4935549488291" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1260.7377610299736,273.0366338249296 L 1591.5792876682244,239.64748162496835" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1260.7377610299736,273.0366338249296 L 1217.0003330977634,277.4509636471048" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="נהר הירדן#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "נהר הירדן", "osm_normalized": "נהר הירדן"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "נהר הירדן", "lamas_normalized": "נהר הירדן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">4</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">12</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">4</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">4</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">0</div>
+            </div>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (8 - 66.7%)</h3>
+            <ul><li>הכנרת</li><li>המייסדות והמייסדים</li><li>נחל איילון</li><li>נחל ארנון</li><li>נחל לכיש</li><li>נחל פארן</li><li>נחל קדרון</li><li>נחל שניר</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

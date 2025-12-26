@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - בת הדר</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - בת הדר</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 468.7107159853913 562.6449313634075" id="street-map">
+                <rect x="0" y="0" width="468.7107159853913" height="562.6449313634075" fill="#fdfdfd" />
+                <path d="M 24.134065604303032,354.41690530534834 L 17.466028105467558,404.0551081998274" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 230.44247789075598,290.2243133918382 L 292.30271892575547,156.9605086618103" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הדקל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הדקל", "osm_normalized": "שביל הדקל"}, "scoring_breakdown": []}'></path>
+<path d="M 34.431118502281606,326.79935587290674 L 24.134065604303032,354.41690530534834" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 408.26423248415813,227.91441482724622 L 404.4905017465353,236.2965205097571" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 408.26423248415813,227.91441482724622 L 407.0619819839485,218.17233465844765" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 251.62657698942348,562.6449313634075 L 288.1059741224162,475.6221603821032" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 349.8771595628932,0.0 L 359.42837187321857,1.203070841729641" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 349.8771595628932,0.0 L 342.70818435633555,2.9946000268682837" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 254.45409205555916,138.65313060209155 L 268.0684657795355,99.72370717395097" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 254.45409205555916,138.65313060209155 L 245.09212287934497,135.60625714901835" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 254.45409205555916,138.65313060209155 L 292.30271892575547,156.9605086618103" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 459.76062892517075,50.16272234311327 L 467.5195974339731,56.740352804772556" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 459.76062892517075,50.16272234311327 L 416.75790963182226,28.664438116829842" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 277.9647685107775,86.90848508477211 L 342.70818435633555,2.9946000268682837" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 277.9647685107775,86.90848508477211 L 268.0684657795355,99.72370717395097" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 17.466028105467558,404.0551081998274 L 11.120817130431533,424.38892889302224" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 245.09212287934497,135.60625714901835 L 228.7615535799414,138.26082934206352" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 397.0543597615324,204.23264663573354 L 404.2233349685557,209.00561853684485" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 397.0543597615324,204.23264663573354 L 346.4039914505556,181.3746620719321" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 404.2233349685557,209.00561853684485 L 465.7273536315188,76.43399250507355" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 404.2233349685557,209.00561853684485 L 407.0619819839485,218.17233465844765" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 404.2233349685557,209.00561853684485 L 397.0543597615324,204.23264663573354" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 416.75790963182226,28.664438116829842 L 346.4039914505556,181.3746620719321" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הגפן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הגפן", "osm_normalized": "שביל הגפן"}, "scoring_breakdown": []}'></path>
+<path d="M 416.75790963182226,28.664438116829842 L 459.76062892517075,50.16272234311327" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 416.75790963182226,28.664438116829842 L 376.95005972404033,9.585332860704511" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 268.0684657795355,99.72370717395097 L 277.9647685107775,86.90848508477211" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 268.0684657795355,99.72370717395097 L 254.45409205555916,138.65313060209155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 468.7107159853913,65.0964229493402 L 465.7273536315188,76.43399250507355" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 468.7107159853913,65.0964229493402 L 467.5195974339731,56.740352804772556" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 404.4905017465353,236.2965205097571 L 353.8735292828642,345.06722111580893" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 404.4905017465353,236.2965205097571 L 408.26423248415813,227.91441482724622" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 288.1059741224162,475.6221603821032 L 251.62657698942348,562.6449313634075" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 288.1059741224162,475.6221603821032 L 353.8735292828642,345.06722111580893" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 342.70818435633555,2.9946000268682837 L 349.8771595628932,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 342.70818435633555,2.9946000268682837 L 277.9647685107775,86.90848508477211" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 165.2983118793927,259.193631532602 L 155.502196689602,265.2873157216236" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 228.7615535799414,138.26082934206352 L 213.67776257777587,152.40982011891901" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 49.34793026885018,309.34220774425194 L 34.431118502281606,326.79935587290674" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 467.5195974339731,56.740352804772556 L 468.7107159853913,65.0964229493402" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 467.5195974339731,56.740352804772556 L 459.76062892517075,50.16272234311327" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 64.58756855828688,297.39025816274807 L 49.34793026885018,309.34220774425194" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 172.81237750779837,246.24781163875014 L 165.2983118793927,259.193631532602" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 407.0619819839485,218.17233465844765 L 408.26423248415813,227.91441482724622" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 407.0619819839485,218.17233465844765 L 404.2233349685557,209.00561853684485" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 346.4039914505556,181.3746620719321 L 416.75790963182226,28.664438116829842" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הגפן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הגפן", "osm_normalized": "שביל הגפן"}, "scoring_breakdown": []}'></path>
+<path d="M 346.4039914505556,181.3746620719321 L 397.0543597615324,204.23264663573354" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 346.4039914505556,181.3746620719321 L 292.30271892575547,156.9605086618103" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 292.30271892575547,156.9605086618103 L 230.44247789075598,290.2243133918382" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הדקל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הדקל", "osm_normalized": "שביל הדקל"}, "scoring_breakdown": []}'></path>
+<path d="M 292.30271892575547,156.9605086618103 L 346.4039914505556,181.3746620719321" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 292.30271892575547,156.9605086618103 L 254.45409205555916,138.65313060209155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 116.54037491139024,277.9846607283689 L 64.58756855828688,297.39025816274807" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 359.42837187321857,1.203070841729641 L 376.95005972404033,9.585332860704511" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 359.42837187321857,1.203070841729641 L 349.8771595628932,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 465.7273536315188,76.43399250507355 L 404.2233349685557,209.00561853684485" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 465.7273536315188,76.43399250507355 L 468.7107159853913,65.0964229493402" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 155.502196689602,265.2873157216236 L 116.54037491139024,277.9846607283689" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 213.67776257777587,152.40982011891901 L 179.01287314482033,232.34738563513383" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 376.95005972404033,9.585332860704511 L 416.75790963182226,28.664438116829842" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 376.95005972404033,9.585332860704511 L 359.42837187321857,1.203070841729641" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הברוש#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הברוש", "osm_normalized": "שביל הברוש"}, "scoring_breakdown": []}'></path>
+<path d="M 353.8735292828642,345.06722111580893 L 288.1059741224162,475.6221603821032" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 353.8735292828642,345.06722111580893 L 404.4905017465353,236.2965205097571" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 179.01287314482033,232.34738563513383 L 172.81237750779837,246.24781163875014" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+<path d="M 11.120817130431533,424.38892889302224 L 0.0,440.94364139437675" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל האלון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל האלון", "osm_normalized": "שביל האלון"}, "scoring_breakdown": []}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">4</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">4</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (4)</h3>
+            <ul><li>שביל האלון</li><li>שביל הברוש</li><li>שביל הגפן</li><li>שביל הדקל</li></ul>
+        </div>
+        
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

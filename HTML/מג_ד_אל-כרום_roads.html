@@ -1,0 +1,552 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - מג'ד אל-כרום</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - מג'ד אל-כרום</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 5135.524332664441 1633.801842365414" id="street-map">
+                <rect x="0" y="0" width="5135.524332664441" height="1633.801842365414" fill="#fdfdfd" />
+                <path d="M 1192.9553230865858,1473.6277063302696 L 1176.2907953145914,1472.3149032383226" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 1013.3413246916607,1524.3893132917583 L 978.9436020362191,1546.136643039994" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 1013.3413246916607,1524.3893132917583 L 1030.5958457649685,1515.9025395317003" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 950.5571318836883,1571.8620908427984 L 936.6421955348924,1581.2770602232777" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 950.5571318836883,1571.8620908427984 L 978.9436020362191,1546.136643039994" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 886.6597441686317,1581.542270519305 L 875.6391145805828,1566.2926687807776" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 886.6597441686317,1581.542270519305 L 916.4933677008376,1588.7029462382197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 782.9099787492305,1506.3549117175862 L 756.3046204498969,1495.3486089068465" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 782.9099787492305,1506.3549117175862 L 856.3808426735923,1551.9712856304832" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 686.7299387035891,1476.9163437350653 L 628.28720603697,1454.9036725815386" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 686.7299387035891,1476.9163437350653 L 756.3046204498969,1495.3486089068465" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 606.6912248241715,1444.4277483178303 L 575.8557258732617,1421.486767588649" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 606.6912248241715,1444.4277483178303 L 628.28720603697,1454.9036725815386" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 575.8557258732617,1421.486767588649 L 558.8238437827677,1412.8673123745248" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 575.8557258732617,1421.486767588649 L 606.6912248241715,1444.4277483178303" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 439.26671067019925,1412.9999194261618 L 415.55565913114697,1408.889100140892" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 439.26671067019925,1412.9999194261618 L 463.15587339457124,1412.1777556841262" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 415.55565913114697,1408.889100140892 L 346.20361636718735,1389.6610553339124" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 415.55565913114697,1408.889100140892 L 439.26671067019925,1412.9999194261618" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 279.0779634192586,1385.948049949482 L 174.43764207325876,1371.4938392313197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 279.0779634192586,1385.948049949482 L 346.20361636718735,1389.6610553339124" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 161.19062266964465,1365.9243220943026 L 91.61594092287123,1314.6050755283795" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 161.19062266964465,1365.9243220943026 L 174.43764207325876,1371.4938392313197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 0.0,1252.9421181385405 L 20.59410579688847,1265.2747355331667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 1206.6030926574022,1555.060992918443 L 1212.3471783823334,1575.3893901146948" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 4249.510241542477,656.8766832249239 L 4250.868339329958,672.286605136469" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4249.510241542477,656.8766832249239 L 4235.1722911284305,625.8180699991062" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5135.524332664441,159.21285262983292 L 5130.693066763692,138.05974925123155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4235.1722911284305,625.8180699991062 L 4249.510241542477,656.8766832249239" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4235.1722911284305,625.8180699991062 L 4259.061453852337,586.4045449513942" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4723.386181900278,201.10782068502158 L 4686.628486040048,234.07729151658714" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4723.386181900278,201.10782068502158 L 4743.958023798652,189.88810031721368" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5009.0987869706005,92.55723902117461 L 4969.680555280764,125.3943932428956" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5009.0987869706005,92.55723902117461 L 5041.348043452948,30.450205359142274" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4743.958023798652,189.88810031721368 L 4723.386181900278,201.10782068502158" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4743.958023798652,189.88810031721368 L 4858.10502965888,163.15170215070248" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4250.868339329958,672.286605136469 L 4253.083597197663,697.4835078711621" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4250.868339329958,672.286605136469 L 4249.510241542477,656.8766832249239" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5041.348043452948,30.450205359142274 L 5009.0987869706005,92.55723902117461" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5041.348043452948,30.450205359142274 L 5058.068230970297,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5058.068230970297,0.0 L 5041.348043452948,30.450205359142274" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5058.068230970297,0.0 L 5093.300849806983,8.952050280757248" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5120.173374883831,42.99630356952548 L 5093.300849806983,8.952050280757248" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5120.173374883831,42.99630356952548 L 5128.522336693481,72.84959749225527" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4259.061453852337,586.4045449513942 L 4235.1722911284305,625.8180699991062" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4259.061453852337,586.4045449513942 L 4260.252572404686,536.2489189128391" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4260.252572404686,536.2489189128391 L 4259.061453852337,586.4045449513942" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4260.252572404686,536.2489189128391 L 4275.180516120046,522.0854193349369" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4554.058104455005,285.4410492335446 L 4484.07154059317,323.94051159219816" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4554.058104455005,285.4410492335446 L 4560.102752805222,282.33774569723755" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4262.645941456314,726.1416035923176 L 4253.083597197663,697.4835078711621" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4449.740609632339,346.85711402539164 L 4365.4049634076655,416.534981014207" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4449.740609632339,346.85711402539164 L 4484.07154059317,323.94051159219816" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5093.300849806983,8.952050280757248 L 5058.068230970297,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5093.300849806983,8.952050280757248 L 5120.173374883831,42.99630356952548" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4365.4049634076655,416.534981014207 L 4309.132960811723,493.4400870427489" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4365.4049634076655,416.534981014207 L 4449.740609632339,346.85711402539164" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4484.07154059317,323.94051159219816 L 4449.740609632339,346.85711402539164" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4484.07154059317,323.94051159219816 L 4554.058104455005,285.4410492335446" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5128.522336693481,72.84959749225527 L 5120.173374883831,42.99630356952548" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5128.522336693481,72.84959749225527 L 5130.693066763692,138.05974925123155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4876.528405385092,158.84151321370155 L 4858.10502965888,163.15170215070248" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4876.528405385092,158.84151321370155 L 4969.680555280764,125.3943932428956" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4969.680555280764,125.3943932428956 L 4876.528405385092,158.84151321370155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4969.680555280764,125.3943932428956 L 5009.0987869706005,92.55723902117461" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4637.659042041283,242.44563401443884 L 4560.102752805222,282.33774569723755" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4637.659042041283,242.44563401443884 L 4686.628486040048,234.07729151658714" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4309.132960811723,493.4400870427489 L 4275.180516120046,522.0854193349369" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4309.132960811723,493.4400870427489 L 4365.4049634076655,416.534981014207" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4686.628486040048,234.07729151658714 L 4637.659042041283,242.44563401443884" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4686.628486040048,234.07729151658714 L 4723.386181900278,201.10782068502158" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5130.693066763692,138.05974925123155 L 5128.522336693481,72.84959749225527" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 5130.693066763692,138.05974925123155 L 5135.524332664441,159.21285262983292" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4253.083597197663,697.4835078711621 L 4262.645941456314,726.1416035923176" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4253.083597197663,697.4835078711621 L 4250.868339329958,672.286605136469" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4275.180516120046,522.0854193349369 L 4260.252572404686,536.2489189128391" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4275.180516120046,522.0854193349369 L 4309.132960811723,493.4400870427489" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 875.6391145805828,1566.2926687807776 L 856.3808426735923,1551.9712856304832" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 875.6391145805828,1566.2926687807776 L 886.6597441686317,1581.542270519305" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 856.3808426735923,1551.9712856304832 L 782.9099787492305,1506.3549117175862" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 856.3808426735923,1551.9712856304832 L 875.6391145805828,1566.2926687807776" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 756.3046204498969,1495.3486089068465 L 686.7299387035891,1476.9163437350653" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 756.3046204498969,1495.3486089068465 L 782.9099787492305,1506.3549117175862" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 628.28720603697,1454.9036725815386 L 606.6912248241715,1444.4277483178303" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 628.28720603697,1454.9036725815386 L 686.7299387035891,1476.9163437350653" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 558.8238437827677,1412.8673123745248 L 540.0108498386107,1409.552135605365" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 558.8238437827677,1412.8673123745248 L 575.8557258732617,1421.486767588649" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 540.0108498386107,1409.552135605365 L 463.15587339457124,1412.1777556841262" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 540.0108498386107,1409.552135605365 L 558.8238437827677,1412.8673123745248" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 346.20361636718735,1389.6610553339124 L 279.0779634192586,1385.948049949482" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 346.20361636718735,1389.6610553339124 L 415.55565913114697,1408.889100140892" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 174.43764207325876,1371.4938392313197 L 161.19062266964465,1365.9243220943026" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 174.43764207325876,1371.4938392313197 L 279.0779634192586,1385.948049949482" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 91.61594092287123,1314.6050755283795 L 63.340790261514485,1296.3051348822191" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 91.61594092287123,1314.6050755283795 L 161.19062266964465,1365.9243220943026" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 63.340790261514485,1296.3051348822191 L 20.59410579688847,1265.2747355331667" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 63.340790261514485,1296.3051348822191 L 91.61594092287123,1314.6050755283795" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 20.59410579688847,1265.2747355331667 L 0.0,1252.9421181385405" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 20.59410579688847,1265.2747355331667 L 63.340790261514485,1296.3051348822191" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 1083.9178818543442,1479.7010762994178 L 1054.7744391644374,1499.4859191263095" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 1030.5958457649685,1515.9025395317003 L 1013.3413246916607,1524.3893132917583" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 1030.5958457649685,1515.9025395317003 L 1054.7744391644374,1499.4859191263095" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 978.9436020362191,1546.136643039994 L 950.5571318836883,1571.8620908427984" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 978.9436020362191,1546.136643039994 L 1013.3413246916607,1524.3893132917583" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 936.6421955348924,1581.2770602232777 L 916.4933677008376,1588.7029462382197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 936.6421955348924,1581.2770602232777 L 950.5571318836883,1571.8620908427984" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 916.4933677008376,1588.7029462382197 L 886.6597441686317,1581.542270519305" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 916.4933677008376,1588.7029462382197 L 936.6421955348924,1581.2770602232777" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 463.15587339457124,1412.1777556841262 L 540.0108498386107,1409.552135605365" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 463.15587339457124,1412.1777556841262 L 439.26671067019925,1412.9999194261618" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער אחיהוד#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער אחיהוד", "osm_normalized": "דרך נוף יער אחיהוד"}, "scoring_breakdown": []}'></path>
+<path d="M 1054.7744391644374,1499.4859191263095 L 1040.0802663806826,1484.7003326294944" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הר גמל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הר גמל", "osm_normalized": "שביל הר גמל"}, "scoring_breakdown": []}'></path>
+<path d="M 1054.7744391644374,1499.4859191263095 L 1030.5958457649685,1515.9025395317003" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 1054.7744391644374,1499.4859191263095 L 1083.9178818543442,1479.7010762994178" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 1040.0802663806826,1484.7003326294944 L 1054.7744391644374,1499.4859191263095" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שביל הר גמל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שביל הר גמל", "osm_normalized": "שביל הר גמל"}, "scoring_breakdown": []}'></path>
+<path d="M 1176.2907953145914,1472.3149032383226 L 1192.9553230865858,1473.6277063302696" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף יער טל-אל#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף יער טל-אל", "osm_normalized": "דרך נוף יער טל אל"}, "scoring_breakdown": []}'></path>
+<path d="M 1228.020962686278,1592.124156429898 L 1222.1989533184096,1572.7770670717582" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 1240.3217664188705,1633.801842365414 L 1232.0841241008602,1609.2301924242638" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 1222.1544255223125,1596.844894434791 L 1227.9653029413894,1610.4501568297856" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 1232.0841241008602,1609.2301924242638 L 1228.020962686278,1592.124156429898" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 1227.9653029413894,1610.4501568297856 L 1240.3217664188705,1633.801842365414" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 1222.1989533184096,1572.7770670717582 L 1215.4752560737543,1552.5149680883624" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 1212.3471783823334,1575.3893901146948 L 1222.1544255223125,1596.844894434791" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="צומת גילון#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "צומת גילון", "osm_normalized": "צומת גילון"}, "scoring_breakdown": []}'></path>
+<path d="M 4858.10502965888,163.15170215070248 L 4743.958023798652,189.88810031721368" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4858.10502965888,163.15170215070248 L 4876.528405385092,158.84151321370155" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4560.102752805222,282.33774569723755 L 4554.058104455005,285.4410492335446" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+<path d="M 4560.102752805222,282.33774569723755 L 4637.659042041283,242.44563401443884" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="רח׳ חאן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "רח׳ חאן", "osm_normalized": "רח׳ חאן"}, "scoring_breakdown": []}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">5</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">295</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">5</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (5)</h3>
+            <ul><li>דרך נוף יער אחיהוד</li><li>דרך נוף יער טל אל</li><li>צומת גילון</li><li>רח׳ חאן</li><li>שביל הר גמל</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (295 - 100.0%)</h3>
+            <ul><li>אבו אלנואס</li><li>אבו אלעתאהיה</li><li>אבו בכר אלסדיק</li><li>אבו ג'עפר אלמנסור</li><li>אבו סלמא</li><li>אבו סראג'</li><li>אבו ערב</li><li>אבו קאסם אלשאבי</li><li>אבו תמאם</li><li>אבן אלאת'יר</li><li>אבן אלהייתם</li><li>אבן אלורדי</li><li>אבן אלנפיס</li><li>אבן אלפארד</li><li>אבן אלרושד</li><li>אבן אסחאק</li><li>אבן ח'לדון</li><li>אבן חיאן</li><li>אבן סירין</li><li>אבן תימיה</li><li>אבראהים טוקאן</li><li>אדוארד סעיד</li><li>אואליס</li><li>אום כולתום</li><li>אחמד בן בלא</li><li>אחמד בשר</li><li>אכרם זעיתר</li><li>אלאורג'ואן</li><li>אלאמל</li><li>אלאנביא</li><li>אלאנדלוס</li><li>אלאנסאר</li><li>אלאסוד</li><li>אלאסלאח</li><li>אלאקחואן</li><li>אלארוז</li><li>אלבאמיה</li><li>אלבדר</li><li>אלבהג'א</li><li>אלבוח'ארי</li><li>אלבוסתאן</li><li>אלבוראק</li><li>אלבורג'</li><li>אלבחתרי</li><li>אלבטם</li><li>אלביירוני</li><li>אלביר</li><li>אלבירה</li><li>אלבלוט</li><li>אלבריקאת</li><li>אלברקוק</li><li>אלג'בל</li><li>אלג'וב</li><li>אלג'ולאן</li><li>אלג'ורי</li><li>אלג'זאלי</li><li>אלג'יית</li><li>אלג'לאלי</li><li>אלג'רמק</li><li>אלגאמע</li><li>אלגאר</li><li>אלדחאלה</li><li>אלדחנון</li><li>אלהודא</li><li>אלהודהוד</li><li>אלהלאל</li><li>אלואחה</li><li>אלודיאן</li><li>אלוזאל</li><li>אלוזיה</li><li>אלורדה</li><li>אלורוד</li><li>אלזהראא</li><li>אלזוהור</li><li>אלזוקם</li><li>אלזייתון</li><li>אלזית</li><li>אלזעאריר</li><li>אלזעפראן</li><li>אלזערור</li><li>אלזעתר</li><li>אלזקאק</li><li>אלזריעה</li><li>אלח'וארזמי</li><li>אלח'וביזה</li><li>אלח'זאן</li><li>אלח'ליפה מועאויה</li><li>אלח'נסאא</li><li>אלחג'ל</li><li>אלחוארה</li><li>אלחלקאת</li><li>אלחמראא</li><li>אלטאבון</li><li>אלטברי</li><li>אלטויל</li><li>אלטיון</li><li>אלימאמה</li><li>אלירמוק</li><li>אלכראמה</li><li>אלכרמל</li><li>אלליאת</li><li>אלליימון</li><li>אלמאמון</li><li>אלמאס</li><li>אלמג'ד</li><li>אלמדינה</li><li>אלמוג'ר</li><li>אלמוודה</li><li>אלמוסתקבל</li><li>אלמועתסם</li><li>אלמותנבי</li><li>אלמל</li><li>אלמלאיאת</li><li>אלמנאר</li><li>אלמנג'ל</li><li>אלמנסורה</li><li>אלמנפלוטי</li><li>אלמסק</li><li>אלמעסרה</li><li>אלמערפה</li><li>אלמקדסי</li><li>אלמראח</li><li>אלמרג'</li><li>אלמרוש</li><li>אלמשמש</li><li>אלמת'ור</li><li>אלנהר</li><li>אלנוזהא</li><li>אלנויר</li><li>אלנח'יל</li><li>אלנירב</li><li>אלנעמה</li><li>אלנענע</li><li>אלסבאט</li><li>אלסבר</li><li>אלסהל</li><li>אלסולטאנה</li><li>אלסומאק</li><li>אלסופסאף</li><li>אלסלאח'</li><li>אלסלאם</li><li>אלסלוא</li><li>אלסנדבאד</li><li>אלסנדיאן</li><li>אלסנובר</li><li>אלסעבניה</li><li>אלסראג'</li><li>אלסרג'</li><li>אלסריס</li><li>אלעבאסיין</li><li>אלעדנדליב</li><li>אלעוודה</li><li>אלעולום</li><li>אלעזה</li><li>אלעזיב</li><li>אלעטאא</li><li>אלעטאר</li><li>אלעין</li><li>אלענב</li><li>אלעספורה</li><li>אלעקאד</li><li>אלעראקיב</li><li>אלפאראבי</li><li>אלפרזדק</li><li>אלקאדסייה</li><li>אלקאהרא</li><li>אלקודס</li><li>אלקמח</li><li>אלקנדול</li><li>אלקניטרה</li><li>אלקסאר</li><li>אלקראר</li><li>אלקרואן</li><li>אלקרז</li><li>אלקרינה</li><li>אלראזי</li><li>אלרבאט</li><li>אלרבאעין</li><li>אלרואייס</li><li>אלרודה</li><li>אלרויס</li><li>אלרויסאת</li><li>אלריאן</li><li>אלרייחאן</li><li>אלריף</li><li>אלרשאדה</li><li>אלשאם</li><li>אלשועראא</li><li>אלשטינה</li><li>אלשייח</li><li>אלשיימאא</li><li>אלשעראוי</li><li>אלתין</li><li>אלתסאמוח</li><li>אם אלזינאת</li><li>אם אלסעיד</li><li>אמיל תומא</li><li>אמרוא אלקייס</li><li>באב אלואדי</li><li>באב אלזרב</li><li>בגדאד</li><li>ביירות</li><li>ביסאן</li><li>בלאל בן רבאח</li><li>בלומיה</li><li>ג'בל אלטור</li><li>ג'בל אלכרמל</li><li>ג'בל חיידר</li><li>ג'בל כנעאן</li><li>ג'בל עדאת'ר</li><li>ג'ובראן</li><li>ג'לון</li><li>גאנדי</li><li>גרנאטה</li><li>ד'אהר אל עומר</li><li>דמשק</li><li>דרב אלטאחונה</li><li>האג'ר</li><li>הארון אלרשיד</li><li>השאם בן עבד אלמלק</li><li>זוביידה בן ג'עפר</li><li>זיתייה</li><li>זמזם</li><li>זעפראן</li><li>ח'אלד בן אלוליד</li><li>ח'ליל מוטראן</li><li>ח'לת אבו פארס</li><li>ח'לת אבו רומאן</li><li>ח'לת אלאערג'</li><li>ח'לת גזאל</li><li>ח'רבת אלח'ורי</li><li>חאפז אבראהים</li><li>חיפא</li><li>חלב</li><li>חנא מינא</li><li>טהא חוסיין</li><li>טליטה</li><li>יאפא</li><li>יוסף אדריס</li><li>כביש אלמסג'ד אלקדים</li><li>כרם אלסנדיאנה</li><li>כרם מונד'ר</li><li>לוקמאן</li><li>מאי זייאדה</li><li>מג'ארת עיסא</li><li>מדראס</li><li>מוארס אלעין</li><li>מוג'ר אלחמאם</li><li>מוחמד אלפאתח</li><li>מוחמד עבדו</li><li>מוסא בן נסיר</li><li>מכא</li><li>מרואן בן אלחכם</li><li>נוח אברהים</li><li>נור אלדין זנקי</li><li>נלסון מנדילה</li><li>נמלייה</li><li>סחמאתא</li><li>סייד דרויש</li><li>סייף אלדין קטז</li><li>סינא</li><li>סלאח אלדין</li><li>סלסביל</li><li>סעד בן אבי וקאס</li><li>סעיד בן ג'ביר</li><li>עאישה</li><li>עאמר בן יאסר</li><li>עבאדה בן אלסאמת</li><li>עבד אלרחמן אלדאח'ל</li><li>עומר אלח'יאם</li><li>עומר בן אלח'טאב</li><li>עומר בן עבד אלעזיז</li><li>עוקבא בן נאפע</li><li>עוש אלבומה</li><li>עות'מאן בן עפאן</li><li>עין גאלות</li><li>עכא</li><li>עלי בן אבי טאלב</li><li>עליליאת</li><li>עסא אלראעי</li><li>עסקלאן</li><li>פיירוז</li><li>צור</li><li>ציידא</li><li>קובת אלסח'רא</li><li>קורטבה</li><li>קותיבא בן מוסלם</li><li>ראס ערוס</li><li>ראשד חוסיין</li><li>רפידה בנת קעב</li><li>שדאד בן אוס</li><li>שקאת אלרסייפי</li><li>תונס</li><li>תמים אלדארי</li><li>תסנים</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

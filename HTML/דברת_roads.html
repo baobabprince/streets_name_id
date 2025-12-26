@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - דברת</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - דברת</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 630.3020888208412 830.2301849494688" id="street-map">
+                <rect x="0" y="0" width="630.3020888208412" height="830.2301849494688" fill="#fdfdfd" />
+                <path d="M 527.7768377996981,830.2301849494688 L 418.8841119064018,741.5210133683868" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 418.8841119064018,741.5210133683868 L 527.7768377996981,830.2301849494688" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 418.8841119064018,741.5210133683868 L 387.2805084702559,714.2206649323925" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 260.0645943908021,547.5086948317476 L 287.0373070104979,568.2387489881366" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 260.0645943908021,547.5086948317476 L 146.195887258742,535.900906286668" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 233.45923609146848,391.5826200367883 L 188.2746547786519,392.7328368681483" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 233.45923609146848,391.5826200367883 L 294.99665060220286,397.5055744755082" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 630.3020888208412,607.6231076209806 L 379.05399809964,587.3955077920109" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הבית#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "הבית", "osm_normalized": "הבית"}, "scoring_breakdown": []}'></path>
+<path d="M 60.61346273729578,778.4193502306007 L 314.72246437100694,811.761281135492" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 60.61346273729578,778.4193502306007 L 37.91541856434196,754.5299707856029" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 37.91541856434196,754.5299707856029 L 60.61346273729578,778.4193502306007" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 37.91541856434196,754.5299707856029 L 7.658780966885388,704.1862837336957" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 55.83785658236593,408.1748175085522 L 40.79859337583184,423.16726914048195" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 55.83785658236593,408.1748175085522 L 89.64558593602851,408.6639895103872" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 89.64558593602851,408.6639895103872 L 55.83785658236593,408.1748175085522" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 89.64558593602851,408.6639895103872 L 116.4847151665017,425.8246593773365" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 27.75194905558601,449.02722040051594 L 9.807247139047831,522.9181497870013" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 27.75194905558601,449.02722040051594 L 40.79859337583184,423.16726914048195" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 40.79859337583184,423.16726914048195 L 27.75194905558601,449.02722040051594" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 40.79859337583184,423.16726914048195 L 55.83785658236593,408.1748175085522" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 379.05399809964,587.3955077920109 L 630.3020888208412,607.6231076209806" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הבית#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "הבית", "osm_normalized": "הבית"}, "scoring_breakdown": []}'></path>
+<path d="M 379.05399809964,587.3955077920109 L 375.4249827004969,678.829271949362" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 379.05399809964,587.3955077920109 L 381.72566587943584,551.3162585250102" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 358.4487603548914,690.7938750060275 L 342.4632814764045,687.1714439773932" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 9.807247139047831,522.9181497870013 L 1.0575351626612246,595.8963921968825" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 9.807247139047831,522.9181497870013 L 27.75194905558601,449.02722040051594" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 9.807247139047831,522.9181497870013 L 103.84995296038687,531.8421438205987" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 314.72246437100694,811.761281135492 L 343.1979901161976,811.77450154908" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 314.72246437100694,811.761281135492 L 60.61346273729578,778.4193502306007" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 343.1979901161976,811.77450154908 L 351.8029867541045,788.6387545885518" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 343.1979901161976,811.77450154908 L 314.72246437100694,811.761281135492" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 351.8029867541045,788.6387545885518 L 365.7847147975117,714.4454138223082" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 351.8029867541045,788.6387545885518 L 343.1979901161976,811.77450154908" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 1.0575351626612246,595.8963921968825 L 0.0,656.1956471949816" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 1.0575351626612246,595.8963921968825 L 9.807247139047831,522.9181497870013" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 7.658780966885388,704.1862837336957 L 37.91541856434196,754.5299707856029" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 7.658780966885388,704.1862837336957 L 0.0,656.1956471949816" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 130.42191541427746,425.9568678312935 L 116.4847151665017,425.8246593773365" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 130.42191541427746,425.9568678312935 L 153.23127907747403,407.14358997670934" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 153.23127907747403,407.14358997670934 L 130.42191541427746,425.9568678312935" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 153.23127907747403,407.14358997670934 L 188.2746547786519,392.7328368681483" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 342.4632814764045,687.1714439773932 L 332.95659696217626,685.8097269162536" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 342.4632814764045,687.1714439773932 L 358.4487603548914,690.7938750060275" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 408.5981909572147,316.5009827776812 L 415.0881172702648,249.08707618154585" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 408.5981909572147,316.5009827776812 L 280.56964459549636,307.9337925929576" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף התבור#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף התבור", "osm_normalized": "דרך נוף התבור"}, "scoring_breakdown": []}'></path>
+<path d="M 408.5981909572147,316.5009827776812 L 406.17142605781555,335.2615210842341" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 0.0,656.1956471949816 L 75.56367035023868,659.897411217913" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 0.0,656.1956471949816 L 7.658780966885388,704.1862837336957" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 0.0,656.1956471949816 L 1.0575351626612246,595.8963921968825" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 381.72566587943584,551.3162585250102 L 379.05399809964,587.3955077920109" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 381.72566587943584,551.3162585250102 L 387.40295990975574,499.1207994329743" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 415.0881172702648,249.08707618154585 L 408.5981909572147,316.5009827776812" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 415.0881172702648,249.08707618154585 L 414.7207629503682,236.54029961582273" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 294.99665060220286,397.5055744755082 L 233.45923609146848,391.5826200367883" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 294.99665060220286,397.5055744755082 L 396.6647415435873,410.27693488728255" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 188.2746547786519,392.7328368681483 L 153.23127907747403,407.14358997670934" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 188.2746547786519,392.7328368681483 L 233.45923609146848,391.5826200367883" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 121.49409225257114,294.8846807968803 L 280.56964459549636,307.9337925929576" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף התבור#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף התבור", "osm_normalized": "דרך נוף התבור"}, "scoring_breakdown": []}'></path>
+<path d="M 116.4847151665017,425.8246593773365 L 89.64558593602851,408.6639895103872" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 116.4847151665017,425.8246593773365 L 130.42191541427746,425.9568678312935" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 287.0373070104979,568.2387489881366 L 260.0645943908021,547.5086948317476" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 396.6647415435873,410.27693488728255 L 294.99665060220286,397.5055744755082" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 396.6647415435873,410.27693488728255 L 387.40295990975574,499.1207994329743" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 396.6647415435873,410.27693488728255 L 406.17142605781555,335.2615210842341" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 280.603040442802,681.0503262486309 L 239.4816205445677,677.3221277217381" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 280.603040442802,681.0503262486309 L 332.95659696217626,685.8097269162536" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 387.40295990975574,499.1207994329743 L 381.72566587943584,551.3162585250102" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 387.40295990975574,499.1207994329743 L 396.6647415435873,410.27693488728255" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 408.43121172022074,207.46715922094882 L 411.214198990725,215.6113476403989" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 408.43121172022074,207.46715922094882 L 403.90050844522193,198.67513133352622" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 191.36933662276715,0.0 L 199.9520693635568,2.8293624999932945" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 290.4993431745097,82.42143198661506 L 389.3510509985499,181.39514168165624" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 290.4993431745097,82.42143198661506 L 222.91728031355888,16.592747054994106" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 93.78667099308223,661.2062489325181 L 75.56367035023868,659.897411217913" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 93.78667099308223,661.2062489325181 L 132.29208285873756,668.4246846423484" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 103.84995296038687,531.8421438205987 L 146.195887258742,535.900906286668" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 103.84995296038687,531.8421438205987 L 9.807247139047831,522.9181497870013" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 280.56964459549636,307.9337925929576 L 408.5981909572147,316.5009827776812" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף התבור#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף התבור", "osm_normalized": "דרך נוף התבור"}, "scoring_breakdown": []}'></path>
+<path d="M 280.56964459549636,307.9337925929576 L 121.49409225257114,294.8846807968803" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך נוף התבור#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך נוף התבור", "osm_normalized": "דרך נוף התבור"}, "scoring_breakdown": []}'></path>
+<path d="M 199.9520693635568,2.8293624999932945 L 206.80934999557212,5.5132898525334895" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 199.9520693635568,2.8293624999932945 L 191.36933662276715,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 206.80934999557212,5.5132898525334895 L 214.61284630047157,10.087864132598042" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 206.80934999557212,5.5132898525334895 L 199.9520693635568,2.8293624999932945" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 214.61284630047157,10.087864132598042 L 222.91728031355888,16.592747054994106" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 214.61284630047157,10.087864132598042 L 206.80934999557212,5.5132898525334895" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 222.91728031355888,16.592747054994106 L 290.4993431745097,82.42143198661506" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 222.91728031355888,16.592747054994106 L 214.61284630047157,10.087864132598042" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 389.3510509985499,181.39514168165624 L 398.4124575490132,191.3241977361031" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 389.3510509985499,181.39514168165624 L 290.4993431745097,82.42143198661506" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 398.4124575490132,191.3241977361031 L 403.90050844522193,198.67513133352622" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 398.4124575490132,191.3241977361031 L 389.3510509985499,181.39514168165624" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 403.90050844522193,198.67513133352622 L 408.43121172022074,207.46715922094882" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 403.90050844522193,198.67513133352622 L 398.4124575490132,191.3241977361031" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 411.214198990725,215.6113476403989 L 413.384929060936,225.89734382834285" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 411.214198990725,215.6113476403989 L 408.43121172022074,207.46715922094882" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 413.384929060936,225.89734382834285 L 414.7207629503682,236.54029961582273" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 413.384929060936,225.89734382834285 L 411.214198990725,215.6113476403989" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 414.7207629503682,236.54029961582273 L 415.0881172702648,249.08707618154585" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 414.7207629503682,236.54029961582273 L 413.384929060936,225.89734382834285" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 75.56367035023868,659.897411217913 L 0.0,656.1956471949816" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 75.56367035023868,659.897411217913 L 93.78667099308223,661.2062489325181" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 132.29208285873756,668.4246846423484 L 93.78667099308223,661.2062489325181" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 132.29208285873756,668.4246846423484 L 239.4816205445677,677.3221277217381" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 146.195887258742,535.900906286668 L 260.0645943908021,547.5086948317476" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 146.195887258742,535.900906286668 L 103.84995296038687,531.8421438205987" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות המייסדים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות המייסדים", "osm_normalized": "שדרות המייסדים"}, "scoring_breakdown": []}'></path>
+<path d="M 239.4816205445677,677.3221277217381 L 132.29208285873756,668.4246846423484" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 239.4816205445677,677.3221277217381 L 280.603040442802,681.0503262486309" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 332.95659696217626,685.8097269162536 L 280.603040442802,681.0503262486309" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 332.95659696217626,685.8097269162536 L 342.4632814764045,687.1714439773932" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 406.17142605781555,335.2615210842341 L 396.6647415435873,410.27693488728255" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 406.17142605781555,335.2615210842341 L 408.5981909572147,316.5009827776812" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 365.7847147975117,714.4454138223082 L 351.8029867541045,788.6387545885518" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+<path d="M 387.2805084702559,714.2206649323925 L 418.8841119064018,741.5210133683868" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="שדרות השקיעה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "שדרות השקיעה", "osm_normalized": "שדרות השקיעה"}, "scoring_breakdown": []}'></path>
+<path d="M 375.4249827004969,678.829271949362 L 379.05399809964,587.3955077920109" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="דרך זרעים#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "דרך זרעים", "osm_normalized": "דרך זרעים"}, "scoring_breakdown": []}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">5</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">5</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (5)</h3>
+            <ul><li>דרך זרעים</li><li>דרך נוף התבור</li><li>הבית</li><li>שדרות המייסדים</li><li>שדרות השקיעה</li></ul>
+        </div>
+        
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

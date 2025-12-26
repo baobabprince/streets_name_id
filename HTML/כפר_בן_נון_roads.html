@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - כפר בן נון</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - כפר בן נון</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 935.952014691662 1210.7546508722007" id="street-map">
+                <rect x="0" y="0" width="935.952014691662" height="1210.7546508722007" fill="#fdfdfd" />
+                <path d="M 203.7369320495054,45.67943408759311 L 211.71853953925893,67.42461907677352" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 203.7369320495054,45.67943408759311 L 201.4994102846831,36.504238807130605" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 558.8795035271905,674.1506186770275 L 655.1374672167003,589.7036295305006" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 558.8795035271905,674.1506186770275 L 505.8691620128229,745.8573534670286" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 558.8795035271905,674.1506186770275 L 509.36459402320907,620.0327883837745" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 419.19580648001283,867.5389470378868 L 429.1366370082833,853.5804895306937" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 419.19580648001283,867.5389470378868 L 399.25848567998037,896.6222916818224" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 37.50353644788265,733.2618492483161 L 61.35930332588032,712.7367851086892" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 194.9426922770217,0.0 L 201.4994102846831,36.504238807130605" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 194.9426922770217,0.0 L 182.07415914162993,2.569063143339008" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 409.7336497637443,423.3637472507544 L 406.33840529387817,434.6095541222021" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 409.7336497637443,423.3637472507544 L 418.1605352158658,439.48535524634644" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 409.7336497637443,423.3637472507544 L 384.5977087416686,372.823022109922" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 254.2759808707051,553.8170848106965 L 380.84624190256,455.42344411835074" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 254.2759808707051,553.8170848106965 L 87.69749484723434,690.0752912913449" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 734.0629861890338,680.4418498729356 L 742.4119479991496,694.1776932659559" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 734.0629861890338,680.4418498729356 L 720.5488000074401,660.58514026599" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 775.2845936296508,474.0746513567865 L 935.952014691662,297.57514517987147" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 775.2845936296508,474.0746513567865 L 659.6681704916991,584.7230343683623" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 659.6681704916991,584.7230343683623 L 775.2845936296508,474.0746513567865" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 659.6681704916991,584.7230343683623 L 655.1374672167003,589.7036295305006" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 659.6681704916991,584.7230343683623 L 713.847366661299,649.9424547543749" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 470.8814460565336,553.3190239071846 L 509.36459402320907,620.0327883837745" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 470.8814460565336,553.3190239071846 L 448.38377696694806,504.02399979392067" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 352.59335513878614,964.6972284927033 L 399.25848567998037,896.6222916818224" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 352.59335513878614,964.6972284927033 L 342.10705910623074,984.658289541956" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 782.3422493464313,792.6349227800965 L 787.9861475303769,848.888347140979" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 782.3422493464313,792.6349227800965 L 769.8744663773105,751.8733076634817" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 805.4967034319416,966.1651474344544 L 811.3521086471155,993.5968498555012" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 805.4967034319416,966.1651474344544 L 797.815658566542,908.6409404790029" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 844.6811641911045,1091.6977701159194 L 855.3344394587912,1114.1488106204197" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 844.6811641911045,1091.6977701159194 L 837.4453972890042,1074.8823983902112" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 855.3344394587912,1114.1488106204197 L 844.6811641911045,1091.6977701159194" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 713.847366661299,649.9424547543749 L 720.5488000074401,660.58514026599" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 713.847366661299,649.9424547543749 L 659.6681704916991,584.7230343683623" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 742.4119479991496,694.1776932659559 L 758.8204409410246,726.0138580389321" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 742.4119479991496,694.1776932659559 L 734.0629861890338,680.4418498729356" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 769.8744663773105,751.8733076634817 L 782.3422493464313,792.6349227800965" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 769.8744663773105,751.8733076634817 L 767.5033612232655,746.3291931194253" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 817.5303403865546,1015.7597326077521 L 823.5193289914168,1036.0614742175676" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 817.5303403865546,1015.7597326077521 L 811.3521086471155,993.5968498555012" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 201.4994102846831,36.504238807130605 L 203.7369320495054,45.67943408759311" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 201.4994102846831,36.504238807130605 L 194.9426922770217,0.0" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 211.71853953925893,67.42461907677352 L 219.0656259325333,83.15348075097427" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 211.71853953925893,67.42461907677352 L 203.7369320495054,45.67943408759311" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 219.0656259325333,83.15348075097427 L 225.54442029632628,93.69180661672726" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 219.0656259325333,83.15348075097427 L 211.71853953925893,67.42461907677352" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 257.63782949279994,152.00633171154186 L 288.0391824278049,204.65824709599838" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 257.63782949279994,152.00633171154186 L 225.54442029632628,93.69180661672726" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 365.11679785279557,336.9096190147102 L 384.5977087416686,372.823022109922" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 365.11679785279557,336.9096190147102 L 288.0391824278049,204.65824709599838" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 384.5977087416686,372.823022109922 L 409.7336497637443,423.3637472507544" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 384.5977087416686,372.823022109922 L 365.11679785279557,336.9096190147102" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 426.67647626204416,455.7904393384233 L 448.38377696694806,504.02399979392067" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 426.67647626204416,455.7904393384233 L 421.56691163405776,445.9995273328386" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 448.38377696694806,504.02399979392067 L 470.8814460565336,553.3190239071846" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 448.38377696694806,504.02399979392067 L 426.67647626204416,455.7904393384233" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 509.36459402320907,620.0327883837745 L 558.8795035271905,674.1506186770275" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 509.36459402320907,620.0327883837745 L 470.8814460565336,553.3190239071846" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 787.9861475303769,848.888347140979 L 797.815658566542,908.6409404790029" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 787.9861475303769,848.888347140979 L 782.3422493464313,792.6349227800965" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 295.1413659406826,1071.3699093693867 L 342.10705910623074,984.658289541956" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 295.1413659406826,1071.3699093693867 L 265.28547850996256,1115.511861357838" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 811.3521086471155,993.5968498555012 L 817.5303403865546,1015.7597326077521" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 811.3521086471155,993.5968498555012 L 805.4967034319416,966.1651474344544" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 265.28547850996256,1115.511861357838 L 295.1413659406826,1071.3699093693867" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 265.28547850996256,1115.511861357838 L 247.16266540903598,1139.4176492816769" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 0.0,86.1157474075444 L 53.22184854885563,56.61101479688659" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 0.0,86.1157474075444 L 15.26190218841657,117.45543555961922" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 15.26190218841657,117.45543555961922 L 0.0,86.1157474075444" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 342.10705910623074,984.658289541956 L 352.59335513878614,964.6972284927033" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 342.10705910623074,984.658289541956 L 295.1413659406826,1071.3699093693867" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 288.0391824278049,204.65824709599838 L 365.11679785279557,336.9096190147102" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 288.0391824278049,204.65824709599838 L 257.63782949279994,152.00633171154186" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 87.69749484723434,690.0752912913449 L 254.2759808707051,553.8170848106965" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 87.69749484723434,690.0752912913449 L 61.35930332588032,712.7367851086892" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 421.56691163405776,445.9995273328386 L 426.67647626204416,455.7904393384233" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 421.56691163405776,445.9995273328386 L 418.1605352158658,439.48535524634644" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 225.54442029632628,93.69180661672726 L 257.63782949279994,152.00633171154186" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 225.54442029632628,93.69180661672726 L 219.0656259325333,83.15348075097427" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 61.35930332588032,712.7367851086892 L 87.69749484723434,690.0752912913449" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 61.35930332588032,712.7367851086892 L 37.50353644788265,733.2618492483161" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 505.8691620128229,745.8573534670286 L 558.8795035271905,674.1506186770275" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 505.8691620128229,745.8573534670286 L 429.1366370082833,853.5804895306937" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 655.1374672167003,589.7036295305006 L 659.6681704916991,584.7230343683623" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 655.1374672167003,589.7036295305006 L 558.8795035271905,674.1506186770275" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 758.8204409410246,726.0138580389321 L 767.5033612232655,746.3291931194253" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 758.8204409410246,726.0138580389321 L 742.4119479991496,694.1776932659559" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 720.5488000074401,660.58514026599 L 734.0629861890338,680.4418498729356" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 720.5488000074401,660.58514026599 L 713.847366661299,649.9424547543749" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 767.5033612232655,746.3291931194253 L 769.8744663773105,751.8733076634817" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 767.5033612232655,746.3291931194253 L 758.8204409410246,726.0138580389321" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 399.25848567998037,896.6222916818224 L 419.19580648001283,867.5389470378868" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 399.25848567998037,896.6222916818224 L 352.59335513878614,964.6972284927033" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 429.1366370082833,853.5804895306937 L 505.8691620128229,745.8573534670286" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 429.1366370082833,853.5804895306937 L 419.19580648001283,867.5389470378868" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 797.815658566542,908.6409404790029 L 805.4967034319416,966.1651474344544" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 797.815658566542,908.6409404790029 L 787.9861475303769,848.888347140979" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 180.49342237319797,1210.7546508722007 L 208.91328837210312,1182.7860879055224" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 380.84624190256,455.42344411835074 L 406.33840529387817,434.6095541222021" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 380.84624190256,455.42344411835074 L 254.2759808707051,553.8170848106965" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 406.33840529387817,434.6095541222021 L 409.7336497637443,423.3637472507544" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 406.33840529387817,434.6095541222021 L 380.84624190256,455.42344411835074" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 406.33840529387817,434.6095541222021 L 418.1605352158658,439.48535524634644" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 418.1605352158658,439.48535524634644 L 421.56691163405776,445.9995273328386" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 418.1605352158658,439.48535524634644 L 409.7336497637443,423.3637472507544" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 418.1605352158658,439.48535524634644 L 406.33840529387817,434.6095541222021" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הרימון#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הרימון", "osm_normalized": "הרימון"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הרימון", "lamas_normalized": "הרימון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 53.22184854885563,56.61101479688659 L 71.89012715453282,46.54452356835827" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 53.22184854885563,56.61101479688659 L 0.0,86.1157474075444" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 71.89012715453282,46.54452356835827 L 89.35615526000038,37.55283290660009" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 71.89012715453282,46.54452356835827 L 53.22184854885563,56.61101479688659" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 89.35615526000038,37.55283290660009 L 103.09298042394221,31.31369667686522" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 89.35615526000038,37.55283290660009 L 71.89012715453282,46.54452356835827" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 103.09298042394221,31.31369667686522 L 119.94675132958218,24.23568108631298" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 103.09298042394221,31.31369667686522 L 89.35615526000038,37.55283290660009" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 119.94675132958218,24.23568108631298 L 151.0048892609775,12.307904691435397" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 119.94675132958218,24.23568108631298 L 103.09298042394221,31.31369667686522" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 151.0048892609775,12.307904691435397 L 171.59899505786598,5.1250182799994946" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 151.0048892609775,12.307904691435397 L 119.94675132958218,24.23568108631298" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 171.59899505786598,5.1250182799994946 L 182.07415914162993,2.569063143339008" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 171.59899505786598,5.1250182799994946 L 151.0048892609775,12.307904691435397" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 182.07415914162993,2.569063143339008 L 194.9426922770217,0.0" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 182.07415914162993,2.569063143339008 L 171.59899505786598,5.1250182799994946" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הגפן#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "הגפן", "osm_normalized": "הגפן"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "הגפן", "lamas_normalized": "הגפן", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 208.91328837210312,1182.7860879055224 L 229.0287203588523,1160.977379082702" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 208.91328837210312,1182.7860879055224 L 180.49342237319797,1210.7546508722007" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 229.0287203588523,1160.977379082702 L 247.16266540903598,1139.4176492816769" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 229.0287203588523,1160.977379082702 L 208.91328837210312,1182.7860879055224" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 247.16266540903598,1139.4176492816769 L 265.28547850996256,1115.511861357838" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 247.16266540903598,1139.4176492816769 L 229.0287203588523,1160.977379082702" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 837.4453972890042,1074.8823983902112 L 844.6811641911045,1091.6977701159194" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 837.4453972890042,1074.8823983902112 L 830.4100054712035,1056.1534805903211" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 830.4100054712035,1056.1534805903211 L 837.4453972890042,1074.8823983902112" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 830.4100054712035,1056.1534805903211 L 823.5193289914168,1036.0614742175676" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 823.5193289914168,1036.0614742175676 L 830.4100054712035,1056.1534805903211" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 823.5193289914168,1036.0614742175676 L 817.5303403865546,1015.7597326077521" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 861.1898446753621,1130.6102592321113 L 860.3326845965348,1126.4948991821148" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 860.3326845965348,1126.4948991821148 L 855.3344394587912,1114.1488106204197" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 935.952014691662,297.57514517987147 L 775.2845936296508,474.0746513567865" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התאנה#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "התאנה", "osm_normalized": "התאנה"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "התאנה", "lamas_normalized": "התאנה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">4</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">5</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">4</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">4</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">0</div>
+            </div>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (1 - 20.0%)</h3>
+            <ul><li>הזית</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

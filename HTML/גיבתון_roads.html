@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - גיבתון</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - גיבתון</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 585.785424452275 517.11112022819" id="street-map">
+                <rect x="0" y="0" width="585.785424452275" height="517.11112022819" fill="#fdfdfd" />
+                <path d="M 490.02839847141877,324.3999432143755 L 498.8671660409309,311.7482072226703" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 490.02839847141877,324.3999432143755 L 460.0945873982273,385.92783401208" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 415.4332076916471,469.8742886101827 L 385.1320422971621,517.11112022819" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 441.7825311617926,301.2990432502702 L 327.1568514923565,275.3924195426516" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="יהודית#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "יהודית", "osm_normalized": "יהודית"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "יהודית", "lamas_normalized": "יהודית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 260.4876084565185,260.31515849614516 L 275.4600799679756,198.27530882088467" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="המייסדים#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "המייסדים", "osm_normalized": "המייסדים"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "המייסדים", "lamas_normalized": "המייסדים", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 312.52947040228173,44.695154858753085 L 173.66953758616,12.153846991248429" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 312.52947040228173,44.695154858753085 L 326.3998789549805,47.985991342458874" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 489.8280233880505,86.70241856016219 L 461.92022704705596,211.35981759196147" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ברזילי#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "ברזילי", "osm_normalized": "ברזילי"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "ברזילי", "lamas_normalized": "ברזילי", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 209.06913565890864,473.3092240351252 L 258.4615937238559,485.59369883313775" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 209.06913565890864,473.3092240351252 L 260.4876084565185,260.31515849614516" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="המייסדים#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "המייסדים", "osm_normalized": "המייסדים"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "המייסדים", "lamas_normalized": "המייסדים", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 385.1320422971621,517.11112022819 L 415.4332076916471,469.8742886101827" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 504.36634888639674,301.8628001320176 L 585.785424452275,165.0788762504235" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 504.36634888639674,301.8628001320176 L 498.8671660409309,311.7482072226703" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 585.785424452275,165.0788762504235 L 504.36634888639674,301.8628001320176" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 498.8671660409309,311.7482072226703 L 504.36634888639674,301.8628001320176" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 498.8671660409309,311.7482072226703 L 490.02839847141877,324.3999432143755" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 498.8671660409309,311.7482072226703 L 441.7825311617926,301.2990432502702" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="יהודית#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "יהודית", "osm_normalized": "יהודית"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "יהודית", "lamas_normalized": "יהודית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 5.376731405034661,422.1915153991431 L 10.152337560430169,425.1807077038102" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 26.872525077313185,429.9529254650697 L 155.1125784716569,460.47409774083644" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 0.0,406.0655967765488 L 1.1911185523495078,412.63396135205403" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 99.13000655174255,5.965481982100755 L 94.35440039588138,11.340968718286604" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 94.35440039588138,11.340968718286604 L 91.3710380429402,16.71645305911079" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 115.85019406862557,0.0 L 106.71086387475953,1.9141989364288747" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 0.8460281305015087,397.70108741521835 L 0.0,406.0655967765488" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3.2839249786920846,386.39981321292 L 0.8460281305015087,397.70108741521835" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 124.21028782660142,0.5899928552098572 L 115.85019406862557,0.0" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 16.720187516883016,427.56681682076305 L 26.872525077313185,429.9529254650697" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 10.152337560430169,425.1807077038102 L 16.720187516883016,427.56681682076305" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2.3933690525591373,417.41929457103834 L 5.376731405034661,422.1915153991431" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 106.71086387475953,1.9141989364288747 L 99.13000655174255,5.965481982100755" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 91.3710380429402,16.71645305911079 L 89.76803737552837,23.455471510067582" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 131.98038828419521,2.3861931464634836 L 124.21028782660142,0.5899928552098572" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1.1911185523495078,412.63396135205403 L 2.3933690525591373,417.41929457103834" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 88.38767568953335,29.26361085427925 L 70.95504343137145,100.91458080569282" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 272.4099259208888,489.06796104926616 L 303.1229734304361,496.7113344068639" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 460.0945873982273,385.92783401208 L 490.02839847141877,324.3999432143755" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="חזית הדרום#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "חזית הדרום", "osm_normalized": "חזית הדרום"}, "scoring_breakdown": []}'></path>
+<path d="M 461.92022704705596,211.35981759196147 L 459.89421231485903,220.37999173393473" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ברזילי#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "ברזילי", "osm_normalized": "ברזילי"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "ברזילי", "lamas_normalized": "ברזילי", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 425.2070589829236,71.38892612466589 L 429.43719963310286,72.39846346853301" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 281.5269922162406,173.15510995406657 L 312.52947040228173,44.695154858753085" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="המייסדים#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "המייסדים", "osm_normalized": "המייסדים"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "המייסדים", "lamas_normalized": "המייסדים", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 326.3998789549805,47.985991342458874 L 425.2070589829236,71.38892612466589" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 429.43719963310286,72.39846346853301 L 489.8280233880505,86.70241856016219" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 275.4600799679756,198.27530882088467 L 281.5269922162406,173.15510995406657" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="המייסדים#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "המייסדים", "osm_normalized": "המייסדים"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "המייסדים", "lamas_normalized": "המייסדים", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 89.76803737552837,23.455471510067582 L 88.38767568953335,29.26361085427925" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 173.66953758616,12.153846991248429 L 131.98038828419521,2.3861931464634836" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האם ובניה#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האם ובניה", "osm_normalized": "האם ובניה"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האם ובניה", "lamas_normalized": "האם ובניה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 56.661620813421905,159.62479329109192 L 41.110287950374186,223.51345181278884" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 41.110287950374186,223.51345181278884 L 26.583094401750714,286.0775974947028" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 303.1229734304361,496.7113344068639 L 385.1320422971621,517.11112022819" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 327.1568514923565,275.3924195426516 L 321.11220314214006,274.0158008374274" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="יהודית#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "יהודית", "osm_normalized": "יהודית"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "יהודית", "lamas_normalized": "יהודית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 459.89421231485903,220.37999173393473 L 441.7825311617926,301.2990432502702" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ברזילי#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "ברזילי", "osm_normalized": "ברזילי"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "ברזילי", "lamas_normalized": "ברזילי", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 70.95504343137145,100.91458080569282 L 56.661620813421905,159.62479329109192" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 26.583094401750714,286.0775974947028 L 3.2839249786920846,386.39981321292" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="בן ישראל#10;ציון: 100.0#10;מזהה: 104" data-diagnostics='{"normalization": {"osm_original": "בן ישראל", "osm_normalized": "בן ישראל"}, "scoring_breakdown": [{"lamas_id": "104", "lamas_name": "בן ישראל", "lamas_normalized": "בן ישראל", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 155.1125784716569,460.47409774083644 L 209.06913565890864,473.3092240351252" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 258.4615937238559,485.59369883313775 L 272.4099259208888,489.06796104926616" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="העמדות#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "העמדות", "osm_normalized": "העמדות"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "העמדות", "lamas_normalized": "העמדות", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 321.11220314214006,274.0158008374274 L 260.4876084565185,260.31515849614516" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="יהודית#10;ציון: 100.0#10;מזהה: 105" data-diagnostics='{"normalization": {"osm_original": "יהודית", "osm_normalized": "יהודית"}, "scoring_breakdown": [{"lamas_id": "105", "lamas_name": "יהודית", "lamas_normalized": "יהודית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">7</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">6</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">6</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">6</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">1</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (1)</h3>
+            <ul><li>חזית הדרום</li></ul>
+        </div>
+        
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

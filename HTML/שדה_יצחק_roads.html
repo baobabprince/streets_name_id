@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - שדה יצחק</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - שדה יצחק</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 741.6438435125165 1024.0374289015308" id="street-map">
+                <rect x="0" y="0" width="741.6438435125165" height="1024.0374289015308" fill="#fdfdfd" />
+                <path d="M 741.6438435125165,677.1197766163386 L 426.3313858411275,682.7365689082071" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הפיקוס#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "הפיקוס", "osm_normalized": "הפיקוס"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "הפיקוס", "lamas_normalized": "הפיקוס", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 741.6438435125165,677.1197766163386 L 659.9353372701444,564.6647083531134" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 426.3313858411275,682.7365689082071 L 741.6438435125165,677.1197766163386" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הפיקוס#10;ציון: 100.0#10;מזהה: 106" data-diagnostics='{"normalization": {"osm_original": "הפיקוס", "osm_normalized": "הפיקוס"}, "scoring_breakdown": [{"lamas_id": "106", "lamas_name": "הפיקוס", "lamas_normalized": "הפיקוס", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 426.3313858411275,682.7365689082071 L 328.759852160234,1024.0374289015308" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האלון#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האלון", "osm_normalized": "האלון"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 426.3313858411275,682.7365689082071 L 412.32739389827475,613.1198012139648" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הזית#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "הזית", "osm_normalized": "הזית"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "הזית", "lamas_normalized": "הזית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 328.759852160234,1024.0374289015308 L 426.3313858411275,682.7365689082071" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="האלון#10;ציון: 100.0#10;מזהה: 101" data-diagnostics='{"normalization": {"osm_original": "האלון", "osm_normalized": "האלון"}, "scoring_breakdown": [{"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 375.80346896965057,507.25670492555946 L 251.6822367347777,383.5266167973168" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הזית#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "הזית", "osm_normalized": "הזית"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "הזית", "lamas_normalized": "הזית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 375.80346896965057,507.25670492555946 L 412.32739389827475,613.1198012139648" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הזית#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "הזית", "osm_normalized": "הזית"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "הזית", "lamas_normalized": "הזית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 596.1604009945877,402.6716378265992 L 615.5188604439609,485.40889178588986" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 596.1604009945877,402.6716378265992 L 594.2011779570021,306.2342146136798" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 659.9353372701444,564.6647083531134 L 741.6438435125165,677.1197766163386" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 659.9353372701444,564.6647083531134 L 615.5188604439609,485.40889178588986" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 333.2571595883928,346.31767929298803 L 251.6822367347777,383.5266167973168" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הברוש#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הברוש", "osm_normalized": "הברוש"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הברוש", "lamas_normalized": "הברוש", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 333.2571595883928,346.31767929298803 L 581.443964311853,293.70810421416536" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הברוש#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הברוש", "osm_normalized": "הברוש"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הברוש", "lamas_normalized": "הברוש", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 251.6822367347777,383.5266167973168 L 333.2571595883928,346.31767929298803" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הברוש#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הברוש", "osm_normalized": "הברוש"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הברוש", "lamas_normalized": "הברוש", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 251.6822367347777,383.5266167973168 L 375.80346896965057,507.25670492555946" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הזית#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "הזית", "osm_normalized": "הזית"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "הזית", "lamas_normalized": "הזית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 251.6822367347777,383.5266167973168 L 182.7643399843946,341.8214815882966" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 581.443964311853,293.70810421416536 L 333.2571595883928,346.31767929298803" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הברוש#10;ציון: 100.0#10;מזהה: 102" data-diagnostics='{"normalization": {"osm_original": "הברוש", "osm_normalized": "הברוש"}, "scoring_breakdown": [{"lamas_id": "102", "lamas_name": "הברוש", "lamas_normalized": "הברוש", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 665.5124437594786,123.47036404442042 L 629.9569983994588,253.74313122034073" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 665.5124437594786,123.47036404442042 L 655.5048215370625,67.70843707583845" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 655.5048215370625,67.70843707583845 L 665.5124437594786,123.47036404442042" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 655.5048215370625,67.70843707583845 L 639.9868845203891,29.85241389553994" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 182.7643399843946,341.8214815882966 L 23.05426654405892,270.9501056917943" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 182.7643399843946,341.8214815882966 L 251.6822367347777,383.5266167973168" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 615.5188604439609,485.40889178588986 L 659.9353372701444,564.6647083531134" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 615.5188604439609,485.40889178588986 L 596.1604009945877,402.6716378265992" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 412.32739389827475,613.1198012139648 L 375.80346896965057,507.25670492555946" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הזית#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "הזית", "osm_normalized": "הזית"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "הזית", "lamas_normalized": "הזית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 412.32739389827475,613.1198012139648 L 426.3313858411275,682.7365689082071" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הזית#10;ציון: 100.0#10;מזהה: 103" data-diagnostics='{"normalization": {"osm_original": "הזית", "osm_normalized": "הזית"}, "scoring_breakdown": [{"lamas_id": "103", "lamas_name": "הזית", "lamas_normalized": "הזית", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 618.4799588988535,0.0 L 639.9868845203891,29.85241389553994" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 639.9868845203891,29.85241389553994 L 655.5048215370625,67.70843707583845" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 639.9868845203891,29.85241389553994 L 618.4799588988535,0.0" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 602.2495771409012,284.25417847931385 L 629.9569983994588,253.74313122034073" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 594.2011779570021,306.2342146136798 L 596.1604009945877,402.6716378265992" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="השיטה#10;ציון: 100.0#10;מזהה: 108" data-diagnostics='{"normalization": {"osm_original": "השיטה", "osm_normalized": "השיטה"}, "scoring_breakdown": [{"lamas_id": "108", "lamas_name": "השיטה", "lamas_normalized": "השיטה", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 629.9569983994588,253.74313122034073 L 602.2495771409012,284.25417847931385" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 629.9569983994588,253.74313122034073 L 665.5124437594786,123.47036404442042" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="התמר#10;ציון: 100.0#10;מזהה: 109" data-diagnostics='{"normalization": {"osm_original": "התמר", "osm_normalized": "התמר"}, "scoring_breakdown": [{"lamas_id": "109", "lamas_name": "התמר", "lamas_normalized": "התמר", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 23.05426654405892,270.9501056917943 L 12.067032802384347,269.5392665755935" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 23.05426654405892,270.9501056917943 L 182.7643399843946,341.8214815882966" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 12.067032802384347,269.5392665755935 L 0.0,272.9279172550887" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 12.067032802384347,269.5392665755935 L 23.05426654405892,270.9501056917943" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+<path d="M 0.0,272.9279172550887 L 12.067032802384347,269.5392665755935" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="הצאלון#10;ציון: 100.0#10;מזהה: 107" data-diagnostics='{"normalization": {"osm_original": "הצאלון", "osm_normalized": "הצאלון"}, "scoring_breakdown": [{"lamas_id": "107", "lamas_name": "הצאלון", "lamas_normalized": "הצאלון", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}, {"lamas_id": "101", "lamas_name": "האלון", "lamas_normalized": "האלון", "final_score": 90.91, "fuzz_ratio": 90.9090909090909, "token_sort_ratio": 90.9090909090909, "token_set_ratio": 90.9090909090909}]}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">7</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">9</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">7</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">7</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">0</div>
+            </div>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (2 - 22.2%)</h3>
+            <ul><li>המייסדים</li><li>הערבה</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

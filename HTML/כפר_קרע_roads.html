@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - כפר קרע</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - כפר קרע</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3636.5072015905753 2568.630195459351" id="street-map">
+                <rect x="0" y="0" width="3636.5072015905753" height="2568.630195459351" fill="#fdfdfd" />
+                <path d="M 3240.5437728390098,1635.717538586352 L 3101.694971972611,1534.3704043850303" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3240.5437728390098,1635.717538586352 L 3280.195775459986,1652.8110374114476" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3101.694971972611,1534.3704043850303 L 3054.450980079826,1503.5885819760151" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3101.694971972611,1534.3704043850303 L 3240.5437728390098,1635.717538586352" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3396.680490626022,1436.2299674120732 L 3370.364563002251,1286.2787883915007" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3370.364563002251,1286.2787883915007 L 3367.659499376081,1183.291854836978" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3370.364563002251,1286.2787883915007 L 3396.680490626022,1436.2299674120732" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3366.613096162211,1029.4433931163512 L 3368.9174096216448,995.3073765630834" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3366.613096162211,1029.4433931163512 L 3365.421977610793,1083.8680919278413" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3280.195775459986,1652.8110374114476 L 3240.5437728390098,1635.717538586352" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3280.195775459986,1652.8110374114476 L 3324.9239468602464,1663.9910962991416" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3054.450980079826,1503.5885819760151 L 3005.871154297609,1478.0602004341781" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3054.450980079826,1503.5885819760151 L 3101.694971972611,1534.3704043850303" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3426.959392121993,684.4882244560868 L 3449.523852905724,499.95447730692104" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3324.9239468602464,1663.9910962991416 L 3280.195775459986,1652.8110374114476" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3324.9239468602464,1663.9910962991416 L 3372.91377934115,1671.0660749962553" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3449.523852905724,499.95447730692104 L 3474.626398079563,325.89952215133235" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3449.523852905724,499.95447730692104 L 3426.959392121993,684.4882244560868" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 2946.6825810433365,1460.451657072641 L 2894.0507257957943,1439.6091270847246" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2946.6825810433365,1460.451657072641 L 3005.871154297609,1478.0602004341781" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2774.237557854969,1443.9386740075424 L 2638.3387234946713,1459.2504736278206" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2774.237557854969,1443.9386740075424 L 2894.0507257957943,1439.6091270847246" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2497.6865468770266,1454.366539687384 L 2638.3387234946713,1459.2504736278206" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3636.5072015905753,1656.4673270140775 L 3543.555426778272,1666.459419569932" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3005.871154297609,1478.0602004341781 L 2946.6825810433365,1460.451657072641" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3005.871154297609,1478.0602004341781 L 3054.450980079826,1503.5885819760151" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3543.555426778272,1666.459419569932 L 3465.0195260238834,1668.5977526828647" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3543.555426778272,1666.459419569932 L 3636.5072015905753,1656.4673270140775" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3367.481388191227,1125.0659577301703 L 3365.421977610793,1083.8680919278413" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3367.481388191227,1125.0659577301703 L 3367.659499376081,1183.291854836978" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3368.9174096216448,995.3073765630834 L 3420.747764535714,721.7932888469659" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3368.9174096216448,995.3073765630834 L 3366.613096162211,1029.4433931163512" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 2419.1951739196666,610.6565888761543 L 2414.7201303895563,582.3277185098268" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2419.1951739196666,610.6565888761543 L 2447.5371162747033,712.6452425080352" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2286.613660384901,194.05960993468761 L 2167.7912359111942,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2286.613660384901,194.05960993468761 L 2400.727270396892,438.0025587491691" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2894.0507257957943,1439.6091270847246 L 2774.237557854969,1443.9386740075424" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2894.0507257957943,1439.6091270847246 L 2946.6825810433365,1460.451657072641" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2431.6184290912934,1191.3043284076266 L 2447.548248224426,1098.3751426897943" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 3420.747764535714,721.7932888469659 L 3368.9174096216448,995.3073765630834" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 2167.7912359111942,0.0 L 2286.613660384901,194.05960993468761" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 175.7400801149197,2568.630195459351 L 284.6328060091473,2442.4642493776046" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 284.6328060091473,2442.4642493776046 L 175.7400801149197,2568.630195459351" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 284.6328060091473,2442.4642493776046 L 342.8083718973212,2399.541916643735" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 342.8083718973212,2399.541916643735 L 284.6328060091473,2442.4642493776046" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 342.8083718973212,2399.541916643735 L 375.4917743941769,2375.427733580116" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 412.85059550451115,2347.8686072425917 L 375.4917743941769,2375.427733580116" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 412.85059550451115,2347.8686072425917 L 526.1070454381406,2283.3393489751033" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 526.1070454381406,2283.3393489751033 L 412.85059550451115,2347.8686072425917" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 526.1070454381406,2283.3393489751033 L 605.8340647439472,2230.385234586429" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 605.8340647439472,2230.385234586429 L 526.1070454381406,2283.3393489751033" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 605.8340647439472,2230.385234586429 L 736.3895635460503,2146.3207527864724" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 736.3895635460503,2146.3207527864724 L 605.8340647439472,2230.385234586429" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 736.3895635460503,2146.3207527864724 L 915.9256382980384,2028.9013813384809" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 915.9256382980384,2028.9013813384809 L 736.3895635460503,2146.3207527864724" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 915.9256382980384,2028.9013813384809 L 1056.043481359724,1925.2345275287516" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1056.043481359724,1925.2345275287516 L 915.9256382980384,2028.9013813384809" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1056.043481359724,1925.2345275287516 L 1120.1635080561973,1884.0790370786563" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1120.1635080561973,1884.0790370786563 L 1056.043481359724,1925.2345275287516" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 3465.0195260238834,1668.5977526828647 L 3372.91377934115,1671.0660749962553" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3465.0195260238834,1668.5977526828647 L 3543.555426778272,1666.459419569932" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3372.91377934115,1671.0660749962553 L 3324.9239468602464,1663.9910962991416" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3372.91377934115,1671.0660749962553 L 3465.0195260238834,1668.5977526828647" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1411.3530320734717,1414.621802547481 L 1467.613902720157,1418.2385659310967" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1411.3530320734717,1414.621802547481 L 1318.6906879367307,1405.1838929043151" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1318.6906879367307,1405.1838929043151 L 1411.3530320734717,1414.621802547481" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1318.6906879367307,1405.1838929043151 L 1245.9767965502106,1396.1683722105809" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1245.9767965502106,1396.1683722105809 L 1318.6906879367307,1405.1838929043151" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1245.9767965502106,1396.1683722105809 L 1158.6689199218526,1371.7221527886577" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1158.6689199218526,1371.7221527886577 L 1245.9767965502106,1396.1683722105809" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1158.6689199218526,1371.7221527886577 L 1112.983400899917,1360.4230192387477" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1112.983400899917,1360.4230192387477 L 1158.6689199218526,1371.7221527886577" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1112.983400899917,1360.4230192387477 L 1010.335698439274,1343.4082990065217" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1010.335698439274,1343.4082990065217 L 1112.983400899917,1360.4230192387477" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1010.335698439274,1343.4082990065217 L 983.9418471725658,1339.8707125280052" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 201.0096045252867,1336.1615255731158 L 253.16278596175835,1340.161111457739" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 201.0096045252867,1336.1615255731158 L 94.59930327627808,1323.7403608183376" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 313.2085192957893,1344.7546935831197 L 352.8159941197373,1343.1970998439938" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 313.2085192957893,1344.7546935831197 L 253.16278596175835,1340.161111457739" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 983.9418471725658,1339.8707125280052 L 1010.335698439274,1343.4082990065217" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 983.9418471725658,1339.8707125280052 L 891.0234682080336,1329.5483459569514" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 352.8159941197373,1343.1970998439938 L 420.40918892994523,1340.5571099873632" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 352.8159941197373,1343.1970998439938 L 313.2085192957893,1344.7546935831197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 420.40918892994523,1340.5571099873632 L 491.0191419394687,1339.0391155541874" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 420.40918892994523,1340.5571099873632 L 352.8159941197373,1343.1970998439938" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 505.71331472415477,1338.7223166921176 L 693.7875944203697,1331.2643410214223" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 505.71331472415477,1338.7223166921176 L 491.0191419394687,1339.0391155541874" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 693.7875944203697,1331.2643410214223 L 753.8110638554208,1326.5915538780391" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 693.7875944203697,1331.2643410214223 L 505.71331472415477,1338.7223166921176" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 753.8110638554208,1326.5915538780391 L 854.9670851393603,1324.76995839132" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 753.8110638554208,1326.5915538780391 L 693.7875944203697,1331.2643410214223" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 891.0234682080336,1329.5483459569514 L 983.9418471725658,1339.8707125280052" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 891.0234682080336,1329.5483459569514 L 854.9670851393603,1324.76995839132" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 94.59930327627808,1323.7403608183376 L 201.0096045252867,1336.1615255731158" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 94.59930327627808,1323.7403608183376 L 0.0,1317.430773742497" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 854.9670851393603,1324.76995839132 L 891.0234682080336,1329.5483459569514" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 854.9670851393603,1324.76995839132 L 753.8110638554208,1326.5915538780391" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 0.0,1317.430773742497 L 94.59930327627808,1323.7403608183376" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 3367.659499376081,1183.291854836978 L 3367.481388191227,1125.0659577301703" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3367.659499376081,1183.291854836978 L 3370.364563002251,1286.2787883915007" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 2447.548248224426,1098.3751426897943 L 2456.409279691521,983.9814839479513" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2447.548248224426,1098.3751426897943 L 2431.6184290912934,1191.3043284076266" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 3365.421977610793,1083.8680919278413 L 3366.613096162211,1029.4433931163512" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 3365.421977610793,1083.8680919278413 L 3367.481388191227,1125.0659577301703" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 2456.409279691521,983.9814839479513 L 2473.9087036442943,891.6710959863849" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2456.409279691521,983.9814839479513 L 2447.548248224426,1098.3751426897943" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2473.9087036442943,891.6710959863849 L 2475.81226693606,813.0621557841077" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2473.9087036442943,891.6710959863849 L 2456.409279691521,983.9814839479513" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2475.81226693606,813.0621557841077 L 2473.552481273655,775.2425557072274" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2475.81226693606,813.0621557841077 L 2473.9087036442943,891.6710959863849" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2460.138482633047,737.2248257803731 L 2447.5371162747033,712.6452425080352" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2460.138482633047,737.2248257803731 L 2473.552481273655,775.2425557072274" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2447.5371162747033,712.6452425080352 L 2419.1951739196666,610.6565888761543" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2447.5371162747033,712.6452425080352 L 2460.138482633047,737.2248257803731" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2414.7201303895563,582.3277185098268 L 2400.727270396892,438.0025587491691" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2414.7201303895563,582.3277185098268 L 2419.1951739196666,610.6565888761543" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 1739.3336477973498,553.2595342569984 L 1865.4697628156282,533.4186755078845" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 1865.4697628156282,533.4186755078845 L 1932.9405061849393,510.25116372760385" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 1865.4697628156282,533.4186755078845 L 1739.3336477973498,553.2595342569984" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 1932.9405061849393,510.25116372760385 L 2006.6340090897866,495.8622020180337" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 1932.9405061849393,510.25116372760385 L 1865.4697628156282,533.4186755078845" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2006.6340090897866,495.8622020180337 L 2053.0987645476125,493.26162634277716" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2006.6340090897866,495.8622020180337 L 1932.9405061849393,510.25116372760385" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2053.0987645476125,493.26162634277716 L 2063.6629842240363,491.5587109979242" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2053.0987645476125,493.26162634277716 L 2006.6340090897866,495.8622020180337" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2063.6629842240363,491.5587109979242 L 2145.9726157165132,477.06411933247" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2063.6629842240363,491.5587109979242 L 2053.0987645476125,493.26162634277716" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2145.9726157165132,477.06411933247 L 2258.405301417224,456.285866885446" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2145.9726157165132,477.06411933247 L 2063.6629842240363,491.5587109979242" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2258.405301417224,456.285866885446 L 2400.727270396892,438.0025587491691" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2258.405301417224,456.285866885446 L 2145.9726157165132,477.06411933247" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2400.727270396892,438.0025587491691 L 2286.613660384901,194.05960993468761" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2400.727270396892,438.0025587491691 L 2414.7201303895563,582.3277185098268" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2400.727270396892,438.0025587491691 L 2563.498629834503,413.95039496105164" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2400.727270396892,438.0025587491691 L 2258.405301417224,456.285866885446" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2563.498629834503,413.95039496105164 L 2596.0818447899073,397.13233270309865" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2563.498629834503,413.95039496105164 L 2400.727270396892,438.0025587491691" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2596.0818447899073,397.13233270309865 L 2607.647939883638,381.3703280687332" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2596.0818447899073,397.13233270309865 L 2563.498629834503,413.95039496105164" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2607.647939883638,381.3703280687332 L 2636.0232780859806,371.9051946219988" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2607.647939883638,381.3703280687332 L 2596.0818447899073,397.13233270309865" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2636.0232780859806,371.9051946219988 L 2739.1607863064855,354.823051831685" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2636.0232780859806,371.9051946219988 L 2607.647939883638,381.3703280687332" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 2739.1607863064855,354.823051831685 L 2636.0232780859806,371.9051946219988" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="عثمان بن عفان#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "عثمان بن عفان", "osm_normalized": "عثمان بن عفان"}, "scoring_breakdown": []}'></path>
+<path d="M 3474.626398079563,325.89952215133235 L 3449.523852905724,499.95447730692104" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="סאלח א דין אל איובי#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "סאלח א דין אל איובי", "osm_normalized": "סאלח א דין אל איובי"}, "scoring_breakdown": []}'></path>
+<path d="M 1497.1246997299604,1410.0546472105198 L 1467.613902720157,1418.2385659310967" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2473.552481273655,775.2425557072274 L 2460.138482633047,737.2248257803731" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 2473.552481273655,775.2425557072274 L 2475.81226693606,813.0621557841077" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="البئر#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "البئر", "osm_normalized": "البئر"}, "scoring_breakdown": []}'></path>
+<path d="M 491.0191419394687,1339.0391155541874 L 505.71331472415477,1338.7223166921176" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 491.0191419394687,1339.0391155541874 L 420.40918892994523,1340.5571099873632" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 253.16278596175835,1340.161111457739 L 313.2085192957893,1344.7546935831197" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 253.16278596175835,1340.161111457739 L 201.0096045252867,1336.1615255731158" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 375.4917743941769,2375.427733580116 L 342.8083718973212,2399.541916643735" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 375.4917743941769,2375.427733580116 L 412.85059550451115,2347.8686072425917" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ابن سينا#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ابن سينا", "osm_normalized": "ابن سينا"}, "scoring_breakdown": []}'></path>
+<path d="M 1467.613902720157,1418.2385659310967 L 1497.1246997299604,1410.0546472105198" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 1467.613902720157,1418.2385659310967 L 1411.3530320734717,1414.621802547481" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'לת אל שלח#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ח'לת אל שלח", "osm_normalized": "חלת אל שלח"}, "scoring_breakdown": [{"lamas_id": "6741", "lamas_name": "ח'לת שלח", "lamas_normalized": "חלת שלח", "final_score": 92.94, "fuzz_ratio": 82.35294117647058, "token_sort_ratio": 82.35294117647058, "token_set_ratio": 100.0}, {"lamas_id": "365", "lamas_name": "טריק ח'לת אל-שלח", "lamas_normalized": "טריק חלת אל שלח", "final_score": 92.0, "fuzz_ratio": 80.0, "token_sort_ratio": 80.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2638.3387234946713,1459.2504736278206 L 2497.6865468770266,1454.366539687384" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+<path d="M 2638.3387234946713,1459.2504736278206 L 2774.237557854969,1443.9386740075424" stroke="#000000" stroke-width="5" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ח'אלד בן אל וליד - חאלד בן אל וליד#10;ציון: 100.0#10;מזהה: 228" data-diagnostics='{"normalization": {"osm_original": "ח'אלד בן אל וליד", "osm_normalized": "חאלד בן אל וליד"}, "scoring_breakdown": [{"lamas_id": "228", "lamas_name": "חאלד בן אל וליד", "lamas_normalized": "חאלד בן אל וליד", "final_score": 100.0, "fuzz_ratio": 100.0, "token_sort_ratio": 100.0, "token_set_ratio": 100.0}]}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">6</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">384</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">1</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">1</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">5</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (5)</h3>
+            <ul><li>חלת אל שלח</li><li>סאלח א דין אל איובי</li><li>ابن سينا</li><li>البئر</li><li>عثمان بن عفان</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (383 - 99.7%)</h3>
+            <ul><li>א-ד'הרה</li><li>א-זעפראן</li><li>א-זערורה</li><li>א-נבי אדם</li><li>א-נג'ם</li><li>א-ניל</li><li>א-ס'יף</li><li>א-סולטאן</li><li>א-סיידה עאאישה</li><li>א-סיכה</li><li>א-סרוב</li><li>א-רביע</li><li>א-רוודה</li><li>א-ריאד</li><li>א-שיתאא</li><li>א-שעב</li><li>אאב</li><li>אאד'אר</li><li>אאיאת</li><li>אאל עמראן</li><li>אבו אלקאסם אלשאבי</li><li>אבו בכר אלסאדיק</li><li>אבו הוריירה</li><li>אבו זינה</li><li>אבו ח'ושום</li><li>אבו חניפה</li><li>אבו סופיאן</li><li>אבו עוביידה</li><li>אבו תמאם</li><li>אבן ח'לדון</li><li>אבן סינאא</li><li>אבן רושד</li><li>אבן תימייה</li><li>אוחוד</li><li>אום אל-בסל</li><li>אחמד שווקי</li><li>איאר</li><li>איבן בטוטא</li><li>אילול</li><li>אל-אחסאן</li><li>אל-אמאני</li><li>אל-אס'מאעי</li><li>אל-ארז</li><li>אל-ארקם</li><li>אל-באטן</li><li>אל-בורה</li><li>אל-בלוט</li><li>אל-בסה</li><li>אל-ברקוק</li><li>אל-ג'ורי</li><li>אל-ג'ילאני</li><li>אל-הודא</li><li>אל-וידאד</li><li>אל-ח'ואריזמי</li><li>אל-ח'יראת</li><li>אל-ח'ריף</li><li>אל-חוסיין בן עלי</li><li>אל-חורש</li><li>אל-חיאה</li><li>אל-חמרה</li><li>אל-יאקות</li><li>אל-כוכב</li><li>אל-מדינה אל-מנורה</li><li>אל-מונתזה</li><li>אל-מכתבה</li><li>אל-מנארה</li><li>אל-מראח'</li><li>אל-עדאלה</li><li>אל-עסל</li><li>אל-עקד</li><li>אל-ערבי</li><li>אל-פוארס</li><li>אל-פיום</li><li>אל-קרע</li><li>אלאבראר</li><li>אלאדיב</li><li>אלאזדהאר</li><li>אלאזהר</li><li>אלאח'טל</li><li>אלאח'לאס</li><li>אלאחבה</li><li>אלאחראש</li><li>אלאמיר</li><li>אלאמירה</li><li>אלאמל</li><li>אלאנדלס</li><li>אלאנואר</li><li>אלאסראא</li><li>אלאציל</li><li>אלאקצה</li><li>אלאת'יר</li><li>אלאתאר</li><li>אלבאבור</li><li>אלבוסתאן</li><li>אלבח'ארי</li><li>אלביאדה</li><li>אלביר</li><li>אלבלסם</li><li>אלבנין</li><li>אלבראא</li><li>אלברג</li><li>אלבשרא</li><li>אלג'אמע</li><li>אלג'נה</li><li>אלגאר</li><li>אלגדאוול</li><li>אלגדיר</li><li>אלגוז</li><li>אלגוזלאן</li><li>אלגזאלי</li><li>אלגנאת</li><li>אלדאחיה</li><li>אלדחא</li><li>אלהודהד</li><li>אלואסל</li><li>אלוואדי</li><li>אלוורוד</li><li>אלוותאק</li><li>אלוחדה</li><li>אלוסילה</li><li>אלוסים</li><li>אלועד</li><li>אלזהור</li><li>אלזהרא</li><li>אלזהראא</li><li>אלזהרייה</li><li>אלזובייר בן אלעואם</li><li>אלזינה</li><li>אלזיתון</li><li>אלזנבק</li><li>אלזנג'ביל</li><li>אלזעפראני</li><li>אלח'דר</li><li>אלח'לוד</li><li>אלח'רוב</li><li>אלחור</li><li>אלחוריה</li><li>אלחכים</li><li>אלחכמה</li><li>אלחלווה</li><li>אלחמאמה</li><li>אלחמה</li><li>אלחנאן</li><li>אלחנין</li><li>אלחנסאא</li><li>אלחסאד</li><li>אלחסון</li><li>אלחסנאת</li><li>אלטיוור</li><li>אלטלה</li><li>אליאסמין</li><li>אליקין</li><li>אלירמוק</li><li>אלכוות'ר</li><li>אלכרם</li><li>אלכתאב</li><li>אללוטוס</li><li>אלליל</li><li>אלמדארס</li><li>אלמוודה</li><li>אלמותנבי</li><li>אלמזאר</li><li>אלמזארע</li><li>אלמח'תאר</li><li>אלמיזאן</li><li>אלמיעאד</li><li>אלמית'אק</li><li>אלמנסור</li><li>אלמנסורה</li><li>אלמערפה</li><li>אלמראעי</li><li>אלמרג</li><li>אלמרג'אן</li><li>אלמרווה</li><li>אלמשמש</li><li>אלנגאח</li><li>אלנגוא</li><li>אלנדאא</li><li>אלנהאר</li><li>אלנהר</li><li>אלנוורס</li><li>אלנור</li><li>אלנזהה</li><li>אלנזלה</li><li>אלנח'יל</li><li>אלנח'לה</li><li>אלנסים</li><li>אלנסר</li><li>אלנעים</li><li>אלנעמאן</li><li>אלנרג'ס</li><li>אלסאלחייה</li><li>אלסאפי</li><li>אלסבאח</li><li>אלסבע</li><li>אלסד</li><li>אלסד אלעאלי</li><li>אלסדאקה</li><li>אלסדרה</li><li>אלסונדס</li><li>אלסוסן</li><li>אלסופסאף</li><li>אלסחאבה</li><li>אלסחווה</li><li>אלסידה אמנה</li><li>אלסידה האגר</li><li>אלסידה זינב</li><li>אלסידה סארה</li><li>אלסידה סומייה</li><li>אלסלאם</li><li>אלסלוא</li><li>אלסלמה</li><li>אלסנאבל</li><li>אלסנדיאני</li><li>אלסנובר</li><li>אלסקר</li><li>אלסראג</li><li>אלסרווה</li><li>אלסריס</li><li>אלעבאס</li><li>אלעוד</li><li>אלעזבה</li><li>אלעין</li><li>אלעלם</li><li>אלעמור</li><li>אלענב</li><li>אלענדליב</li><li>אלעסר</li><li>אלערק</li><li>אלפארוק</li><li>אלפג'ר</li><li>אלפוראת</li><li>אלפראבי</li><li>אלפרדוס</li><li>אלפרזדק</li><li>אלפרח</li><li>אלפתח</li><li>אלצדיק</li><li>אלצפא</li><li>אלקאדי</li><li>אלקודס</li><li>אלקורנפול</li><li>אלקמר</li><li>אלראזי</li><li>אלרבאט</li><li>אלרג'ד</li><li>אלרוחה</li><li>אלרחיק</li><li>אלרחמה</li><li>אלריאן</li><li>אלריחאן</li><li>אלרמאן</li><li>אלרסאם</li><li>אלרשאד</li><li>אלשאם</li><li>אלשאפעי</li><li>אלשוגעאן</li><li>אלשיח'</li><li>אלשמס</li><li>אלתין</li><li>אלתל</li><li>אלתנסים</li><li>אלתקוא</li><li>אם אלגמאל</li><li>אם ח'אלד</li><li>אסמאא בנת אבו בכר</li><li>בדר</li><li>בורג' אלחמאם</li><li>בורקה</li><li>ביאדרנא</li><li>ביסאן</li><li>בלאל בן רבאח</li><li>ג'ודי</li><li>ג'מאדי א-ת'אני</li><li>ג'מאדי אל-אוול</li><li>ג'נא</li><li>ג'נאת</li><li>גאר חראא</li><li>ד'ו אל-חיג'ה</li><li>ד'ו אל-קעדה</li><li>דהרת גבר</li><li>הארון אלרשיד</li><li>ואדי אלחמאם</li><li>וורדה</li><li>זריף אלטול</li><li>ח'ביזה</li><li>ח'ליל אלסכאכיני</li><li>חאן אלחלילי</li><li>חאתם אלטאאי</li><li>חוש ברדק</li><li>חזיראן</li><li>חיטין</li><li>חמזה בן עבד אלמוטלב</li><li>חסאן בן תאבת</li><li>חסנאא</li><li>טאהא חוסיין</li><li>טאריק אל-ווסייה</li><li>טארק בן זיאד</li><li>טיבה</li><li>טריק א-דסת</li><li>טריק א-סנדחאווי</li><li>טריק א-ריחאנה</li><li>טריק אל-ביאדר</li><li>טריק אל-ג'ולאן</li><li>טריק אל-חוארנה</li><li>טריק אל-כבארה</li><li>טריק אל-מזר'מתה</li><li>טריק אל-מטלה</li><li>טריק אל-מפאח'יר</li><li>טריק אל-מקאייל</li><li>טריק אל-עדאסה</li><li>טריק אל-קטאיין</li><li>טריק בין א-דורוב</li><li>טריק ח'לת א-שלח</li><li>טריק סדר אל-ערוס</li><li>טריק סתאלין</li><li>יאסמינה</li><li>יאפה</li><li>יזיד בן מועאוויה</li><li>כאנון א-ת'אני</li><li>כאנון אל-אול</li><li>ליאלינא</li><li>מוחמד אלפאתח</li><li>מוחרם</li><li>מוסא בן נוסייר</li><li>מועאוייה</li><li>מכה אלמכרמה</li><li>מרג' בן עאמר</li><li>מרג'אנה</li><li>מרים</li><li>נדאא אלחק</li><li>נוסרין</li><li>ניסאן</li><li>סג'א</li><li>סולימאן אלפרסי</li><li>סונבולה</li><li>סונדס</li><li>סוק עוקאד</li><li>סחלב</li><li>סיוואר</li><li>סירין</li><li>סלאח א-דין</li><li>סלמא</li><li>סלסביל</li><li>סנאבל</li><li>ספר</li><li>סת אלחבאיב</li><li>עאבר אלנזאזה</li><li>עאישה בנת אבו בכר</li><li>עאר תור</li><li>עומר אלמכתאר</li><li>עומר בן אלח'טאב</li><li>עותמאן בן עפאן</li><li>עין אלחלווה</li><li>עין וורדה</li><li>עין חוד</li><li>עין שחאדה</li><li>עלי בן אבי טאלב</li><li>עלי חידר זחאלקה</li><li>עמאר בן יאסר</li><li>עמר בן אלעאס</li><li>עספור</li><li>עספור אלג'נה</li><li>פאטמה א-זהראא</li><li>צור</li><li>צידא</li><li>קבאא אלדאירי</li><li>ראבעה אלעדויה</li><li>ראמה</li><li>רביע א-ת'אני</li><li>רביע אל-אוול</li><li>רג'ב</li><li>ריחאנה</li><li>רמדאן</li><li>רפידה</li><li>שבאט</li><li>שוואל</li><li>שט אלערב</li><li>שעבאן</li><li>תופיק אלחכים</li><li>תופיק זייאד</li><li>תישרין</li><li>תמוז</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>

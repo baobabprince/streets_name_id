@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Street Map - פוריידיס</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f0f2f5;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            box-sizing: border-box;
+        }
+        
+        .main-layout {
+            display: flex;
+            flex: 1;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .container {
+            flex: 3;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .debug-panel {
+            flex: 1;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            border-right: 4px solid #00BFFF;
+        }
+        
+        h1, h2, h3 {
+            color: #1a1a1a;
+            margin-top: 0;
+        }
+
+        .debug-panel h2 {
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            font-size: 1.4em;
+        }
+        
+        .legend {
+            margin-bottom: 20px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+        }
+        
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        
+        .legend-color {
+            width: 24px;
+            height: 4px;
+            border-radius: 2px;
+        }
+        
+        svg {
+            width: 100%;
+            height: auto;
+            border: 1px solid #dee2e6;
+            background: #fdfdfd;
+            border-radius: 4px;
+        }
+        
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.2s, filter 0.2s;
+        }
+        
+        .street-path:hover {
+            stroke-width: 12 !important;
+            filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+        }
+        
+        .street-path.pinned {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 6px rgba(0,191,255,0.6));
+            stroke: #00BFFF !important;
+        }
+        
+        #tooltip {
+            position: fixed;
+            background: rgba(33, 37, 41, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 300px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        #tooltip.visible {
+            opacity: 1;
+        }
+
+        /* Debug UI Components */
+        .debug-section {
+            margin-bottom: 20px;
+            font-size: 0.95em;
+        }
+        .debug-section h4 {
+            margin-bottom: 8px;
+            color: #495057;
+            text-transform: uppercase;
+            font-size: 0.85em;
+            letter-spacing: 0.5px;
+        }
+        .debug-card {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #e9ecef;
+        }
+        .trace-item {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+        .trace-label { color: #6c757d; }
+        .trace-value { font-weight: 600; color: #212529; }
+
+        .score-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .score-table th, .score-table td {
+            text-align: right;
+            padding: 8px;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .score-table th { color: #6c757d; font-weight: normal; }
+        .score-row.selected { background: #e7f5ff; font-weight: bold; }
+        .final-score { color: #0056b3; font-weight: bold; }
+
+        .ai-reasoning {
+            font-style: italic;
+            color: #495057;
+            background: #fff3cd;
+            padding: 10px;
+            border-radius: 4px;
+            border-right: 3px solid #ffc107;
+            margin-top: 10px;
+        }
+
+        .empty-state {
+            color: #adb5bd;
+            text-align: center;
+            margin-top: 50px;
+        }
+
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        .diagnostics-card {
+            background: #fff;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #e9ecef;
+            text-align: center;
+        }
+        .diagnostics-card .label { font-size: 0.8em; color: #6c757d; }
+        .diagnostics-card .value { font-size: 1.3em; font-weight: bold; color: #0d6efd; }
+    </style>
+</head>
+<body>
+    <div class="main-layout">
+        <div class="container">
+            <h1>מפת רחובות - פוריידיס</h1>
+            
+            <div class="legend">
+                <div class="legend-items">
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #000000;"></span>
+                        <span>התאמה מלאה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #c06666;"></span>
+                        <span>התאמה חלקית</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #00BFFF;"></span>
+                        <span>התאמה ע"י AI</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #FF8C00;"></span>
+                        <span>ללא התאמה</span>
+                    </div>
+                    <div class="legend-item">
+                        <span class="legend-color" style="background: #CCCCCC;"></span>
+                        <span>ללא שם</span>
+                    </div>
+                </div>
+            </div>
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 526.140441285912 1154.759470784571" id="street-map">
+                <rect x="0" y="0" width="526.140441285912" height="1154.759470784571" fill="#fdfdfd" />
+                <path d="M 163.17210960481316,899.5477144541219 L 215.1249159583822,918.6531130303629" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ואדי מילק#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ואדי מילק", "osm_normalized": "ואדי מילק"}, "scoring_breakdown": []}'></path>
+<path d="M 163.17210960481316,899.5477144541219 L 168.70468829665333,888.4887663372792" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 520.4297514073551,26.268607682082802 L 526.140441285912,0.0" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 520.4297514073551,26.268607682082802 L 507.9619684391655,76.69148606946692" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 174.22613504109904,877.4430205118842 L 197.21360988961533,825.3719674986787" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 377.8628795482218,954.8687251782976 L 325.97686489019543,935.2348827966489" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ואדי מילק#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ואדי מילק", "osm_normalized": "ואדי מילק"}, "scoring_breakdown": []}'></path>
+<path d="M 217.51828501001,894.1701866122894 L 174.22613504109904,877.4430205118842" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ואדי מילק#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ואדי מילק", "osm_normalized": "ואדי מילק"}, "scoring_breakdown": []}'></path>
+<path d="M 197.21360988961533,825.3719674986787 L 328.8711716509424,579.4814601647668" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 183.17622210038826,818.6202866625972 L 158.3965034498833,871.4709144099616" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 144.65967828594148,935.0763321192935 L 163.17210960481316,899.5477144541219" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 215.1249159583822,918.6531130303629 L 246.060602449812,929.5402696621604" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ואדי מילק#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ואדי מילק", "osm_normalized": "ואדי מילק"}, "scoring_breakdown": []}'></path>
+<path d="M 158.3965034498833,871.4709144099616 L 147.3536099633202,892.9678397579119" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 147.3536099633202,892.9678397579119 L 126.35875399969518,930.3726610792801" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 42.590837177820504,1115.2942310082726 L 107.06708624493331,1000.9803804177791" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 107.06708624493331,1000.9803804177791 L 130.4330473621376,957.4980192314833" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש החוף הישן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש החוף הישן", "osm_normalized": "כביש החוף הישן"}, "scoring_breakdown": []}'></path>
+<path d="M 126.35875399969518,930.3726610792801 L 114.81492280494422,951.8694794927724" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 504.4776683775708,90.80351105425507 L 507.9619684391655,76.69148606946692" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 504.4776683775708,90.80351105425507 L 450.85506966197863,314.38701072428375" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 450.85506966197863,314.38701072428375 L 504.4776683775708,90.80351105425507" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 450.85506966197863,314.38701072428375 L 432.966027491726,342.8351019192487" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 286.98164726467803,617.3365108058788 L 183.17622210038826,818.6202866625972" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 66.33528456371278,1042.1900429925881 L 0.0,1154.759470784571" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 424.694989325013,378.8410645266995 L 382.4826384168118,453.2442315281369" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 446.2130468953401,346.49516256712377 L 450.85506966197863,314.38701072428375" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 341.1942392815836,529.8006515884772 L 286.98164726467803,617.3365108058788" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 388.9169049845077,466.2062698053196 L 430.5615264903754,381.1797966598533" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 382.4826384168118,453.2442315281369 L 341.1942392815836,529.8006515884772" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 507.9619684391655,76.69148606946692 L 520.4297514073551,26.268607682082802" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 507.9619684391655,76.69148606946692 L 504.4776683775708,90.80351105425507" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 328.8711716509424,579.4814601647668 L 388.9169049845077,466.2062698053196" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 114.81492280494422,951.8694794927724 L 66.33528456371278,1042.1900429925881" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 130.4330473621376,957.4980192314833 L 144.65967828594148,935.0763321192935" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש החוף הישן#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש החוף הישן", "osm_normalized": "כביש החוף הישן"}, "scoring_breakdown": []}'></path>
+<path d="M 526.140441285912,0.0 L 520.4297514073551,26.268607682082802" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 168.70468829665333,888.4887663372792 L 174.22613504109904,877.4430205118842" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 27.852136596571654,1136.4075560937636 L 42.590837177820504,1115.2942310082726" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="כביש חיפה-רעננה#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "כביש חיפה-רעננה", "osm_normalized": "כביש חיפה רעננה"}, "scoring_breakdown": []}'></path>
+<path d="M 325.97686489019543,935.2348827966489 L 217.51828501001,894.1701866122894" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" fill="none" class="street-path" data-tooltip="ואדי מילק#10;סטטוס: לא נמצאה התאמה" data-diagnostics='{"normalization": {"osm_original": "ואדי מילק", "osm_normalized": "ואדי מילק"}, "scoring_breakdown": []}'></path>
+            </svg>
+            
+            <div style="margin-top: 15px; font-size: 0.9em; color: #6c757d; text-align: center;">
+                העבר עכבר למידע מהיר. <strong>לחץ על רחוב</strong> לפרטים מלאים ודיאגנוסטיקה.
+            </div>
+
+            
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">3</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">22</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">3</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (3)</h3>
+            <ul><li>ואדי מילק</li><li>כביש החוף הישן</li><li>כביש חיפה רעננה</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (22 - 100.0%)</h3>
+            <ul><li>צריפים</li><li>רח 1</li><li>רח 10</li><li>רח 11</li><li>רח 12</li><li>רח 13</li><li>רח 14</li><li>רח 14 א</li><li>רח 14 ב</li><li>רח 15</li><li>רח 15 א</li><li>רח 2</li><li>רח 3</li><li>רח 4</li><li>רח 5</li><li>רח 5 א</li><li>רח 6</li><li>רח 6 א</li><li>רח 7</li><li>רח 7 א</li><li>רח 8</li><li>רח 9</li></ul>
+        </div>
+        
+    </div>
+    
+        </div>
+
+        <div class="debug-panel" id="debug-panel">
+            <h2>פרטי התאמה (Debug)</h2>
+            <div id="debug-content">
+                <div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="tooltip"></div>
+    
+    <script>
+        const tooltip = document.getElementById('tooltip');
+        const debugContent = document.getElementById('debug-content');
+        const paths = document.querySelectorAll('.street-path');
+        let pinnedPath = null;
+        
+        function updateDebugPanel(path) {
+            const rawDiag = path.getAttribute('data-diagnostics');
+            const tooltipText = path.getAttribute('data-tooltip');
+            
+            if (!rawDiag || rawDiag === 'null' || rawDiag === '') {
+                debugContent.innerHTML = `<div class="debug-card"><strong>${tooltipText}</strong><p>אין מידע דיאגנוסטי זמין עבור רחוב זה.</p></div>`;
+                return;
+            }
+
+            try {
+                const diag = JSON.parse(rawDiag);
+                let html = '';
+
+                // 1. Normalization Trace
+                if (diag.normalization) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>נרמול שמות (Normalization)</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">מקור (OSM):</span> <span class="trace-value">${diag.normalization.osm_original || 'N/A'}</span></div>
+                            <div class="trace-item"><span class="trace-label">מנורמל:</span> <span class="trace-value">${diag.normalization.osm_normalized || 'N/A'}</span></div>
+                        </div>
+                    </div>`;
+                }
+
+                // 2. Scoring Breakdown
+                if (diag.scoring_breakdown && diag.scoring_breakdown.length > 0) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>מועמדים וציונים (Fuzzy Scoring)</h4>
+                        <table class="score-table">
+                            <thead>
+                                <tr>
+                                    <th>שם למ"ס</th>
+                                    <th>ציון</th>
+                                    <th>Ratio</th>
+                                    <th>Sort</th>
+                                    <th>Set</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${diag.scoring_breakdown.map((m, i) => `
+                                    <tr class="score-row ${i === 0 ? 'selected' : ''}">
+                                        <td>${m.lamas_name} (ID ${m.lamas_id})</td>
+                                        <td class="final-score">${m.final_score}</td>
+                                        <td>${m.fuzz_ratio}</td>
+                                        <td>${m.token_sort_ratio}</td>
+                                        <td>${m.token_set_ratio}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>`;
+                }
+
+                // 3. AI Resolution
+                if (diag.ai_resolution) {
+                    html += `
+                    <div class="debug-section">
+                        <h4>החלטת AI (${diag.ai_resolution.method || 'Unknown'})</h4>
+                        <div class="debug-card">
+                            <div class="trace-item"><span class="trace-label">ID שנבחר:</span> <span class="trace-value">${diag.ai_resolution.response}</span></div>
+                            <div class="ai-reasoning">
+                                <strong>הסבר:</strong> ${diag.ai_resolution.reasoning || 'לא סופק הסבר'}
+                            </div>
+                            <details style="margin-top: 10px; font-size: 0.8em;">
+                                <summary>צפה ב-Prompt</summary>
+                                <pre style="white-space: pre-wrap; background: #eee; padding: 5px;">${diag.ai_resolution.prompt}</pre>
+                            </details>
+                        </div>
+                    </div>`;
+                }
+
+                debugContent.innerHTML = html;
+            } catch (e) {
+                debugContent.innerHTML = `<div class="ai-reasoning">שגיאה בפענוח נתוני דיאגנוסטיקה: ${e.message}</div>`;
+            }
+        }
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    pinnedPath = null;
+                    debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    updateDebugPanel(path);
+                }
+            });
+            
+            path.addEventListener('mouseenter', (e) => {
+                const tooltipText = path.getAttribute('data-tooltip');
+                tooltip.textContent = tooltipText;
+                tooltip.classList.add('visible');
+            });
+            
+            path.addEventListener('mousemove', (e) => {
+                tooltip.style.left = (e.clientX + 15) + 'px';
+                tooltip.style.top = (e.clientY + 15) + 'px';
+            });
+            
+            path.addEventListener('mouseleave', () => {
+                tooltip.classList.remove('visible');
+            });
+        });
+        
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                pinnedPath = null;
+                debugContent.innerHTML = '<div class="empty-state">לחץ על רחוב במפה כדי לראות את הלוגיקה מאחורי ההתאמה</div>';
+            }
+        });
+    </script>
+</body>
+</html>
