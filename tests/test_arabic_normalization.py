@@ -2,7 +2,8 @@ import pytest
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from normalization import normalize_street_name
+from normalization import normalize_street_name, AI_TRANSLITERATION_CACHE
+from unittest.mock import patch
 
 def test_arabic_prefix_removal():
     """
@@ -10,10 +11,12 @@ def test_arabic_prefix_removal():
     شارع (Sharia - Street)
     طريق (Tariq - Way)
     """
-    # شارע السلام (Sharia Al-Salam) -> سلام
-    assert normalize_street_name('شارع السلام') == 'سلام'
-    # طريق הנביאים (Tariq HaNeviim) -> הנביאים
-    assert normalize_street_name('طريق הנביאים') == 'הנביאים'
+    # Mock AI polish to return the algorithmic result for predictability
+    with patch('normalization.polish_transliteration_with_ai', side_effect=lambda a, h: h):
+        # شارع (Arabic) -> סלאם
+        assert normalize_street_name('شارع السلام') == 'סלאם'
+        # طريق הנביאים (Tariq HaNeviim) -> הנביאים
+        assert normalize_street_name('طريق הנביאים') == 'הנביאים'
 
 def test_hebrew_names_not_hijacked():
     """
@@ -21,24 +24,19 @@ def test_hebrew_names_not_hijacked():
     Currently our regex \bאל(?=[א-ת]) is very aggressive.
     """
     # אלעזר should remain אלעזר
-    # If this fails, we need to refine the regex
     assert normalize_street_name('אלעזר') == 'אלעזר'
     assert normalize_street_name('אלחנן') == 'אלחנן'
 
 def test_al_prefix_standardization():
     """
     Tests that the Arabic 'Al-' prefix (in various forms) is handled.
-    Note: We might want to strip it or standardize it to 'ה' in Hebrew.
-    For now, let's assume we want to strip it to improve fuzzy matching
-    against Hebrew names that might or might not have 'ה'.
     """
-    # אל-סלאם -> סלאם
-    assert normalize_street_name('אל-סלאם') == 'סלאם'
-    # Al-Salam -> Salam (if we handle English transliteration prefixes)
-    # However, the focus is on Arabic/Hebrew matching.
-    
-    # In Arabic script: السلام (Al-Salam) -> سلام
-    assert normalize_street_name('السلام') == 'سلام'
+    with patch('normalization.polish_transliteration_with_ai', side_effect=lambda a, h: h):
+        # אל-סלאם -> סלאם
+        assert normalize_street_name('אל-סלאם') == 'סלאם'
+        
+        # In Arabic script: السلام (Al-Salam) -> סלאם
+        assert normalize_street_name('السلام') == 'סלאם'
 
 def test_hebrew_transliterated_arabic_prefixes():
     """

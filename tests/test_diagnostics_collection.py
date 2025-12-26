@@ -69,7 +69,7 @@ def test_pipeline_captures_ai_metadata(tmp_path):
     with patch('pipeline.load_or_fetch_osm', return_value=osm_gdf), \
          patch('pipeline.load_or_fetch_LAMAS', return_value=lamas_df), \
          patch('pipeline.SettlementMatcher.search_settlement', return_value=MagicMock(display_name='אלעד', settlement_name='אלעד')), \
-         patch('pipeline.get_ai_resolution', return_value='101'), \
+         patch('pipeline.get_ai_resolution_batch', return_value={'הרצל': '101'}), \
          patch('pipeline.build_adjacency_map', return_value={}), \
          patch('pipeline.API_KEY', 'fake_key'):
         

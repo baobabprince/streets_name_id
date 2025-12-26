@@ -55,26 +55,33 @@ class TestAIContext(unittest.TestCase):
         """
         Test that the Gemini system prompt contains the critical warning.
         """
-        from pipeline import get_ai_resolution
+        from pipeline import get_ai_resolution_batch
         import json
         
         # Mock response to avoid actual logic errors
         mock_response = MagicMock()
-        mock_response.json.return_value = {'candidates': [{'content': {'parts': [{'text': '123'}]}}]}
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'candidates': [{'content': {'parts': [{'text': '{"Street A": "123"}'}]}}]
+        }
         mock_post.return_value = mock_response
         
-        get_ai_resolution("test prompt", "123")
+        streets_data = [{
+            'street_name': 'Street A',
+            'adjacent': [],
+            'candidates': 'ID: 123, Name: Street A'
+        }]
+        get_ai_resolution_batch("test settlement", streets_data)
         
         # Get the args passed to requests.post
         call_args = mock_post.call_args
-        # data is the named argument 'data'
-        data_str = call_args[1]['data']
-        data_json = json.loads(data_str)
+        # json is passed as a keyword argument 'json'
+        payload = call_args[1]['json']
         
-        system_instruction = data_json['systemInstruction']['parts'][0]['text']
+        system_instruction = payload['systemInstruction']['parts'][0]['text']
         
-        self.assertIn("היזהר מהתאמות חלקיות", system_instruction)
-        self.assertIn("הרצל רוזנבלום", system_instruction)
+        self.assertIn("BE STRICT", system_instruction)
+        self.assertIn("Herzl Rosenblum", system_instruction)
 
 if __name__ == '__main__':
     unittest.main()

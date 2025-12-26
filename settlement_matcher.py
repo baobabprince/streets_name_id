@@ -246,37 +246,35 @@ class SettlementMatcher:
     
     def search_settlement(self, settlement_name: str, max_retries: int = 3) -> Optional[SettlementMatch]:
         """
-        Search for a settlement using Nominatim with validation and AI resolution.
+        Search for a settlement using Nominatim with a selective fallback strategy.
+        1. Primary: The full name as provided.
+        2. Secondary: If parentheses exist, try ONLY the content inside them.
         """
-        normalized_name = self.normalize_settlement_name(settlement_name)
+        # Initial cleanup for Nominatim (spaces, generic punctuation, but KEEP parentheses)
+        clean_name = re.sub(r'[־\-–—]', ' ', settlement_name)
+        clean_name = re.sub(r'[.,;:!?]', '', clean_name)
+        clean_name = re.sub(r'\s+', ' ', clean_name).strip()
         
-        if not normalized_name:
-            print(f"  ⚠ Empty settlement name after normalization: '{settlement_name}'")
+        if not clean_name:
+            print(f"  ⚠ Empty settlement name after cleanup: '{settlement_name}'")
             return None
         
         # Collect ALL valid candidates across all variants
         all_valid_candidates = {} # osm_id -> SettlementMatch
         
         query_variants = []
-        # 1. Full normalized name
-        query_variants.append(normalized_name)
-        # 2. Normalized name with country
-        query_variants.append(f"{normalized_name}, Israel")
+        # 1. Primary Query: Full name
+        query_variants.append(clean_name)
         
-        # 3. If there's parenthetical content, try extracting it as a variant (e.g. "Kfar Rosenwald (Zarit)" -> "Zarit")
-        # Note: self.normalize_settlement_name strips parentheses, so we check original_name
+        # 2. Secondary Query: Parenthetical content if exists
         paren_match = re.search(r'\(([^)]+)\)', settlement_name)
         if paren_match:
             variant = paren_match.group(1).strip()
-            query_variants.append(variant)
-            query_variants.append(f"{variant}, Israel")
-
-        # 4. Try splitting on dash/hyphen and searching each part
-        parts = re.split(r'[\s\-]+', normalized_name)
-        for part in parts:
-            if part and part != normalized_name and len(part) > 2:
-                query_variants.append(part)
-                query_variants.append(f"{part}, Israel")
+            # Clean up the variant too
+            variant = re.sub(r'[־\-–—]', ' ', variant)
+            variant = re.sub(r'\s+', ' ', variant).strip()
+            if variant and variant != clean_name:
+                query_variants.append(variant)
 
         # Use a set to maintain order but avoid duplicates
         seen_queries = set()
@@ -292,6 +290,10 @@ class SettlementMatcher:
             for match in variants_results:
                 if match.osm_id not in all_valid_candidates:
                     all_valid_candidates[match.osm_id] = match
+            
+            # If we found valid candidates for this variant, we can STOP (Selective Fallback)
+            if all_valid_candidates:
+                break
         
         if not all_valid_candidates:
             print(f"  ✗ No valid candidates found for '{settlement_name}'")

@@ -73,29 +73,67 @@ def test_arabic_hebrew_phonetic_rules():
     assert transliterate_arabic_to_hebrew('ي') == 'י'
 
 def test_polish_transliteration_with_ai():
+
     """
+
     Tests the AI polish function using a mock.
+
     """
-    from normalization import polish_transliteration_with_ai
+
+    from normalization import polish_transliteration_with_ai, AI_TRANSLITERATION_CACHE
+
     from unittest.mock import patch, MagicMock
+
     
+
+    # Clear cache to ensure mock is called
+
+    AI_TRANSLITERATION_CACHE.clear()
+
+    
+
     # We mock the requests.post call inside polish_transliteration_with_ai
+
     with patch('requests.post') as mock_post:
+
         mock_response = MagicMock()
+
         mock_response.status_code = 200
+
         mock_response.json.return_value = {
+
             "candidates": [{"content": {"parts": [{"text": "סלאם"}]}}]
+
         }
+
         mock_post.return_value = mock_response
+
         
+
         # We need a fake API key in the environment for the function to run
+
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'fake_key'}):
+
             result = polish_transliteration_with_ai('سلام', 'סלאם')
+
             assert result == 'סלאם'
+
             
+
+            # Clear cache again for the next subtest
+
+            AI_TRANSLITERATION_CACHE.clear()
+
+            
+
             # Test another one where it corrects it
+
             mock_response.json.return_value = {
+
                 "candidates": [{"content": {"parts": [{"text": "אל-קודס"}]}}]
+
             }
+
             result = polish_transliteration_with_ai('אל-קודס', 'קדס')
+
             assert result == 'אל-קודס'
