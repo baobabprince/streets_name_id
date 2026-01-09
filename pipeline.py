@@ -257,7 +257,7 @@ def calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf):
 #                                 ORCHESTRATION START
 # ----------------------------------------------------------------------------------
 
-def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False, output_name: str = None):
+def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, use_ai: bool = False, use_local_ai: bool = True, skip_html: bool = False, output_name: str = None, local_resolver: LocalAIResolver = None):
     """
     מארגן את כל ה-pipeline למיפוי מזהי הרחובות.
     'place' can be a string for a search query, or a dict from Nominatim.
@@ -416,8 +416,7 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
 
     if use_ai:
         # Initialize Local AI if requested
-        local_resolver = None
-        if use_local_ai:
+        if use_local_ai and local_resolver is None:
             try:
                 print("Initializing Local AI Resolver...")
                 local_resolver = LocalAIResolver()
@@ -429,6 +428,8 @@ def run_pipeline(place: str | dict | None = None, force_refresh: bool = False, u
             except Exception as e:
                 print(f"Failed to initialize Local AI: {e}")
                 local_resolver = None
+        elif use_local_ai and local_resolver is not None:
+            print("Using pre-initialized Local AI Resolver.")
 
         # Filter candidates to the city being processed
         osm_gdf_in_city = osm_gdf[osm_gdf['city'] == osm_city_label]

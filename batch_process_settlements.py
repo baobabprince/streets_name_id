@@ -27,6 +27,7 @@ from pathlib import Path
 from settlement_matcher import SettlementMatcher, SettlementMatch
 from lamas_streets import fetch_all_LAMAS_data
 from pipeline import run_pipeline
+from local_ai_resolver import LocalAIResolver
 
 
 # Output directory for reports
@@ -34,9 +35,9 @@ REPORTS_DIR = os.path.join(os.path.dirname(__file__), "batch_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
-def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_local_ai: bool) -> Dict[str, Any]:
+def process_settlement_task(settlement_name: str, place_string: str, use_ai: bool, use_local_ai: bool, local_resolver: Optional[LocalAIResolver] = None) -> Dict[str, Any]:
     """
-    Worker function to run the pipeline in a separate process.
+    Worker function to run the pipeline. Can be run in a separate process or serially.
     Captures success/failure and returns a result dictionary.
     """
     import traceback
@@ -53,14 +54,15 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
     }
     
     try:
-        print(f"  [Worker] Starting pipeline for {settlement_name}...")
+        print(f"  [Task] Starting pipeline for {settlement_name}...")
         
         pipeline_result = run_pipeline(
             place=place_string,
             force_refresh=False,
             use_ai=use_ai,
             use_local_ai=use_local_ai,
-            output_name=settlement_name
+            output_name=settlement_name,
+            local_resolver=local_resolver
         )
         
         # Ensure pipeline_success is always a boolean
@@ -82,7 +84,7 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
         result['pipeline_success'] = False
         
         # Log detailed error for debugging
-        print(f"  [Worker] ERROR in {settlement_name}:")
+        print(f"  [Task] ERROR in {settlement_name}:")
         print(f"    Type: {type(e).__name__}")
         print(f"    Message: {str(e)}")
         print(f"    Traceback (last 3 lines):")
@@ -310,75 +312,118 @@ class BatchProcessor:
         print(f"AI Resolution: {'ENABLED' if self.use_ai else 'DISABLED'}")
         print(f"{'='*70}")
         
-        # Use ProcessPoolExecutor for parallel pipeline execution
-        # We use a 'producer-consumer' pattern where the main thread resolves locations (producer)
-        # and the executor runs the pipelines (consumer)
+        # If using local AI, run serially to re-use the loaded model
+        if self.use_ai and self.use_local_ai:
+            self._run_serially(settlements, force)
+        else:
+            self._run_in_parallel(settlements, force)
         
+        # Generate final summary
+        self.generate_summary_report()
+
+    def _run_serially(self, settlements: List[str], force: bool):
+        """Runs the pipeline serially, re-using a single AI model instance."""
+        print("\nRunning in serial mode (Local AI enabled)...")
+
+        # Initialize the AI resolver once
+        local_resolver = None
+        try:
+            print("Initializing Local AI Resolver for the batch...")
+            local_resolver = LocalAIResolver()
+            if not local_resolver.is_available():
+                print("Warning: Local AI not available. Will fallback to Gemini if configured.")
+                local_resolver = None
+        except Exception as e:
+            print(f"Error initializing Local AI Resolver: {e}")
+            local_resolver = None
+
+        for i, settlement in enumerate(settlements, 1):
+            print(f"\n[{i}/{len(settlements)}] Processing: {settlement}")
+
+            if not force and settlement in self.processed_settlements:
+                print(f"  ⏭ Skipping - already processed")
+                self.stats['skipped_already_processed'] += 1
+                self.results.append({'settlement': settlement, 'status': 'skipped', 'message': 'Already processed'})
+                continue
+
+            resolve_result = self.resolve_settlement(settlement)
+            if resolve_result['status'] != 'ready_for_pipeline':
+                self.results.append(resolve_result)
+                if resolve_result['status'] == 'failed_nominatim': self.stats['failed_nominatim'] += 1
+                elif resolve_result['status'] == 'failed_validation': self.stats['failed_validation'] += 1
+                continue
+
+            self.stats['matched'] += 1
+            match_data = resolve_result['match']
+
+            worker_result = process_settlement_task(
+                settlement,
+                match_data['display_name'],
+                self.use_ai,
+                self.use_local_ai,
+                local_resolver
+            )
+
+            final_result = resolve_result.copy()
+            final_result.update(worker_result)
+
+            if worker_result['status'] == 'success':
+                print(f"  ✓ Task completed: {settlement} (Success)")
+                self.stats['successful'] += 1
+                self._save_processed_settlement(settlement)
+            else:
+                print(f"  ✗ Task completed: {settlement} (Failed: {worker_result['message']})")
+                self.stats['failed_pipeline'] += 1
+
+            self.results.append(final_result)
+
+    def _run_in_parallel(self, settlements: List[str], force: bool):
+        """Runs the pipeline in parallel using a process pool."""
+        print(f"\nRunning in parallel with {self.workers} workers...")
         with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as executor:
             future_to_settlement = {}
             
             for i, settlement in enumerate(settlements, 1):
                 print(f"\n[{i}/{len(settlements)}] Processing: {settlement}")
                 
-                # Check if already processed
                 if not force and settlement in self.processed_settlements:
                     print(f"  ⏭ Skipping - already processed")
                     self.stats['skipped_already_processed'] += 1
-                    self.results.append({
-                        'settlement': settlement,
-                        'status': 'skipped',
-                        'message': 'Already processed'
-                    })
+                    self.results.append({'settlement': settlement, 'status': 'skipped', 'message': 'Already processed'})
                     continue
                 
-                # Step 1: Resolve location (Sequential - Main Thread)
-                # This respects the Nominatim rate limit inside SettlementMatcher
                 resolve_result = self.resolve_settlement(settlement)
                 
                 if resolve_result['status'] != 'ready_for_pipeline':
-                    # Failed resolution, record result and continue
                     self.results.append(resolve_result)
-                    if resolve_result['status'] == 'failed_nominatim':
-                        self.stats['failed_nominatim'] += 1
-                    elif resolve_result['status'] == 'failed_validation':
-                        self.stats['failed_validation'] += 1
+                    if resolve_result['status'] == 'failed_nominatim': self.stats['failed_nominatim'] += 1
+                    elif resolve_result['status'] == 'failed_validation': self.stats['failed_validation'] += 1
                     continue
                 
-                # Step 2: Submit pipeline task (Parallel - Worker Process)
                 self.stats['matched'] += 1
                 match_data = resolve_result['match']
                 
                 print(f"  → Submitting pipeline task for {settlement}...")
                 future = executor.submit(
-                    worker_wrapper, 
+                    process_settlement_task,
                     settlement, 
                     match_data['display_name'], 
                     self.use_ai,
-                    self.use_local_ai
+                    self.use_local_ai,
+                    None # Cannot pass resolver across processes
                 )
                 
-                # Store context with future
-                future_to_settlement[future] = {
-                    'settlement': settlement,
-                    'resolve_result': resolve_result
-                }
+                future_to_settlement[future] = {'settlement': settlement, 'resolve_result': resolve_result}
             
-            # Step 3: Collect results as they complete
-            print(f"\n{'='*70}")
-            print("Waiting for pending pipeline tasks...")
-            print(f"{'='*70}")
+            print(f"\n{'='*70}\nWaiting for pending pipeline tasks...\n{'='*70}")
             
             for future in concurrent.futures.as_completed(future_to_settlement):
                 context = future_to_settlement[future]
-                settlement = context['settlement']
-                resolve_result = context['resolve_result']
+                settlement, resolve_result = context['settlement'], context['resolve_result']
                 
                 try:
                     worker_result = future.result()
-                    
-                    # Merge resolve info with worker result
-                    final_result = resolve_result.copy()
-                    final_result.update(worker_result)
+                    final_result = {**resolve_result, **worker_result}
                     
                     if worker_result['status'] == 'success':
                         print(f"  ✓ Task completed: {settlement} (Success)")
@@ -389,18 +434,10 @@ class BatchProcessor:
                         self.stats['failed_pipeline'] += 1
                     
                     self.results.append(final_result)
-                    
                 except Exception as e:
                     print(f"  ✗ Exception in worker for {settlement}: {e}")
                     self.stats['failed_pipeline'] += 1
-                    resolve_result['status'] = 'failed_pipeline'
-                    resolve_result['message'] = f"Worker exception: {e}"
-                    self.results.append(resolve_result)
-                
-                # Intermediate reporting could go here
-        
-        # Generate final summary
-        self.generate_summary_report()
+                    self.results.append({**resolve_result, 'status': 'failed_pipeline', 'message': f"Worker exception: {e}"})
 
 
 def main():
