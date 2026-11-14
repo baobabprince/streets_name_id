@@ -1,125 +1,113 @@
 # Street Name Synonym Mapper
 
-This project provides a comprehensive pipeline to map street names from OpenStreetMap (OSM) to their official LAMAS (Central Bureau of Statistics) IDs. It leverages fuzzy matching, topological analysis, and a two-tier AI resolution system (Local AI + Cloud AI) to handle variations in street names, abbreviations, and synonyms.
+Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Central Bureau of Statistics / CBS) street IDs for Israeli settlements. It combines name normalization, fuzzy matching, topological (adjacency) context, and a two-tier AI resolver (local model + Gemini).
+
+**Live dashboard:** [baobabprince.github.io/streets_name_id](https://baobabprince.github.io/streets_name_id/)
 
 ## Features
 
-- **Automated Data Fetching:** Downloads the latest street data from both OSM and the official Israeli government data portal (data.gov.il).
-- **Intelligent Normalization:** Standardizes street names by expanding abbreviations (e.g., 'שד' -> 'שדרות') and cleaning punctuation.
-- **Fuzzy Matching:** Utilizes fuzzy logic to identify potential matches between OSM and LAMAS street names.
-- **Topological Context:** Builds an adjacency map of connected streets to provide geographical context for resolving ambiguous matches.
-- **Two-Tier AI Resolution:**
-    - **Local AI:** Uses a local embedding/reasoning model (if available) for fast, free resolution of ambiguous cases.
-    - **Cloud AI (Gemini):** Falls back to Google's Gemini model for complex cases if local resolution fails or is disabled.
-- **Batch Processing:** Supports parallel processing of multiple settlements with robust error handling.
-- **Visual Reports:** Generates interactive HTML maps showing matched/unmatched streets and diagnostic statistics.
+- **Automated data fetching** from OSM (via osmnx) and data.gov.il (LAMAS)
+- **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
+- **Fuzzy matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz) (weighted ratio / token_sort / token_set)
+- **Topological context** — adjacency graph of connected OSM streets for AI prompts
+- **Two-tier AI resolution**
+  - Local model (optional, if torch/transformers available)
+  - Cloud fallback: Google Gemini (`GEMINI_API_KEY`)
+- **Batch processing** with parallel workers
+- **Interactive HTML reports** — per-settlement maps + master index dashboard
 
-## Logic and Methodology
+## Project layout (core modules)
 
-The pipeline operates in a series of sequential steps:
-
-1.  **Data Acquisition:** Fetches official street codes from LAMAS and street geometries from OSM.
-2.  **Preprocessing:** Normalizes street names in both datasets (standardizing abbreviations, removing punctuation).
-3.  **Topological Analysis:** Builds a graph of connected streets in OSM to understand neighbor relationships.
-4.  **Candidate Matching:**
-    - **Confident:** Exact or high-score fuzzy matches (>= 98).
-    - **Needs AI:** Ambiguous matches (score 80-98) sent for further resolution.
-    - **Missing:** Streets with no plausible candidates in the official registry.
-5.  **AI Resolution:**
-    - Streets marked 'NEEDS_AI' are first checked by the Local AI resolver.
-    - If unresolved, they are sent to the Gemini API (if key provided).
-    - The AI is given the street name, its neighbors, and the list of official candidates to make a decision.
-6.  **Reporting:** Merges results and generates CSV reports and HTML visualizations.
+| Module | Role |
+|--------|------|
+| `pipeline.py` | Orchestrator (run one settlement end-to-end) |
+| `data_loader.py` | Cache + fetch LAMAS / OSM |
+| `normalization.py` | Name normalize + fuzzy candidates |
+| `diagnostics.py` | Match / coverage statistics |
+| `gemini_client.py` | Gemini API client |
+| `local_ai_resolver.py` | Optional local Qwen-based resolver |
+| `batch_process_settlements.py` | Multi-settlement runner |
+| `generate_html.py` / `generate_index.py` | Per-city map + dashboard |
 
 ## Installation
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/baobabprince/streets_name_id.git
-    cd streets_name_id
-    ```
+```bash
+git clone https://github.com/baobabprince/streets_name_id.git
+cd streets_name_id
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-2.  **Create a virtual environment and install dependencies:**
-    ```bash
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
-    ```
+**Optional — Cloud AI:**
 
-3.  **Set up Cloud AI (Optional):**
-    To use the Gemini fallback for difficult cases, set your API key:
-    ```bash
-    export GEMINI_API_KEY="YOUR_API_KEY_HERE"
-    ```
+```bash
+export GEMINI_API_KEY="YOUR_API_KEY_HERE"
+# optional model override:
+export GEMINI_MODEL="gemini-2.5-flash-preview-09-2025"
+```
+
+> Local AI pulls large `torch` / `transformers` wheels. For fuzzy-only runs you can skip them if install is slow.
 
 ## Usage
 
-### 1. Single Settlement (`pipeline.py`)
-
-Run the pipeline for a specific city or settlement.
+### Single settlement
 
 ```bash
-python pipeline.py "Settlement Name" [OPTIONS]
-```
-
-**Examples:**
-```bash
-# Run for Tel Aviv with full AI resolution
 python pipeline.py "Tel Aviv-Yafo"
-
-# Run without any AI (only fuzzy matching)
 python pipeline.py "Haifa" --no-ai
-
-# Force data refresh (ignore cache)
 python pipeline.py "Eilat" --refresh
+python pipeline.py "אלעד" --no-local-ai
 ```
 
-**Arguments:**
-- `place`: Name of the settlement (e.g., "Tel Aviv").
-- `--refresh`: Force re-download of data from APIs.
-- `--no-ai`: Disable all AI resolution.
-- `--no-local-ai`: Skip the local model and go straight to Gemini (or skip if no API key).
+| Flag | Meaning |
+|------|---------|
+| `--refresh` | Ignore cache; re-download OSM/LAMAS |
+| `--no-ai` | Fuzzy matching only |
+| `--no-local-ai` | Skip local model; use Gemini if key is set |
 
-### 2. Batch Processing (`batch_process_settlements.py`)
-
-Process multiple settlements automatically. This script reads the list of all settlements from the LAMAS file and processes them.
+### Batch
 
 ```bash
-python batch_process_settlements.py [OPTIONS]
-```
-
-**Examples:**
-```bash
-# Process all settlements using 4 parallel workers, with AI enabled
 python batch_process_settlements.py --workers 4 --use-ai
-
-# Test run: process only the first 5 settlements, no AI
 python batch_process_settlements.py --limit 5
+python batch_process_settlements.py --dry-run
 ```
 
-**Arguments:**
-- `--workers N`: Number of parallel processes (default: 1).
-- `--use-ai`: Enable AI resolution (disabled by default in batch mode to save costs/time).
-- `--limit N`: Process only the first N settlements.
-- `--dry-run`: Print what would be done without running.
-- `--skip-html`: Don't generate HTML reports (saves time).
-- `--force`: Reprocess settlements even if they are already done.
+| Flag | Meaning |
+|------|---------|
+| `--workers N` | Parallel processes (default 1) |
+| `--use-ai` | Enable AI (off by default in batch) |
+| `--limit N` | First N settlements only |
+| `--skip-html` | Skip HTML map generation |
+| `--force` | Reprocess even if already done |
 
-### 3. Generating the Index
-
-After running a batch, you can generate a master `index.html` linking to all individual reports:
+### Index dashboard
 
 ```bash
 python generate_index.py
 ```
 
+Opens as `index.html` (and on GitHub Pages when published).
+
+## Methodology (short)
+
+1. **Acquire** — LAMAS street codes + OSM geometries (cached under `data/`)
+2. **Normalize** — abbreviations, punctuation, Hebrew preference (`name:he`)
+3. **Topology** — adjacency map of OSM segments
+4. **Match** — confident / needs-AI / missing by fuzzy score thresholds
+5. **AI (optional)** — local model, then Gemini, with neighbor context
+6. **Report** — diagnostic CSV + interactive HTML map
+
+Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
+
 ## Outputs
 
-- **`data/`**: functionality caches (PKL files) and intermediate CSVs.
-- **`HTML/`**: Individual HTML reports for each settlement (e.g., `Tel_Aviv_report.html`).
-- **`batch_reports/`**: Logs and summary CSVs from batch runs.
-- **`index.html`**: The main dashboard linking to all generated reports.
+- `data/` — pickle caches, intermediate steps, `diagnostic_report_*.csv`
+- `HTML/` — per-settlement interactive maps (`*_roads.html`)
+- `batch_reports/` — batch logs and summaries
+- `index.html` — multi-settlement dashboard
 
 ## License
 
-This project is licensed under the MIT License.
+Apache-2.0 (see `LICENSE`).
