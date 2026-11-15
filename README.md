@@ -108,6 +108,15 @@ Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
 - `batch_reports/` — batch logs and summaries
 - `index.html` — multi-settlement dashboard
 
+### LAMAS data fallback
+
+If the LAMAS API is unavailable, the pipeline uses the existing LAMAS pickle cache
+even when it is older than six months, and logs a warning. A manually downloaded
+CSV can also be saved as `cache/lamas_data.csv`; it must contain either the
+`official_code`, `street_name`, and `city_name` columns from the data portal, or
+the normalized `LAMAS_id`, `LAMAS_name`, and `city` columns. Fresh CSV files are
+used directly, and stale CSV or pickle files are used if an API refresh fails.
+
 ## License
 
 Apache-2.0 (see `LICENSE`).

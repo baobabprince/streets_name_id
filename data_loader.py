@@ -10,6 +10,7 @@ import os
 import re
 
 import pandas as pd
+import requests
 
 from lamas_streets import fetch_all_LAMAS_data
 from OSM_streets import fetch_osm_street_data
@@ -75,18 +76,50 @@ def load_or_fetch_LAMAS(
     if not force_refresh and is_fresh(LAMAS_CACHE, max_age_days):
         try:
             logger.info("Loading LAMAS data from cache: %s", LAMAS_CACHE)
-            return pd.read_pickle(LAMAS_CACHE)
+            cached_df = pd.read_pickle(LAMAS_CACHE)
+            if not _is_valid_lamas_data(cached_df):
+                raise ValueError("LAMAS cache is empty or missing required columns")
+            return cached_df
         except Exception as e:
             logger.warning("Failed to read LAMAS cache, will re-fetch: %s", e)
 
     logger.info("Fetching LAMAS data from API...")
-    df = fetch_all_LAMAS_data()
+    try:
+        df = fetch_all_LAMAS_data(force_refresh=force_refresh)
+        if not _is_valid_lamas_data(df):
+            raise ValueError("LAMAS fetch returned empty data or missing required columns")
+    except (requests.exceptions.RequestException, ValueError) as fetch_error:
+        if os.path.exists(LAMAS_CACHE):
+            try:
+                cached_df = pd.read_pickle(LAMAS_CACHE)
+                if not _is_valid_lamas_data(cached_df):
+                    raise ValueError("LAMAS cache is empty or missing required columns")
+            except Exception:
+                logger.exception("Could not load a usable LAMAS cache for fallback")
+            else:
+                logger.warning(
+                    "LAMAS refresh failed (%s); using cached data from %s",
+                    fetch_error,
+                    LAMAS_CACHE,
+                )
+                return cached_df
+        raise
+
     try:
         df.to_pickle(LAMAS_CACHE)
         logger.info("Cached LAMAS data to %s", LAMAS_CACHE)
     except Exception as e:
         logger.warning("Failed to write LAMAS cache: %s", e)
     return df
+
+
+def _is_valid_lamas_data(df: pd.DataFrame) -> bool:
+    required_columns = {"LAMAS_id", "LAMAS_name", "city"}
+    return (
+        isinstance(df, pd.DataFrame)
+        and not df.empty
+        and required_columns.issubset(df.columns)
+    )
 
 
 def load_or_fetch_osm(

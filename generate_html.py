@@ -2,7 +2,7 @@
 import os
 import sys
 import geopandas as gpd
-from shapely.geometry import LineString
+from shapely.geometry import LineString, MultiLineString
 import pandas as pd
 import re
 import colorsys
@@ -115,7 +115,7 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
                     data_status = "ai"
                 elif pd.notna(best_score):
                     if best_score >= 100:
-                        stroke_color = "#000000"
+                        stroke_color = "#f8fafc"
                         stroke_width = 5
                         data_status = "perfect"
                     else:
@@ -123,7 +123,7 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
                         stroke_width = 5
                         data_status = "partial"
                 else:
-                    stroke_color = "#000000"
+                    stroke_color = "#f8fafc"
                     stroke_width = 5
                     data_status = "perfect"
             else:
@@ -131,32 +131,46 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
                 stroke_width = 4
                 data_status = "unmatched"
 
+        if geom is None or geom.is_empty:
+            continue
         if isinstance(geom, LineString):
-            path_data = "M " + " L ".join(f"{x - minx},{maxy - y}" for x, y in geom.coords)
-            tooltip_lines = []
-            if osm_name:
-                tooltip_lines.append(f"{osm_name}")
-            else:
-                tooltip_lines.append("רחוב ללא שם")
-            if is_matched:
-                if lamas_name and lamas_name.strip() and lamas_name.strip() != osm_name:
-                    tooltip_lines[0] += f" -> {lamas_name}"
-                if pd.notna(best_score):
-                    tooltip_lines.append(f"ציון: {best_score:.1f}")
-                if final_lamas_id:
-                    tooltip_lines.append(f"מזהה: {final_lamas_id}")
-            elif osm_name:
-                tooltip_lines.append("סטטוס: לא נמצאה התאמה")
+            line_geometries = [geom]
+        elif isinstance(geom, MultiLineString):
+            line_geometries = geom.geoms
+        else:
+            continue
 
-            tooltip = "&#10;".join(tooltip_lines)
-            safe_tooltip = re.sub(r'[<>&"]', '', tooltip)
-            safe_name_attr = re.sub(r'[<>&"]', '', osm_name).lower()
+        tooltip_lines = []
+        if osm_name:
+            tooltip_lines.append(f"{osm_name}")
+        else:
+            tooltip_lines.append("רחוב ללא שם")
+        if is_matched:
+            if lamas_name and lamas_name.strip() and lamas_name.strip() != osm_name:
+                tooltip_lines[0] += f" -> {lamas_name}"
+            if pd.notna(best_score):
+                tooltip_lines.append(f"ציון: {best_score:.1f}")
+            if final_lamas_id:
+                tooltip_lines.append(f"מזהה: {final_lamas_id}")
+        elif osm_name:
+            tooltip_lines.append("סטטוס: לא נמצאה התאמה")
 
+        tooltip = "&#10;".join(tooltip_lines)
+        safe_tooltip = re.sub(r'[<>&"]', '', tooltip)
+        safe_name_attr = re.sub(r'[<>&"]', '', osm_name).lower()
+
+        for line_geometry in line_geometries:
+            path_data = "M " + " L ".join(
+                f"{x - minx},{maxy - y}" for x, y in line_geometry.coords
+            )
             path_element = (
                 f'<path d="{path_data}" '
                 f'stroke="{stroke_color}" '
                 f'stroke-width="{stroke_width}" '
                 f'stroke-dasharray="{stroke_dasharray}" '
+                f'vector-effect="non-scaling-stroke" '
+                f'stroke-linecap="round" '
+                f'stroke-linejoin="round" '
                 f'fill="none" '
                 f'class="street-path" '
                 f'data-tooltip="{safe_tooltip}" '
