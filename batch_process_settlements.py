@@ -26,7 +26,7 @@ from pathlib import Path
 # Import local modules
 from settlement_matcher import SettlementMatcher, SettlementMatch
 from lamas_streets import fetch_all_LAMAS_data
-from pipeline import run_pipeline
+from pipeline import PipelineStatus, run_pipeline
 
 
 # Output directory for reports
@@ -34,7 +34,13 @@ REPORTS_DIR = os.path.join(os.path.dirname(__file__), "batch_reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
-def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_local_ai: bool) -> Dict[str, Any]:
+def worker_wrapper(
+    settlement_name: str,
+    place: str | Dict[str, Any],
+    use_ai: bool,
+    use_local_ai: bool,
+    skip_html: bool = False,
+) -> Dict[str, Any]:
     """
     Worker function to run the pipeline in a separate process.
     Captures success/failure and returns a result dictionary.
@@ -56,22 +62,23 @@ def worker_wrapper(settlement_name: str, place_string: str, use_ai: bool, use_lo
         print(f"  [Worker] Starting pipeline for {settlement_name}...")
         
         pipeline_result = run_pipeline(
-            place=place_string,
+            place=place,
             force_refresh=False,
             use_ai=use_ai,
             use_local_ai=use_local_ai,
+            skip_html=skip_html,
             output_name=settlement_name
         )
         
-        # Ensure pipeline_success is always a boolean
-        result['pipeline_success'] = bool(pipeline_result)
+        result['pipeline_success'] = pipeline_result == PipelineStatus.SUCCESS
         if result['pipeline_success']:
             result['status'] = 'success'
             result['message'] = 'Pipeline completed successfully'
         else:
             result['status'] = 'failed_pipeline'
-            result['message'] = 'Pipeline returned False (likely no OSM data or empty dataset)'
-            result['error_type'] = 'PipelineReturnedFalse'
+            pipeline_status = getattr(pipeline_result, 'value', pipeline_result)
+            result['message'] = f'Pipeline returned {pipeline_status}'
+            result['error_type'] = 'PipelineReturnedNonSuccess'
             
     except Exception as e:
         error_trace = traceback.format_exc()
@@ -197,7 +204,9 @@ class BatchProcessor:
             'lat': match.lat,
             'lon': match.lon,
             'place_type': match.place_type,
-            'osm_id': match.osm_id
+            'osm_id': match.osm_id,
+            'osm_type': match.osm_type,
+            'category': match.category,
         }
         return result
 
@@ -352,9 +361,10 @@ class BatchProcessor:
                 future = executor.submit(
                     worker_wrapper, 
                     settlement, 
-                    match_data['display_name'], 
+                    match_data,
                     self.use_ai,
-                    self.use_local_ai
+                    self.use_local_ai,
+                    self.skip_html,
                 )
                 
                 # Store context with future

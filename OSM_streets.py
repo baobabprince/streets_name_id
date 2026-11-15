@@ -34,7 +34,34 @@ def fetch_osm_street_data(place):
 
     # 1. Download and simplify the full street network for the requested place.
     try:
-        G = ox.graph_from_place(place, network_type="all", simplify=True)
+        if isinstance(place, dict) and place.get("osm_id") and place.get("osm_type"):
+            osm_prefix = {"node": "N", "way": "W", "relation": "R"}.get(
+                str(place["osm_type"]).lower()
+            )
+            if not osm_prefix:
+                raise ValueError(f"Unsupported OSM element type: {place['osm_type']}")
+            place_gdf = ox.geocode_to_gdf(
+                f"{osm_prefix}{place['osm_id']}", by_osmid=True
+            )
+            polygon_geometries = place_gdf.loc[
+                place_gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"]),
+                "geometry",
+            ]
+            if not polygon_geometries.empty:
+                G = ox.graph_from_polygon(
+                    polygon_geometries.iloc[0],
+                    network_type="all",
+                    simplify=True,
+                )
+            else:
+                G = ox.graph_from_point(
+                    center_point=(float(place["lat"]), float(place["lon"])),
+                    dist=1500,
+                    network_type="all",
+                    simplify=True,
+                )
+        else:
+            G = ox.graph_from_place(place, network_type="all", simplify=True)
     except Exception as e:
         logger.exception("Failed to fetch OSM street graph for %s: %s", place, e)
         return None
@@ -56,6 +83,10 @@ def fetch_osm_street_data(place):
     )
     
     # נבחר את השדות החיוניים להמשך העבודה
+    if "name" not in osm_gdf.columns:
+        osm_gdf["name"] = pd.NA
+    if "highway" not in osm_gdf.columns:
+        osm_gdf["highway"] = pd.NA
     cols_to_keep = ['osm_id', 'name', 'highway', 'geometry']
     if 'name:he' in osm_gdf.columns:
         cols_to_keep.append('name:he')

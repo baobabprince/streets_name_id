@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import LineString
+from shapely.geometry import LineString, Polygon
 
 import data_loader
 import OSM_streets
@@ -71,6 +71,69 @@ class TestOSMFetch(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(ValueError, "no usable street data"):
                     data_loader.load_or_fetch_osm("Test", force_refresh=True)
+
+    def test_matched_osm_relation_uses_its_boundary_without_regeocoding_name(self):
+        boundary = gpd.GeoDataFrame(
+            geometry=[
+                Polygon([(34, 31), (35, 31), (35, 32), (34, 32), (34, 31)])
+            ],
+            crs="EPSG:4326",
+        )
+        edges = gpd.GeoDataFrame(
+            {
+                "name": ["Main Road"],
+                "highway": ["residential"],
+                "geometry": [LineString([(34.1, 31.1), (34.2, 31.2)])],
+            },
+            index=pd.MultiIndex.from_tuples(
+                [(1, 2, 0)], names=["u", "v", "key"]
+            ),
+            crs="EPSG:4326",
+        )
+        place = {
+            "display_name": "Right Settlement, Israel",
+            "osm_id": "123",
+            "osm_type": "relation",
+            "lat": 31.5,
+            "lon": 34.5,
+        }
+
+        with (
+            patch.object(OSM_streets.ox, "geocode_to_gdf", return_value=boundary) as lookup,
+            patch.object(OSM_streets.ox, "graph_from_polygon", return_value=object()) as graph,
+            patch.object(OSM_streets.ox, "graph_to_gdfs", return_value=edges),
+            patch.object(OSM_streets.ox, "graph_from_place") as graph_from_place,
+        ):
+            result = OSM_streets.fetch_osm_street_data(place)
+
+        lookup.assert_called_once_with("R123", by_osmid=True)
+        graph.assert_called_once_with(
+            boundary.geometry.iloc[0],
+            network_type="all",
+            simplify=True,
+        )
+        graph_from_place.assert_not_called()
+        self.assertEqual(result["osm_name"].tolist(), ["Main Road"])
+
+    def test_missing_name_column_is_created_for_valid_osm_graph(self):
+        edges = gpd.GeoDataFrame(
+            {
+                "highway": ["residential"],
+                "geometry": [LineString([(0, 0), (1, 1)])],
+            },
+            index=pd.MultiIndex.from_tuples(
+                [(1, 2, 0)], names=["u", "v", "key"]
+            ),
+            crs="EPSG:4326",
+        )
+        with (
+            patch.object(OSM_streets.ox, "graph_from_place", return_value=object()),
+            patch.object(OSM_streets.ox, "graph_to_gdfs", return_value=edges),
+        ):
+            result = OSM_streets.fetch_osm_street_data("Test town")
+
+        self.assertIn("osm_name", result.columns)
+        self.assertTrue(result["osm_name"].isna().all())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ from shapely.geometry import LineString, MultiLineString
 import pandas as pd
 import re
 import colorsys
+from html import escape
+from urllib.parse import quote
 
 from data_loader import safe_place_name as _safe_place_name
 
@@ -19,10 +21,13 @@ def score_to_color(score):
     return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
 
 
-def _build_diagnostics_html(diagnostics: dict) -> str:
+def _build_diagnostics_html(diagnostics: dict, place_name: str) -> str:
     unmatched_lamas_html = ""
     if diagnostics["unmatched_lamas_street_names"]:
-        street_list_items = "".join(f"<li>{name}</li>" for name in diagnostics["unmatched_lamas_street_names"])
+        street_list_items = "".join(
+            _govmap_link(name, place_name)
+            for name in diagnostics["unmatched_lamas_street_names"]
+        )
         unmatched_lamas_html = f"""
         <div class="unmatched-list">
             <h3>רחובות למ"ס ללא התאמה ({diagnostics['unmatched_lamas_count']} - {diagnostics['unmatched_lamas_percentage']})</h3>
@@ -73,6 +78,15 @@ def _build_diagnostics_html(diagnostics: dict) -> str:
         {unmatched_lamas_html}
     </div>
     """
+
+
+def _govmap_link(street_name: str, place_name: str) -> str:
+    query = quote(f"{street_name}, {place_name}", safe="")
+    href = escape(f"https://www.govmap.gov.il/?q={query}&z=16", quote=True)
+    return (
+        f'<li><a href="{href}" target="_blank" rel="noopener noreferrer">'
+        f'{escape(str(street_name))}</a></li>'
+    )
 
 
 def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: dict = None):
@@ -200,7 +214,7 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         .replace("@@WIDTH@@", str(width))
         .replace("@@HEIGHT@@", str(height))
         .replace("@@SVG_PATHS@@", "\n".join(svg_paths))
-        .replace("@@DIAGNOSTICS@@", _build_diagnostics_html(diagnostics) if diagnostics else "")
+        .replace("@@DIAGNOSTICS@@", _build_diagnostics_html(diagnostics, place_name) if diagnostics else "")
         .replace("@@MATCH_PCT@@", str(match_pct))
         .replace("@@COVERAGE@@", coverage_html)
         .replace("@@TOTAL_MATCHED@@", str(diagnostics.get("total_matched", "?") if diagnostics else "?"))
