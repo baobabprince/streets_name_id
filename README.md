@@ -92,7 +92,9 @@ Opens as `index.html` (and on GitHub Pages when published).
 
 ## Methodology (short)
 
-1. **Acquire** — LAMAS street codes + OSM geometries (cached under `data/`)
+1. **Acquire** — LAMAS street codes + simplified OSM street geometries for one
+   settlement at a time (cached under `data/`; stale OSM cache is used if a
+   refresh fails)
 2. **Normalize** — abbreviations, punctuation, Hebrew preference (`name:he`)
 3. **Topology** — adjacency map of OSM segments
 4. **Match** — confident / needs-AI / missing by fuzzy score thresholds
@@ -110,15 +112,22 @@ Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
 
 ### LAMAS data fallback
 
-LAMAS data is fetched in large SQL pages and validated against the dataset's
-reported row count, avoiding the regular endpoint's frequent pagination `403`
-responses.
-If the LAMAS API is unavailable, the pipeline uses the existing LAMAS pickle cache
-even when it is older than six months, and logs a warning. A manually downloaded
+LAMAS data is fetched from the official
+[data.gov.il CKAN `datastore_search` API](https://data.gov.il/api/3/action/datastore_search)
+in 32,000-record pages using the portal's recommended
+`datagov-external-client` User-Agent. Page sizes and the reported total are
+validated, and temporary network/server errors are retried.
+If the LAMAS API is unavailable, the pipeline uses the existing LAMAS pickle
+cache as a fallback regardless of age, and logs a warning. A manually downloaded
 CSV can also be saved as `cache/lamas_data.csv`; it must contain either the
 `official_code`, `street_name`, and `city_name` columns from the data portal, or
 the normalized `LAMAS_id`, `LAMAS_name`, and `city` columns. Fresh CSV files are
 used directly, and stale CSV or pickle files are used if an API refresh fails.
+The source dataset is updated weekly, so LAMAS caches are refreshed after seven
+days; an older cache remains available as a fallback if the API is unavailable.
+OSM data is fetched as a simplified street graph for the requested settlement.
+If an OSM refresh fails, a valid existing cache is used with a warning; without
+a usable cache, the fetch error is surfaced instead of silently returning empty data.
 
 ## License
 

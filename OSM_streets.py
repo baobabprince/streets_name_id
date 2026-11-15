@@ -1,12 +1,14 @@
+import logging
+
 import osmnx as ox
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import LineString
 
-# הגדרת אזור העניין (ישראל ופלסטין)
-# ניתן להשתמש בשם גיאוגרפי או בתיבת גבולות (bounding box)
-# השם הגיאוגרפי "Israel, Palestine" משמש כקירוב נוח
-place_name = "Israel, Palestine" 
+# ניתן להשתמש בשם יישוב או בתיבת גבולות (bounding box).
+# ברירת מחדל מצומצמת כדי להימנע משליפת רשת הדרכים של מדינה שלמה.
+place_name = "Tel Aviv-Yafo, Israel"
+logger = logging.getLogger(__name__)
 
 def is_hebrew(text):
     """
@@ -24,18 +26,17 @@ def fetch_osm_street_data(place):
     מוריד את גרף הרחובות של האזור הנתון וממיר אותו
     ל-GeoDataFrame של קטעי רחובות (Ways/Edges).
     """
-    print(f"מתחיל בשליפת גרף הרחובות של {place} מ-OSM...")
+    logger.info("Fetching OSM street graph for %s...", place)
     
     # הגדרת התגים הנוספים שאנו רוצים לשלוף, במיוחד 'name:he'
-    ox.settings.useful_tags_way += ['name:he']
+    if "name:he" not in ox.settings.useful_tags_way:
+        ox.settings.useful_tags_way.append("name:he")
 
-    # 1. הורדת גרף הרחובות
-    # 'drive' מציין שאנו רוצים את רשת הדרכים הניתנת לנסיעה
+    # 1. Download and simplify the full street network for the requested place.
     try:
-        G = ox.graph_from_place(place, network_type="all", simplify=False)
+        G = ox.graph_from_place(place, network_type="all", simplify=True)
     except Exception as e:
-        print(f"שגיאה בשליפת גרף מ-OSM: {e}")
-        print("נסה לשנות את place_name לתיבת גבולות (bbox) אם השגיאה נמשכת.")
+        logger.exception("Failed to fetch OSM street graph for %s: %s", place, e)
         return None
 
     # 2. המרת קטעי הדרך (Edges) ל-GeoDataFrame
@@ -46,7 +47,13 @@ def fetch_osm_street_data(place):
     
     # oxmnx משתמש ב-u, v, key כמזהה של כל קטע. ניצור osm_id פשוט לשם נוחות.
     osm_gdf = osm_gdf.reset_index()
-    osm_gdf['osm_id'] = osm_gdf.apply(lambda row: f"{row['u']}-{row['v']}-{row['key']}", axis=1)
+    osm_gdf['osm_id'] = (
+        osm_gdf['u'].astype(str)
+        + "-"
+        + osm_gdf['v'].astype(str)
+        + "-"
+        + osm_gdf['key'].astype(str)
+    )
     
     # נבחר את השדות החיוניים להמשך העבודה
     cols_to_keep = ['osm_id', 'name', 'highway', 'geometry']
@@ -56,34 +63,34 @@ def fetch_osm_street_data(place):
     osm_gdf = osm_gdf[cols_to_keep].copy()
     
     # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
-    osm_gdf.rename(columns={'name': 'osm_name'}, inplace=True)
+    osm_gdf = osm_gdf.rename(columns={'name': 'osm_name'})
     
     # ב-OSM, שם הרחוב (name) יכול להיות מחרוזת בודדת או רשימה של שמות.
     # נטפל בכך כדי לקבל מחרוזת אחידה
-    osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(lambda x: x[0] if isinstance(x, list) else x)
+    osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(
+        lambda value: value[0] if isinstance(value, list) and value else value
+    )
     if 'name:he' in osm_gdf.columns:
-        osm_gdf['name:he'] = osm_gdf['name:he'].apply(lambda x: x[0] if isinstance(x, list) else x)
+        osm_gdf['name:he'] = osm_gdf['name:he'].apply(
+            lambda value: value[0] if isinstance(value, list) and value else value
+        )
     
     # 4. עדיפות לשם העברי: אם השם הראשי אינו בעברית ויש name:he, נשתמש בו
     # שמירת השם המקורי לצורך דיאגנוסטיקה
     if 'name:he' in osm_gdf.columns:
         osm_gdf['osm_name_original'] = osm_gdf['osm_name'].copy()
         
-        # עבור כל שורה, אם השם הראשי אינו עברי אך name:he קיים ועברי, נחליף
-        for idx, row in osm_gdf.iterrows():
-            main_name = row['osm_name']
-            hebrew_name = row['name:he']
-            
-            # אם השם הראשי אינו עברי ויש שם עברי תקין
-            if not is_hebrew(main_name) and pd.notna(hebrew_name) and is_hebrew(hebrew_name):
-                osm_gdf.at[idx, 'osm_name'] = hebrew_name
-                print(f"  → החלפה: '{main_name}' → '{hebrew_name}' (עדיפות לעברית)")
+        has_hebrew_main = osm_gdf['osm_name'].map(is_hebrew)
+        valid_hebrew_name = osm_gdf['name:he'].notna() & osm_gdf['name:he'].map(is_hebrew)
+        use_hebrew_name = ~has_hebrew_main & valid_hebrew_name
+        osm_gdf.loc[use_hebrew_name, 'osm_name'] = osm_gdf.loc[use_hebrew_name, 'name:he']
+        logger.info("Preferred Hebrew names for %s road segments", use_hebrew_name.sum())
     else:
         # אם אין name:he, השם המקורי זהה לשם הראשי
         osm_gdf['osm_name_original'] = osm_gdf['osm_name'].copy()
 
     # 4. כיווץ ה-GeoDataFrame לדרכים בלבד (נאבד חלק מהתכונות של הגרף, אך זה מתאים למיפוי)
-    print(f"נשלפו {len(osm_gdf)} קטעי דרך מ-OSM.")
+    logger.info("Fetched %s OSM road segments for %s", len(osm_gdf), place)
     return osm_gdf
 
 # טעינת נתוני OSM (יכול לקחת מספר דקות!)

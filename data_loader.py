@@ -12,6 +12,7 @@ import re
 import pandas as pd
 import requests
 
+from lamas_streets import CACHE_MAX_AGE_DAYS as LAMAS_CACHE_MAX_AGE_DAYS
 from lamas_streets import fetch_all_LAMAS_data
 from OSM_streets import fetch_osm_street_data
 
@@ -70,7 +71,7 @@ def save_intermediate_df(df: pd.DataFrame, step_name: str, place: str) -> None:
 
 
 def load_or_fetch_LAMAS(
-    force_refresh: bool = False, max_age_days: int = SIX_MONTHS_DAYS
+    force_refresh: bool = False, max_age_days: int = LAMAS_CACHE_MAX_AGE_DAYS
 ) -> pd.DataFrame:
     """Load LAMAS data from cache if fresh, otherwise fetch and cache it."""
     if not force_refresh and is_fresh(LAMAS_CACHE, max_age_days):
@@ -139,15 +140,34 @@ def load_or_fetch_osm(
     if not force_refresh and is_fresh(cache_path, max_age_days):
         try:
             logger.info("Loading OSM data from cache: %s", cache_path)
-            return pd.read_pickle(cache_path)
+            cached_gdf = pd.read_pickle(cache_path)
+            if not _is_valid_osm_data(cached_gdf):
+                raise ValueError("OSM cache is empty or missing required columns")
+            return cached_gdf
         except Exception as e:
             logger.warning("Failed to read OSM cache, will re-fetch: %s", e)
 
     logger.info("Fetching OSM street data for %s...", place_str_for_cache)
-    gdf = fetch_osm_street_data(place)
-
-    if gdf is None:
-        return None
+    try:
+        gdf = fetch_osm_street_data(place)
+        if not _is_valid_osm_data(gdf):
+            raise ValueError("OSM fetch returned no usable street data")
+    except Exception as fetch_error:
+        if os.path.exists(cache_path):
+            try:
+                cached_gdf = pd.read_pickle(cache_path)
+                if not _is_valid_osm_data(cached_gdf):
+                    raise ValueError("OSM cache is empty or missing required columns")
+            except Exception:
+                logger.exception("Could not load a usable OSM cache for fallback")
+            else:
+                logger.warning(
+                    "OSM refresh failed (%s); using cached data from %s",
+                    fetch_error,
+                    cache_path,
+                )
+                return cached_gdf
+        raise
 
     try:
         gdf.to_pickle(cache_path)
@@ -155,3 +175,12 @@ def load_or_fetch_osm(
     except Exception as e:
         logger.warning("Failed to write OSM cache: %s", e)
     return gdf
+
+
+def _is_valid_osm_data(gdf: pd.DataFrame | None) -> bool:
+    required_columns = {"osm_id", "osm_name", "geometry"}
+    return (
+        isinstance(gdf, pd.DataFrame)
+        and not gdf.empty
+        and required_columns.issubset(gdf.columns)
+    )
