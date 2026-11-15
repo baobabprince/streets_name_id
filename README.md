@@ -7,6 +7,8 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 ## Features
 
 - **Automated data fetching** from OSM (via osmnx) and data.gov.il (LAMAS)
+- **Settlement resolution** uses exact OSM place names/known aliases and
+  country filtering, then passes the matched OSM element ID directly to road extraction
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
 - **Fuzzy matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz) (weighted ratio / token_sort / token_set)
 - **Topological context** — adjacency graph of connected OSM streets for AI prompts

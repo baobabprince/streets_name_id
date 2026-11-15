@@ -61,6 +61,23 @@ class TestSettlementMatcher(unittest.TestCase):
 
         self.assertTrue(valid)
 
+    def test_accepts_exact_arabic_settlement_name_on_residential_area(self):
+        result = place_result(
+            "أبو ربية",
+            category="landuse",
+            place_type="residential",
+            display_name="أبو ربية, إسرائيل",
+        )
+        result["namedetails"] = {"name:ar": "أبو ربية"}
+
+        valid, _ = self.matcher._validate_result(
+            result,
+            "אבו רובייעה )שבט(",
+            self.matcher._query_variants("אבו רובייעה )שבט("),
+        )
+
+        self.assertTrue(valid)
+
     def test_rejects_matching_name_on_non_settlement_feature(self):
         result = place_result(
             "אבו ג'ווייעד",
@@ -84,6 +101,15 @@ class TestSettlementMatcher(unittest.TestCase):
 
         self.assertFalse(valid)
         self.assertIn("Country is not Israel/Palestine", reason)
+
+    def test_does_not_match_parent_city_address_to_feature_name(self):
+        result = place_result("יישוב אחר", display_name="יישוב אחר, אבו סנאן, ישראל")
+        result["address"]["village"] = "אבו סנאן"
+
+        valid, reason = self.matcher._validate_result(result, "אבו סנאן")
+
+        self.assertFalse(valid)
+        self.assertIn("does not match", reason)
 
     def test_search_does_not_fall_back_to_individual_words(self):
         response = Mock(status_code=200)
