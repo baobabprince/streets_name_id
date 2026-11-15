@@ -110,6 +110,9 @@ Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
 
 ### LAMAS data fallback
 
+LAMAS data is fetched in large SQL pages and validated against the dataset's
+reported row count, avoiding the regular endpoint's frequent pagination `403`
+responses.
 If the LAMAS API is unavailable, the pipeline uses the existing LAMAS pickle cache
 even when it is older than six months, and logs a warning. A manually downloaded
 CSV can also be saved as `cache/lamas_data.csv`; it must contain either the

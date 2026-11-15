@@ -4,8 +4,9 @@ import requests
 import pandas as pd
 
 LAMAS_API_URL = "https://data.gov.il/api/3/action/datastore_search"
+LAMAS_SQL_API_URL = "https://data.gov.il/api/3/action/datastore_search_sql"
 RESOURCE_ID = "bf185c7f-1a4e-4662-88c5-fa118a244bda"
-LIMIT = 1000  # גודל דף מקסימלי, עדיף להתחיל גבוה
+LIMIT = 32000
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "cache", "lamas_data.csv")
 CACHE_MAX_AGE_DAYS = 182
 
@@ -64,62 +65,59 @@ def fetch_all_LAMAS_data(force_refresh=False):
         except (OSError, ValueError, UnicodeDecodeError, pd.errors.ParserError) as e:
             print(f"שגיאה בטעינת קובץ המטמון: {e}, מנסה להוריד מחדש...")
 
+    print("מתחיל בשליפת נתוני הלמ\"ס המלאים (כולל שמות נרדפים)...")
     all_records = []
     offset = 0
-    total = None
-    
-    print("מתחיל בשליפת נתוני הלמ\"ס המלאים (כולל שמות נרדפים)...")
+    try:
+        metadata_response = requests.get(
+            LAMAS_API_URL,
+            params={"resource_id": RESOURCE_ID, "limit": 1, "offset": 0},
+            timeout=30,
+        )
+        metadata_response.raise_for_status()
+        total = metadata_response.json().get("result", {}).get("total", 0)
+        if not total:
+            raise ValueError("LAMAS API returned no records")
+        print(f"סה\"כ רשומות לשליפה: {total}")
 
-    while True:
-        params = {
-            'resource_id': RESOURCE_ID,
-            'limit': LIMIT,
-            'offset': offset
-        }
-        
-        try:
-            response = requests.get(LAMAS_API_URL, params=params, timeout=30)
-            response.raise_for_status() # מעלה שגיאה אם הסטטוס אינו 200
-            data = response.json()
-            
-            result = data.get('result', {})
-            records = result.get('records', [])
-            
-            if total is None:
-                total = result.get('total', 0)
-                print(f"סה\"כ רשומות לשליפה: {total}")
-            
-            if not records:
-                if total is None or len(all_records) < total or not all_records:
-                    raise ValueError(
-                        f"LAMAS API stopped after {len(all_records)} of {total} records"
-                    )
-                break
+        while offset < total:
+            sql = (
+                f'SELECT * FROM "{RESOURCE_ID}" ORDER BY _id '
+                f"LIMIT {LIMIT} OFFSET {offset}"
+            )
+            response = requests.get(
+                LAMAS_SQL_API_URL, params={"sql": sql}, timeout=120
+            )
+            response.raise_for_status()
+            records = response.json().get("result", {}).get("records", [])
+            expected_count = min(LIMIT, total - offset)
+            if len(records) != expected_count:
+                raise ValueError(
+                    f"LAMAS API returned {len(records)} of "
+                    f"{expected_count} records at offset {offset}"
+                )
 
             all_records.extend(records)
-            offset += LIMIT
+            offset += len(records)
             print(f"נשלפו {len(all_records)} מתוך {total} רשומות...")
-            if total and len(all_records) >= total:
-                break
-
-        except (requests.exceptions.RequestException, ValueError) as e:
-            print(f"שגיאה במהלך שליפת ה-API ב-offset {offset}: {e}")
-            if os.path.exists(CACHE_FILE):
-                try:
-                    LAMAS_df = _load_csv_cache()
-                    print(
-                        f"ה-API נכשל; משתמש בעותק CSV מקומי "
-                        f"({len(LAMAS_df)} רשומות)."
-                    )
-                    return LAMAS_df
-                except (
-                    OSError,
-                    ValueError,
-                    UnicodeDecodeError,
-                    pd.errors.ParserError,
-                ) as cache_error:
-                    raise e from cache_error
-            raise
+    except (requests.exceptions.RequestException, ValueError) as e:
+        print(f"שגיאה במהלך שליפת ה-API ב-offset {offset}: {e}")
+        if os.path.exists(CACHE_FILE):
+            try:
+                LAMAS_df = _load_csv_cache()
+                print(
+                    f"ה-API נכשל; משתמש בעותק CSV מקומי "
+                    f"({len(LAMAS_df)} רשומות)."
+                )
+                return LAMAS_df
+            except (
+                OSError,
+                ValueError,
+                UnicodeDecodeError,
+                pd.errors.ParserError,
+            ) as cache_error:
+                raise e from cache_error
+        raise
 
     if all_records:
         LAMAS_raw_df = pd.DataFrame(all_records)
