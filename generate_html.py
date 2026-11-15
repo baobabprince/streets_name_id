@@ -8,7 +8,7 @@ import re
 import colorsys
 
 # --- Import from existing project files ---
-from pipeline import _safe_place_name
+from data_loader import safe_place_name as _safe_place_name
 
 
 def score_to_color(score):
@@ -31,7 +31,7 @@ def score_to_color(score):
     # Hue for red is 0. Saturation is high for a vivid color.
     r, g, b = colorsys.hls_to_rgb(0, lightness, 0.9)
     
-    return f"#{int(r*255):02x}{int(b*255):02x}{int(b*255):02x}"
+    return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
 
 
 def _build_diagnostics_html(diagnostics: dict) -> str:
@@ -526,38 +526,20 @@ def main():
             print(f"Error reading geometry from CSV, will fall back to OSM merge: {e}")
             gdf = pd.read_csv(report_path, encoding='utf-8')
 
-        if 'geometry' not in gdf.columns or gdf.geometry.isnull().all():
-             # Fallback for CSVs without embedded geometry: Load OSM data and merge
-            print("Geometry not found in report, loading from OSM pickle.")
-            osm_path = f"data/osm_data_{safe_name}.pkl"
-            if not os.path.exists(osm_path):
-                print(f"OSM data not found at {osm_path} and geometry not in report. Aborting.")
+        if 'geometry' not in gdf.columns or not isinstance(gdf, gpd.GeoDataFrame):
+            # Fall back: merge with cached OSM geometry
+            osm_cache = f"data/osm_data_{safe_name}.pkl"
+            if os.path.exists(osm_cache):
+                osm_gdf = pd.read_pickle(osm_cache)
+                gdf = osm_gdf.merge(gdf, on='osm_id', how='inner', suffixes=('', '_diag'))
+            else:
+                print("No geometry available and no OSM cache found. Cannot generate map.")
                 return
 
-            osm_gdf = pd.read_pickle(osm_path)
-            diagnostic_df = pd.read_csv(report_path, encoding='utf-8')
-
-            # Ensure osm_id is of a consistent type for merging
-            osm_gdf['osm_id'] = osm_gdf['osm_id'].astype(str)
-            diagnostic_df['osm_id'] = diagnostic_df['osm_id'].astype(str)
-
-            gdf = osm_gdf.merge(
-                diagnostic_df.drop(columns=['geometry'], errors='ignore'),
-                on='osm_id',
-                how='left'
-            )
-
-        if gdf is None or gdf.empty:
-            print(f"Could not load or construct data for '{place_name}'. Aborting.")
-            return
-
-        # Generate the HTML
-        print("Generating HTML...")
         create_html_from_gdf(gdf, place_name)
-        print("HTML Generation Complete.")
-        
+
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"Error generating HTML: {e}")
         import traceback
         traceback.print_exc()
 
