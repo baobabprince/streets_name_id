@@ -6,10 +6,14 @@ This module provides functions for:
 2. Finding fuzzy match candidates between OSM and LAMAS street data
 """
 
+import logging
 import re
+from typing import Dict, List, Tuple
+
 import pandas as pd
-from fuzzywuzzy import fuzz
-from typing import List, Dict, Tuple
+from rapidfuzz import fuzz
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_street_name(name):
@@ -108,8 +112,12 @@ def find_fuzzy_candidates(osm_gdf, lamas_df,
     
     # Get unique street names from OSM (optimization to avoid processing each segment)
     unique_osm_streets = osm_gdf[['normalized_name']].drop_duplicates().dropna()
-    
-    print(f"  -> Processing {len(unique_osm_streets)} unique OSM street names against {len(lamas_df)} LAMAS records...")
+
+    logger.info(
+        "Processing %s unique OSM street names against %s LAMAS records...",
+        len(unique_osm_streets),
+        len(lamas_df),
+    )
     
     # Store results for unique street names
     street_name_results = {}
@@ -222,12 +230,13 @@ def find_fuzzy_candidates(osm_gdf, lamas_df,
             results.append(result)
     
     candidates_df = pd.DataFrame(results)
-    
-    # Print summary statistics
-    status_counts = candidates_df['status'].value_counts()
-    print(f"  -> Fuzzy matching complete:")
-    print(f"     CONFIDENT: {status_counts.get('CONFIDENT', 0)}")
-    print(f"     NEEDS_AI: {status_counts.get('NEEDS_AI', 0)}")
-    print(f"     MISSING: {status_counts.get('MISSING', 0)}")
-    
+
+    status_counts = candidates_df["status"].value_counts()
+    logger.info(
+        "Fuzzy matching complete: CONFIDENT=%s, NEEDS_AI=%s, MISSING=%s",
+        status_counts.get("CONFIDENT", 0),
+        status_counts.get("NEEDS_AI", 0),
+        status_counts.get("MISSING", 0),
+    )
+
     return candidates_df
