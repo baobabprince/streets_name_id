@@ -7,6 +7,7 @@ normalization, fuzzy matching, topology, and optional AI resolution.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import re
@@ -24,6 +25,7 @@ from data_loader import (
 )
 from diagnostics import calculate_diagnostics
 from gemini_client import API_KEY, get_ai_resolution
+from laya_ai_resolver import LayaAIResolver
 from local_ai_resolver import LocalAIResolver
 from map_of_adjacents import build_adjacency_map
 from normalization import (
@@ -60,6 +62,8 @@ def run_pipeline(
     force_refresh: bool = False,
     use_ai: bool = False,
     use_local_ai: bool = True,
+    local_ai_model: str = "qwen",
+    use_gemini: bool = True,
     skip_html: bool = False,
     output_name: str | None = None,
     use_pbf: bool = True,
@@ -68,10 +72,15 @@ def run_pipeline(
     _setup_logging()
     logger.info("--- Starting Street Mapping Orchestrator ---")
 
-    if not API_KEY:
+    if local_ai_model not in {"qwen", "laya"}:
+        raise ValueError("local_ai_model must be 'qwen' or 'laya'")
+
+    if use_gemini and not API_KEY:
         logger.warning(
             "GEMINI_API_KEY environment variable not set. Cloud AI resolution will be skipped."
         )
+    elif not use_gemini:
+        logger.info("Gemini fallback is disabled for this run.")
     if not use_ai:
         logger.info("AI resolution is disabled for this run (use_ai=False).")
 
@@ -197,11 +206,14 @@ def run_pipeline(
         local_resolver = None
         if use_local_ai:
             try:
-                logger.info("Initializing Local AI Resolver...")
-                local_resolver = LocalAIResolver()
+                logger.info("Initializing local %s AI resolver...", local_ai_model)
+                resolver_class = (
+                    LayaAIResolver if local_ai_model == "laya" else LocalAIResolver
+                )
+                local_resolver = resolver_class()
                 if not local_resolver.is_available():
                     logger.info(
-                        "Local AI not available; will fall back to Gemini if API key exists."
+                        "Local AI unavailable; the configured cloud fallback will be used if enabled."
                     )
                     local_resolver = None
                 else:
@@ -304,7 +316,7 @@ def run_pipeline(
                 ai_decision_id = local_result.get("lamas_id")
                 confidence = local_result.get("confidence", 0.0)
                 reasoning = local_result.get("reasoning", "")
-                method = "local_ai"
+                method = local_result.get("method", "local_ai")
 
                 if str(ai_decision_id) == "None":
                     logger.info(
@@ -320,8 +332,12 @@ def run_pipeline(
                         confidence,
                     )
 
-            if (str(ai_decision_id) == "None" or method == "none") and API_KEY:
-                if method == "local_ai":
+            if (
+                (str(ai_decision_id) == "None" or method == "none")
+                and use_gemini
+                and API_KEY
+            ):
+                if method.startswith("local_"):
                     logger.info(
                         "Falling back to Gemini API for '%s'...",
                         normalized_street_name,
@@ -439,28 +455,41 @@ def run_pipeline(
 
 
 if __name__ == "__main__":
-    place_arg = None
-    force = False
-    no_ai = False
-    no_local_ai = False
-    no_pbf = False
-
-    if len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
-        place_arg = sys.argv[1]
-    if "--refresh" in sys.argv:
-        force = True
-    if "--no-ai" in sys.argv:
-        no_ai = True
-    if "--no-local-ai" in sys.argv:
-        no_local_ai = True
-    if "--no-pbf" in sys.argv:
-        no_pbf = True
+    parser = argparse.ArgumentParser(description="Map OSM street names to LAMAS IDs.")
+    parser.add_argument("place", nargs="?", help="Settlement name")
+    parser.add_argument("--refresh", action="store_true", help="Refresh downloaded data")
+    parser.add_argument("--no-ai", action="store_true", help="Disable AI resolution")
+    parser.add_argument(
+        "--no-local-ai", action="store_true", help="Skip local model resolution"
+    )
+    parser.add_argument(
+        "--no-pbf",
+        action="store_true",
+        help="Disable local PBF extraction and use live Overpass API",
+    )
+    parser.add_argument(
+        "--local-ai-model",
+        choices=("qwen", "laya"),
+        default="qwen",
+        help="Local model to use (default: qwen)",
+    )
+    parser.add_argument(
+        "--no-gemini", action="store_true", help="Disable Gemini cloud fallback"
+    )
+    parser.add_argument(
+        "--output-name",
+        help="Name outputs separately, e.g. for comparing model runs",
+    )
+    args = parser.parse_args()
 
     status = run_pipeline(
-        place=place_arg,
-        force_refresh=force,
-        use_ai=(not no_ai),
-        use_local_ai=(not no_local_ai),
-        use_pbf=(not no_pbf),
+        place=args.place,
+        force_refresh=args.refresh,
+        use_ai=not args.no_ai,
+        use_local_ai=not args.no_local_ai,
+        use_pbf=not args.no_pbf,
+        local_ai_model=args.local_ai_model,
+        use_gemini=not args.no_gemini,
+        output_name=args.output_name,
     )
     sys.exit(0 if status == PipelineStatus.SUCCESS else 1)

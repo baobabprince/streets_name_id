@@ -29,6 +29,7 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 | `diagnostics.py` | Match / coverage statistics |
 | `gemini_client.py` | Gemini API client |
 | `local_ai_resolver.py` | Optional local Qwen-based resolver |
+| `laya_ai_resolver.py` | Optional local Laya decision-model resolver |
 | `batch_process_settlements.py` | Multi-settlement runner |
 | `generate_html.py` / `generate_index.py` | Per-city map + dashboard |
 
@@ -52,6 +53,17 @@ export GEMINI_MODEL="gemini-2.5-flash-preview-09-2025"
 
 > Local AI pulls large `torch` / `transformers` wheels. For fuzzy-only runs you can skip them if install is slow.
 
+**Optional — Laya local decision model:**
+
+```bash
+pip install "laya>=0.4.35,<0.5"
+```
+
+The Laya option uses its multilingual checkpoint for a single-choice decision
+between the LAMAS candidates. The model weights download from Hugging Face on
+first use. Its score is a model confidence, not measured street-matching
+accuracy; review the diagnostic report before relying on its matches.
+
 ## Usage
 
 ### Single settlement
@@ -61,6 +73,7 @@ python pipeline.py "Tel Aviv-Yafo"
 python pipeline.py "Haifa" --no-ai
 python pipeline.py "Eilat" --refresh
 python pipeline.py "אלעד" --no-local-ai
+python pipeline.py "חיפה" --local-ai-model laya --no-gemini --output-name haifa-laya
 ```
 
 | Flag | Meaning |
@@ -69,6 +82,16 @@ python pipeline.py "אלעד" --no-local-ai
 | `--no-ai` | Fuzzy matching only |
 | `--no-local-ai` | Skip local model; use Gemini if key is set |
 | `--no-pbf` | Disable local PBF extraction; query live Overpass API instead |
+| `--local-ai-model laya` | Use Laya's multilingual local decision model instead of Qwen |
+| `--no-gemini` | Do not send unresolved decisions to Gemini |
+| `--output-name NAME` | Save outputs under a separate name for comparison |
+
+To compare local models on the same settlement, run the pipeline once with
+`--local-ai-model qwen --no-gemini --output-name haifa-qwen`, then again with
+`--local-ai-model laya --no-gemini --output-name haifa-laya`. Compare the
+diagnostic reports and maps in `data/` and `HTML/`. This compares model
+decisions, not accuracy; measuring accuracy requires a set of manually
+verified street-to-LAMAS matches.
 
 ### Batch
 
