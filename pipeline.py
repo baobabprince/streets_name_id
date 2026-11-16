@@ -59,12 +59,14 @@ def run_pipeline(
     use_local_ai: bool = True,
     skip_html: bool = False,
     output_name: str | None = None,
+    use_pbf: bool = True,
 ) -> PipelineStatus:
     """
     Run the full street-mapping pipeline for a settlement.
 
     place: search string or Nominatim result dict.
     output_name: optional identifier for output files (e.g. original settlement name).
+    use_pbf: if True, extract streets from local OSM PBF extract instead of querying Overpass.
     """
     _setup_logging()
     logger.info("--- Starting Street Mapping Orchestrator ---")
@@ -102,7 +104,9 @@ def run_pipeline(
         file_identifier = output_name if output_name else chosen_place_str
 
         LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
-        osm_gdf = load_or_fetch_osm(place_obj_for_osm, force_refresh=force_refresh)
+        osm_gdf = load_or_fetch_osm(
+            place_obj_for_osm, force_refresh=force_refresh, use_pbf=use_pbf
+        )
 
         if osm_gdf is None:
             logger.warning("No OSM data available for %s", chosen_place_str)
@@ -440,6 +444,7 @@ if __name__ == "__main__":
     force = False
     no_ai = False
     no_local_ai = False
+    no_pbf = False
 
     if len(sys.argv) > 1 and not sys.argv[1].startswith("--"):
         place_arg = sys.argv[1]
@@ -449,11 +454,14 @@ if __name__ == "__main__":
         no_ai = True
     if "--no-local-ai" in sys.argv:
         no_local_ai = True
+    if "--no-pbf" in sys.argv:
+        no_pbf = True
 
     status = run_pipeline(
         place=place_arg,
         force_refresh=force,
         use_ai=(not no_ai),
         use_local_ai=(not no_local_ai),
+        use_pbf=(not no_pbf),
     )
     sys.exit(0 if status == PipelineStatus.SUCCESS else 1)

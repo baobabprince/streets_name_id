@@ -127,6 +127,7 @@ def load_or_fetch_osm(
     place: str | dict,
     force_refresh: bool = False,
     max_age_days: int = SIX_MONTHS_DAYS,
+    use_pbf: bool = True,
 ):
     """Load OSM GeoDataFrame from cache if fresh, otherwise fetch and cache it."""
     if isinstance(place, dict):
@@ -149,7 +150,7 @@ def load_or_fetch_osm(
 
     logger.info("Fetching OSM street data for %s...", place_str_for_cache)
     try:
-        gdf = fetch_osm_street_data(place)
+        gdf = fetch_osm_street_data(place, use_pbf=use_pbf)
         if not _is_valid_osm_data(gdf):
             raise ValueError("OSM fetch returned no usable street data")
     except Exception as fetch_error:

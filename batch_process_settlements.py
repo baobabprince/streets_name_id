@@ -40,6 +40,7 @@ def worker_wrapper(
     use_ai: bool,
     use_local_ai: bool,
     skip_html: bool = False,
+    use_pbf: bool = True,
 ) -> Dict[str, Any]:
     """
     Worker function to run the pipeline in a separate process.
@@ -67,7 +68,8 @@ def worker_wrapper(
             use_ai=use_ai,
             use_local_ai=use_local_ai,
             skip_html=skip_html,
-            output_name=settlement_name
+            output_name=settlement_name,
+            use_pbf=use_pbf,
         )
         
         result['pipeline_success'] = pipeline_result == PipelineStatus.SUCCESS
@@ -104,12 +106,14 @@ class BatchProcessor:
     """Orchestrates batch processing of all settlements"""
     
     def __init__(self, use_ai: bool = False, use_local_ai: bool = True, 
-                 skip_html: bool = False, quiet: bool = False, workers: int = 1):
+                 skip_html: bool = False, quiet: bool = False, workers: int = 1,
+                 use_pbf: bool = True):
         self.use_ai = use_ai
         self.use_local_ai = use_local_ai
         self.skip_html = skip_html
         self.quiet = quiet
         self.workers = workers
+        self.use_pbf = use_pbf
         self.matcher = SettlementMatcher()
         
         # Statistics tracking
@@ -200,9 +204,11 @@ class BatchProcessor:
         print(f"  ✓ Valid match found for '{settlement_name}': {match.display_name}")
         result['status'] = 'ready_for_pipeline'
         result['match'] = {
+            'settlement_name': settlement_name,
             'display_name': match.display_name,
             'lat': match.lat,
             'lon': match.lon,
+            'boundingbox': match.boundingbox,
             'place_type': match.place_type,
             'osm_id': match.osm_id,
             'osm_type': match.osm_type,
@@ -365,6 +371,7 @@ class BatchProcessor:
                     self.use_ai,
                     self.use_local_ai,
                     self.skip_html,
+                    self.use_pbf,
                 )
                 
                 # Store context with future
@@ -446,6 +453,10 @@ Examples:
                        help='Reduce console output')
     parser.add_argument('--workers', type=int, default=1,
                        help='Number of parallel workers (default: 1)')
+    parser.add_argument('--cities', action='store_true',
+                       help='Process only the 82 official cities of Israel')
+    parser.add_argument('--no-pbf', action='store_true',
+                       help='Disable local OSM PBF extraction and use live Overpass API instead')
     
     args = parser.parse_args()
     
@@ -470,11 +481,20 @@ Examples:
         use_local_ai=(not args.no_local_ai),
         skip_html=args.skip_html,
         quiet=args.quiet,
-        workers=args.workers
+        workers=args.workers,
+        use_pbf=(not args.no_pbf),
     )
     
     # Step 3: Get unique settlements
     settlements = processor.get_unique_settlements(lamas_df)
+    
+    if args.cities:
+        cities_file = os.path.join(os.path.dirname(__file__), "data", "israel_82_cities_lamas.json")
+        if os.path.exists(cities_file):
+            with open(cities_file, "r", encoding="utf-8") as f:
+                target_cities = set(json.load(f))
+            settlements = [s for s in settlements if s in target_cities]
+            print(f"Filtered to {len(settlements)} official cities of Israel.")
     
     if not settlements:
         print("Error: No settlements found in LAMAS data")

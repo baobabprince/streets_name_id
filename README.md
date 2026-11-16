@@ -6,7 +6,8 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 
 ## Features
 
-- **Automated data fetching** from OSM (via osmnx) and data.gov.il (LAMAS)
+- **Automated data fetching** from local OSM PBF extracts (or live Overpass fallback via osmnx) and data.gov.il (LAMAS)
+- **High-speed offline OSM extraction** — automatically downloads Geofabrik's Israel PBF extract, parses and indexes all road segments and municipal boundaries locally, eliminating Overpass API rate limits and timeouts.
 - **Settlement resolution** uses exact OSM place names/known aliases and
   country filtering, then passes the matched OSM element ID directly to road extraction
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
@@ -67,6 +68,7 @@ python pipeline.py "אלעד" --no-local-ai
 | `--refresh` | Ignore cache; re-download OSM/LAMAS |
 | `--no-ai` | Fuzzy matching only |
 | `--no-local-ai` | Skip local model; use Gemini if key is set |
+| `--no-pbf` | Disable local PBF extraction; query live Overpass API instead |
 
 ### Batch
 

@@ -21,13 +21,30 @@ def is_hebrew(text):
     # טווח תווים עבריים ב-Unicode: U+0590 to U+05FF
     return any('\u0590' <= char <= '\u05FF' for char in text)
 
-def fetch_osm_street_data(place):
+def fetch_osm_street_data(place, use_pbf: bool = True):
     """
     מוריד את גרף הרחובות של האזור הנתון וממיר אותו
     ל-GeoDataFrame של קטעי רחובות (Ways/Edges).
+    משתמש בקובץ PBF מקומי כברירת מחדל למהירות ואמינות מקסימלית.
     """
     logger.info("Fetching OSM street graph for %s...", place)
-    
+
+    # 0. נסיון שליפה מקובץ PBF מקומי תחילה (ללא תלות ברשת וללא חסימות Overpass)
+    if use_pbf:
+        try:
+            from osm_pbf_loader import fetch_pbf_street_data
+            pbf_gdf = fetch_pbf_street_data(place)
+            if pbf_gdf is not None and not pbf_gdf.empty:
+                logger.info(
+                    "Successfully loaded %s road segments from local PBF for %s",
+                    len(pbf_gdf),
+                    place,
+                )
+                return pbf_gdf
+            logger.info("Local PBF did not return streets for %s; attempting Overpass...", place)
+        except Exception as pbf_err:
+            logger.warning("Local PBF extraction encountered error (%s); falling back to Overpass", pbf_err)
+
     # הגדרת התגים הנוספים שאנו רוצים לשלוף, במיוחד 'name:he'
     if "name:he" not in ox.settings.useful_tags_way:
         ox.settings.useful_tags_way.append("name:he")
