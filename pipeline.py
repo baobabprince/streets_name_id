@@ -26,12 +26,16 @@ from diagnostics import calculate_diagnostics
 from gemini_client import API_KEY, get_ai_resolution
 from local_ai_resolver import LocalAIResolver
 from map_of_adjacents import build_adjacency_map
-from normalization import find_fuzzy_candidates, normalize_street_name
+from normalization import (
+    build_lamas_aliases,
+    find_fuzzy_candidates,
+    format_city_lexicon,
+    normalize_street_name,
+)
 from OSM_streets import place_name as OSM_PLACE_NAME
 
 logger = logging.getLogger(__name__)
 
-# Israel / Palestine approximate bounds (min_lat, min_lon, max_lat, max_lon)
 ISRAEL_BOUNDS = (29.0, 34.0, 33.7, 36.0)
 
 
@@ -42,7 +46,6 @@ class PipelineStatus(Enum):
 
 
 def _setup_logging(level: int = logging.INFO) -> None:
-    """Configure root logging if not already configured."""
     root = logging.getLogger()
     if not root.handlers:
         logging.basicConfig(
@@ -61,13 +64,7 @@ def run_pipeline(
     output_name: str | None = None,
     use_pbf: bool = True,
 ) -> PipelineStatus:
-    """
-    Run the full street-mapping pipeline for a settlement.
-
-    place: search string or Nominatim result dict.
-    output_name: optional identifier for output files (e.g. original settlement name).
-    use_pbf: if True, extract streets from local OSM PBF extract instead of querying Overpass.
-    """
+    """Run the full street-mapping pipeline for a settlement."""
     _setup_logging()
     logger.info("--- Starting Street Mapping Orchestrator ---")
 
@@ -78,9 +75,6 @@ def run_pipeline(
     if not use_ai:
         logger.info("AI resolution is disabled for this run (use_ai=False).")
 
-    # ------------------------------------------------------------------
-    # STEP 1: Data Acquisition
-    # ------------------------------------------------------------------
     try:
         place_obj_for_osm = place
         if isinstance(place, dict):
@@ -116,9 +110,8 @@ def run_pipeline(
             logger.warning("OSM data for %s is empty (no streets found)", chosen_place_str)
             return PipelineStatus.NO_DATA
 
-        # Geographic validation
         try:
-            total_bounds = osm_gdf.total_bounds  # [minx, miny, maxx, maxy]
+            total_bounds = osm_gdf.total_bounds
             avg_lon = (total_bounds[0] + total_bounds[2]) / 2
             avg_lat = (total_bounds[1] + total_bounds[3]) / 2
             min_lat, min_lon, max_lat, max_lon = ISRAEL_BOUNDS
@@ -135,8 +128,7 @@ def run_pipeline(
 
         if len(osm_gdf) > 50000:
             logger.warning(
-                "Downloaded %s street segments — suspiciously large for a single city. "
-                "Results may be slow or incorrect.",
+                "Downloaded %s street segments — suspiciously large for a single city.",
                 len(osm_gdf),
             )
 
@@ -156,9 +148,6 @@ def run_pipeline(
         logger.debug(traceback.format_exc())
         return PipelineStatus.FAILURE
 
-    # ------------------------------------------------------------------
-    # STEP 2: Preprocessing and Normalization
-    # ------------------------------------------------------------------
     logger.info("[Step 2/7] Normalizing street names...")
     LAMAS_df["normalized_name"] = LAMAS_df["LAMAS_name"].apply(normalize_street_name)
     osm_gdf["normalized_name"] = osm_gdf["osm_name"].apply(normalize_street_name)
@@ -176,15 +165,9 @@ def run_pipeline(
     save_intermediate_df(LAMAS_df, "step2_lamas_normalized", file_identifier)
     save_intermediate_df(osm_gdf, "step2_osm_normalized", file_identifier)
 
-    # ------------------------------------------------------------------
-    # STEP 3: Topology (Adjacency)
-    # ------------------------------------------------------------------
     logger.info("[Step 3/7] Building Adjacency Map (Topology)...")
     map_of_adjacents = build_adjacency_map(osm_gdf)
 
-    # ------------------------------------------------------------------
-    # STEP 4: Candidate Matching
-    # ------------------------------------------------------------------
     logger.info("[Step 4/7] Running Fuzzy Matching and Candidate Creation...")
     osm_city_label = osm_gdf["city"].iloc[0]
     logger.info("Filtering LAMAS data for city: '%s'", osm_city_label)
@@ -196,12 +179,17 @@ def run_pipeline(
             osm_city_label,
         )
 
+    aliases_by_id = build_lamas_aliases(lamas_city_df)
+    city_lexicon = format_city_lexicon(aliases_by_id)
+    logger.info(
+        "City LAMAS lexicon: %s unique street IDs for '%s'",
+        len(aliases_by_id),
+        osm_city_label,
+    )
+
     candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
     save_intermediate_df(candidates_df, "step4_candidates", file_identifier)
 
-    # ------------------------------------------------------------------
-    # STEP 5: AI Resolution
-    # ------------------------------------------------------------------
     logger.info("[Step 5/7] (Optional) Invoking AI for ambiguous cases...")
     ai_results: list[dict] = []
 
@@ -275,18 +263,34 @@ def run_pipeline(
                 if pd.notna(lamas_candidates_str):
                     for line in lamas_candidates_str.split("\n"):
                         id_match = re.search(r"ID:\s*(\d+)", line)
+                        names_bracket = re.search(r"Names:\s*\[([^\]]+)\]", line)
                         name_match = re.search(r"Name:\s*['\"]([^'\"]+)['\"]", line)
                         score_match = re.search(r"Score:\s*([\d.]+)", line)
-                        if id_match and name_match:
-                            local_lamas_candidates.append(
-                                {
-                                    "id": id_match.group(1),
-                                    "name": name_match.group(1),
-                                    "score": float(score_match.group(1))
-                                    if score_match
-                                    else 0.0,
-                                }
-                            )
+                        if not id_match:
+                            continue
+                        lid = id_match.group(1)
+                        if lid in aliases_by_id:
+                            names = aliases_by_id[lid]
+                        elif names_bracket:
+                            names = [
+                                n.strip()
+                                for n in names_bracket.group(1).split("|")
+                                if n.strip()
+                            ]
+                        elif name_match:
+                            names = [name_match.group(1)]
+                        else:
+                            names = []
+                        local_lamas_candidates.append(
+                            {
+                                "id": lid,
+                                "name": names[0] if names else "",
+                                "names": names,
+                                "score": float(score_match.group(1))
+                                if score_match
+                                else 0.0,
+                            }
+                        )
 
                 local_result = local_resolver.resolve_street(
                     representative_osm_id,
@@ -294,6 +298,7 @@ def run_pipeline(
                     city_name,
                     local_lamas_candidates,
                     adjacent_names,
+                    city_lexicon=city_lexicon,
                 )
 
                 ai_decision_id = local_result.get("lamas_id")
@@ -324,9 +329,12 @@ def run_pipeline(
 
                 prompt = (
                     f"OSM Street Name: '{normalized_street_name}'. "
+                    f"City: '{city_name}'. "
                     f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
-                    f"LAMAS Candidates: {lamas_candidates_str}. "
-                    f"Choose the best LAMAS ID (number only or 'None')."
+                    f"LAMAS Candidates (each ID may list multiple synonym names): {lamas_candidates_str}. "
+                    f"Full city LAMAS lexicon (id → all names/synonyms):\n{city_lexicon}\n"
+                    f"Choose the best LAMAS ID (number only or 'None'). "
+                    f"Match against any synonym of an ID, not only the primary name."
                 )
                 ai_decision_id = get_ai_resolution(prompt, representative_osm_id)
                 method = "gemini"
@@ -351,9 +359,6 @@ def run_pipeline(
     )
     save_intermediate_df(ai_decisions_df, "step5_ai_decisions", file_identifier)
 
-    # ------------------------------------------------------------------
-    # STEP 6: Final Merge
-    # ------------------------------------------------------------------
     logger.info("[Step 6/7] Merging results to create final diagnostic table...")
 
     ai_decisions_merged = candidates_df.merge(ai_decisions_df, on="osm_id", how="left")
@@ -414,18 +419,12 @@ def run_pipeline(
         unmatched_count,
     )
 
-    # ------------------------------------------------------------------
-    # STEP 6.5: Diagnostics
-    # ------------------------------------------------------------------
     logger.info("[Step 6.5/7] Calculating diagnostic summary...")
     osm_city_label = osm_gdf["city"].iloc[0]
     lamas_in_city_df = LAMAS_df[LAMAS_df["city"] == osm_city_label]
     diagnostics = calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf)
     logger.info("Diagnostic Summary: %s", diagnostics)
 
-    # ------------------------------------------------------------------
-    # STEP 7: HTML
-    # ------------------------------------------------------------------
     if not skip_html:
         logger.info("[Step 7/7] Generating HTML visualization...")
         try:
