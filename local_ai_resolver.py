@@ -13,8 +13,6 @@ from typing import Optional, Tuple, Dict, Any
 import pandas as pd
 import geopandas as gpd
 
-# Try to import the required libraries for local AI
-
 try:
     from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
     import torch
@@ -25,27 +23,17 @@ except ImportError:
 
 
 class LocalAIResolver:
-    """
-    Handles local AI resolution using qwen3-VL-8b model.
-    """
-    
+    """Handles local AI resolution using qwen3-VL-8b model."""
+
     def __init__(self, model_name: str = "Qwen/Qwen3-VL-8B-Instruct", device: str = "auto"):
-        """
-        Initialize the local AI resolver.
-        
-        Args:
-            model_name: Hugging Face model name/path
-            device: Device to run the model on ('cuda', 'cpu', or 'auto')
-        """
         self.model = None
         self.processor = None
         self.device = device
         self.model_name = model_name
         self.initialized = False
-        
+
         if TRANSFORMERS_AVAILABLE:
             try:
-                # Attempt to clear CUDA cache before initializing model
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     print("  -> Cleared CUDA cache.")
@@ -53,60 +41,36 @@ class LocalAIResolver:
             except Exception as e:
                 print(f"Failed to initialize local AI model: {e}")
                 print("Local AI resolution will be disabled. Falling back to Gemini API.")
-    
+
     def _initialize_model(self):
-        """Load the model and processor."""
         print(f"Loading local AI model: {self.model_name}...")
-        
-        # Determine device
         if self.device == "auto":
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        # Load processor
         self.processor = AutoProcessor.from_pretrained(self.model_name)
-        
-        # Load model with appropriate dtype based on device
         if self.device == "cuda":
-            # Use bfloat16 for better performance on GPU
             self.model = Qwen3VLForConditionalGeneration.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.bfloat16,
-                device_map="auto"
+                self.model_name, torch_dtype=torch.bfloat16, device_map="auto"
             )
         else:
-            # Use float32 for CPU
             self.model = Qwen3VLForConditionalGeneration.from_pretrained(
-                self.model_name,
-                torch_dtype=torch.float32
+                self.model_name, torch_dtype=torch.float32
             )
             self.model = self.model.to(self.device)
-        
         self.initialized = True
         print(f"Model loaded successfully on {self.device}")
-    
+
     def is_available(self) -> bool:
-        """Check if the local AI model is available and initialized."""
         return TRANSFORMERS_AVAILABLE and self.initialized and self.model is not None
-    
+
     def prepare_prompt(
         self,
         osm_street_name: str,
         city_name: str,
         lamas_candidates: list,
-        adjacent_streets: list
+        adjacent_streets: list,
+        city_lexicon: str = "",
     ) -> str:
-        """
-        Prepare the text prompt for the AI model.
-        
-        Args:
-            osm_street_name: The street name from OSM
-            city_name: The city name
-            lamas_candidates: List of LAMAS candidate dictionaries with 'id', 'name', 'score'
-            adjacent_streets: List of adjacent street names
-            
-        Returns:
-            Formatted prompt string
-        """
+        """Build prompt with all synonym names per candidate and optional city lexicon."""
         prompt = f"""אתה מערכת GIS אוטומטית המתמחה בזיהוי רחובות בישראל.
 
 המשימה: למצוא את המזהה (LAMAS ID) הנכון של רחוב מתוך רשימת מועמדים.
@@ -116,204 +80,159 @@ class LocalAIResolver:
 - שם הרחוב ב-OSM: "{osm_street_name}"
 - רחובות סמוכים (קונטקסט טופולוגי): {', '.join(adjacent_streets) if adjacent_streets else 'אין מידע'}
 
-**מועמדים מבסיס נתוני למ"ס:**
+**מועמדים מבסיס נתוני למ"ס (כל כינוי/שם נרדף לכל ID):**
 """
-        
+
         for i, candidate in enumerate(lamas_candidates, 1):
-            prompt += f"\n{i}. ID: {candidate['id']}, שם: \"{candidate['name']}\" (ציון התאמה: {candidate['score']:.1f})"
-        
+            names = candidate.get("names") or candidate.get("aliases")
+            if names:
+                names_str = " | ".join(str(n) for n in names)
+            else:
+                names_str = str(candidate.get("name", ""))
+            score = candidate.get("score", 0.0)
+            try:
+                score_s = f"{float(score):.1f}"
+            except (TypeError, ValueError):
+                score_s = str(score)
+            prompt += f"\n{i}. ID: {candidate['id']}, שמות: [{names_str}] (ציון fuzzy: {score_s})"
+
+        if city_lexicon:
+            prompt += f"""
+
+**לקסיקון רחובות למ"ס בעיר (כל השמות והכינויים לפי ID):**
+{city_lexicon}
+"""
+
         prompt += """
 
 **הוראות:**
-1. השווה את שם הרחוב ב-OSM לשמות המועמדים מלמ"ס.
-2. קח בחשבון את הרחובות הסמוכים - הם עוזרים להבין את ההקשר (למשל, אם רחוב סמוך נקרא ע"ש אישיות קשורה).
-3. **חשוב מאוד:** שמות עשויים להיות שונים בגלל:
-    - כינויים (למשל "בן גוריון" לעומת "דוד בן גוריון")
-    - שמות חלקיים (למשל "הנביאים" לעומת "שמואל הנביא")
-    - שינויי איות או תרגומים
-    - תוספת/השמטה של תואר (למשל "הרב", "דוקטור")
-    - **במקרה של "בן עמר" מול "תאודור בן עמר" - זוהי התאמה טובה!**
-4. **התאמה בין ערבית לעברית:** שמות בערבית ובעברית יכולים להיות תרגומים או תעתיקים זה של זה. למשל, 'شارع السلام' בערבית הוא 'רחוב השלום' בעברית. כמו כן, 'אלסלאם' הוא תעתיק של 'السلام'. חפש התאמות כאלו.
+1. השווה את שם ה-OSM לכל הכינויים של כל מועמד — לא רק לשם הראשי.
+2. השתמש בלקסיקון העיר כדי להבין אילו שמות שייכים לאותו ID ואילו לרחובות אחרים.
+3. קח בחשבון את הרחובות הסמוכים (קונטקסט טופולוגי).
+4. שמות עשויים להשתנות בגלל: כינויים, שמות חלקיים, איות, תארים, תרגום/תעתיק עברית↔ערבית.
+5. אם יש התאמה סבירה — החזר את ה-ID. אם אין — null.
 
 **פורמט התשובה (JSON בלבד):**
 ```json
 {
-  "lamas_id": "המזהה המספרי של הרחוב המתאים ביותר או null אם אין התאמה",
-  "confidence": "ציון ביטחון בין 0.0 ל-1.0",
-  "reasoning": "הסבר קצר בעברית למה בחרת ברחוב זה או למה אין התאמה"
+  "lamas_id": "המזהה המספרי או null",
+  "confidence": 0.0,
+  "reasoning": "הסבר קצר בעברית"
 }
 ```
-
-אם אתה מזהה התאמה סבירה (מעל 0.5), אנא החזר את ה-ID. אל תהסס להתאים אם השם דומה מאוד אך לא זהה.
-אם אין שום התאמה הגיונית, החזר lamas_id: null.
 """
-        
         return prompt
-    
+
     def _clean_json_string(self, json_str: str) -> str:
-        """Clean common JSON formatting issues from LLM output."""
-        # Remove comments // ...
-        json_str = re.sub(r'//.*$', '', json_str, flags=re.MULTILINE)
-        # Fix trailing commas
-        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+        json_str = re.sub(r"//.*$", "", json_str, flags=re.MULTILINE)
+        json_str = re.sub(r",(\s*[}\]])", r"\1", json_str)
         return json_str.strip()
 
     def parse_response(self, response_text: str) -> Tuple[Optional[str], float, str]:
-        """
-        Parse the AI model's response to extract LAMAS ID and confidence.
-        
-        Args:
-            response_text: Raw response from the model
-            
-        Returns:
-            Tuple of (lamas_id, confidence, reasoning)
-        """
         try:
-            # Try to extract JSON from the response
-            # Look for JSON block in markdown code fence or plain JSON
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+            json_match = re.search(r"```json\s*(\{.*?\})\s*```", response_text, re.DOTALL)
             if not json_match:
-                json_match = re.search(r'(\{.*?\})', response_text, re.DOTALL)
-            
+                json_match = re.search(r"(\{.*?\})", response_text, re.DOTALL)
+
             if json_match:
-                json_str = json_match.group(1)
-                json_str = self._clean_json_string(json_str)
-                
+                json_str = self._clean_json_string(json_match.group(1))
                 try:
                     result = json.loads(json_str)
-                    
-                    lamas_id = result.get('lamas_id')
-                    confidence = float(result.get('confidence', 0.0))
-                    reasoning = result.get('reasoning', 'No reasoning provided')
-                    
-                    # Convert lamas_id to string if it's not None
-                    if lamas_id is not None and str(lamas_id).lower() != 'null' and str(lamas_id).lower() != 'none':
+                    lamas_id = result.get("lamas_id")
+                    confidence = float(result.get("confidence", 0.0))
+                    reasoning = result.get("reasoning", "No reasoning provided")
+                    if lamas_id is not None and str(lamas_id).lower() not in ("null", "none"):
                         lamas_id = str(lamas_id)
                     else:
                         lamas_id = None
-                    
                     return lamas_id, confidence, reasoning
                 except json.JSONDecodeError:
-                    pass # Fall through to other methods
-            
-            # Fallback: try to extract just a number if it looks like an ID (3-4 digits)
-            # But be careful not to pick up numbers from the reasoning or prompt
-            # Look for pattern "lamas_id": 123
+                    pass
+
             id_match = re.search(r'"lamas_id"\s*:\s*"?(\d+)"?', response_text)
             if id_match:
                 return id_match.group(1), 0.6, "Extracted ID from partial JSON"
 
-            # Last resort: if the response is VERY short and is just a number
             clean_text = response_text.strip()
-            if re.match(r'^\d+$', clean_text):
-                 return clean_text, 0.5, "Response was just a number"
-            
-            # No match found
+            if re.match(r"^\d+$", clean_text):
+                return clean_text, 0.5, "Response was just a number"
+
             return None, 0.0, "Could not parse response"
-            
         except Exception as e:
             print(f"Error parsing AI response: {e}")
             return None, 0.0, f"Parse error: {str(e)}"
-    
+
     def resolve_street(
         self,
         osm_id: str,
         osm_street_name: str,
         city_name: str,
         lamas_candidates: list,
-        adjacent_streets: list
+        adjacent_streets: list,
+        city_lexicon: str = "",
     ) -> Dict[str, Any]:
-        """
-        Use the local AI model to resolve a street match.
-        
-        Args:
-            osm_id: OSM ID of the street
-            osm_street_name: Street name from OSM
-            city_name: City name
-            lamas_candidates: List of candidate dictionaries
-            adjacent_streets: List of adjacent street names
-            
-        Returns:
-            Dictionary with 'lamas_id', 'confidence', 'reasoning', 'method'
-        """
         if not self.is_available():
             return {
-                'lamas_id': None,
-                'confidence': 0.0,
-                'reasoning': 'Local AI model not available',
-                'method': 'local_ai_unavailable'
+                "lamas_id": None,
+                "confidence": 0.0,
+                "reasoning": "Local AI model not available",
+                "method": "local_ai_unavailable",
             }
-        
+
         try:
-            # Prepare the prompt
             prompt = self.prepare_prompt(
                 osm_street_name,
                 city_name,
                 lamas_candidates,
-                adjacent_streets
+                adjacent_streets,
+                city_lexicon=city_lexicon,
             )
-            
-            # Prepare inputs for the model (Text only)
+
             messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt}
-                    ]
-                }
+                {"role": "user", "content": [{"type": "text", "text": prompt}]}
             ]
-            
-            # Process inputs
-            text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = self.processor(
-                text=[text],
-                images=None, # No images
-                return_tensors="pt",
-                padding=True
+
+            text = self.processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
             )
-            
-            # Move inputs to device
+            inputs = self.processor(
+                text=[text], images=None, return_tensors="pt", padding=True
+            )
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
-            
-            # Inference: Generation of the output
+
             with torch.no_grad():
                 generated_ids = self.model.generate(
-                    **inputs,
-                    max_new_tokens=128,
-                    do_sample=False  # Deterministic for consistency
+                    **inputs, max_new_tokens=128, do_sample=False
                 )
-            
+
             generated_ids_trimmed = [
-                out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs['input_ids'], generated_ids)
+                out_ids[len(in_ids) :]
+                for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
             ]
-            
-            # Decode response
+
             generated_text = self.processor.batch_decode(
-                generated_ids_trimmed, # Decode trimmed IDs
+                generated_ids_trimmed,
                 skip_special_tokens=True,
-                clean_up_tokenization_spaces=False
+                clean_up_tokenization_spaces=False,
             )[0]
-            
-            # Parse the response
+
             lamas_id, confidence, reasoning = self.parse_response(generated_text)
-            
-            print(f"    [DEBUG] Local AI Raw Response: {generated_text[:200]}...") # Log to console
-            
+            print(f"    [DEBUG] Local AI Raw Response: {generated_text[:200]}...")
+
             return {
-                'lamas_id': lamas_id,
-                'confidence': confidence,
-                'reasoning': reasoning,
-                'method': 'local_ai',
-                'raw_response': generated_text[:500]
+                "lamas_id": lamas_id,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "method": "local_ai",
+                "raw_response": generated_text[:500],
             }
-            
         except Exception as e:
             print(f"Error during local AI resolution for OSM ID {osm_id}: {e}")
             return {
-                'lamas_id': None,
-                'confidence': 0.0,
-                'reasoning': f'Error: {str(e)}',
-                'method': 'local_ai_error'
+                "lamas_id": None,
+                "confidence": 0.0,
+                "reasoning": f"Error: {str(e)}",
+                "method": "local_ai_error",
             }
 
 
@@ -323,76 +242,86 @@ def get_local_ai_resolution(
     lamas_df: pd.DataFrame,
     candidates_row: pd.Series,
     adjacency_map: dict,
-    resolver: LocalAIResolver
+    resolver: LocalAIResolver,
 ) -> Dict[str, Any]:
-    """
-    Main function to get local AI resolution for a street.
-    
-    Args:
-        osm_id: OSM ID of the street
-        osm_gdf: GeoDataFrame with all OSM streets
-        lamas_df: DataFrame with all LAMAS data
-        candidates_row: Row from candidates DataFrame with LAMAS candidates
-        adjacency_map: Dictionary mapping OSM IDs to adjacent IDs
-        resolver: Initialized LocalAIResolver instance
-        
-    Returns:
-        Dictionary with resolution results
-    """
-    # Get OSM street info
-    osm_street = osm_gdf[osm_gdf['osm_id'] == osm_id]
+    """Resolve a street using local AI with full city synonym context."""
+    from normalization import build_lamas_aliases, format_city_lexicon
+
+    osm_street = osm_gdf[osm_gdf["osm_id"] == osm_id]
     if osm_street.empty:
-        return {'lamas_id': None, 'confidence': 0.0, 'reasoning': 'OSM street not found', 'method': 'error'}
-    
+        return {
+            "lamas_id": None,
+            "confidence": 0.0,
+            "reasoning": "OSM street not found",
+            "method": "error",
+        }
+
     osm_street = osm_street.iloc[0]
-    osm_street_name = osm_street.get('normalized_name', osm_street.get('osm_name', 'Unknown'))
-    city_name = osm_street.get('city', 'Unknown')
-    
-    # Parse LAMAS candidates from the candidates_row
+    osm_street_name = osm_street.get(
+        "normalized_name", osm_street.get("osm_name", "Unknown")
+    )
+    city_name = osm_street.get("city", "Unknown")
+
+    city_lamas = lamas_df
+    if "city" in lamas_df.columns and city_name and city_name != "Unknown":
+        city_mask = lamas_df["city"].astype(str) == str(city_name)
+        if city_mask.any():
+            city_lamas = lamas_df[city_mask]
+
+    aliases_by_id = build_lamas_aliases(city_lamas)
+    city_lexicon = format_city_lexicon(aliases_by_id)
+
     lamas_candidates = []
-    if pd.notna(candidates_row.get('all_candidates')):
-        # Parse the candidate string
-        candidate_lines = str(candidates_row['all_candidates']).split('\n')
-        for line in candidate_lines:
-            # Format: "ID: 123, Name: 'Street Name' (Score: 85.5)"
-            id_match = re.search(r'ID:\s*(\d+)', line)
+    if pd.notna(candidates_row.get("all_candidates")):
+        for line in str(candidates_row["all_candidates"]).split("\n"):
+            id_match = re.search(r"ID:\s*(\d+)", line)
+            names_bracket = re.search(r"Names:\s*\[([^\]]+)\]", line)
             name_match = re.search(r"Name:\s*['\"]([^'\"]+)['\"]", line)
-            score_match = re.search(r'Score:\s*([\d.]+)', line)
-            
-            if id_match and name_match:
-                lamas_candidates.append({
-                    'id': id_match.group(1),
-                    'name': name_match.group(1),
-                    'score': float(score_match.group(1)) if score_match else 0.0
-                })
-    
-    # Get adjacent street names
+            score_match = re.search(r"Score:\s*([\d.]+)", line)
+            if not id_match:
+                continue
+            lid = id_match.group(1)
+            if lid in aliases_by_id:
+                names = aliases_by_id[lid]
+            elif names_bracket:
+                names = [n.strip() for n in names_bracket.group(1).split("|") if n.strip()]
+            elif name_match:
+                names = [name_match.group(1)]
+            else:
+                names = []
+            lamas_candidates.append(
+                {
+                    "id": lid,
+                    "name": names[0] if names else "",
+                    "names": names,
+                    "score": float(score_match.group(1)) if score_match else 0.0,
+                }
+            )
+
     adjacent_ids = adjacency_map.get(osm_id, [])
     adjacent_streets = []
-    for adj_id in adjacent_ids[:10]:  # Limit to 10 for brevity
-        adj_street = osm_gdf[osm_gdf['osm_id'] == adj_id]
+    for adj_id in adjacent_ids[:10]:
+        adj_street = osm_gdf[osm_gdf["osm_id"] == adj_id]
         if not adj_street.empty:
-            adj_name = adj_street.iloc[0].get('normalized_name', adj_street.iloc[0].get('osm_name'))
+            adj_name = adj_street.iloc[0].get(
+                "normalized_name", adj_street.iloc[0].get("osm_name")
+            )
             if adj_name and pd.notna(adj_name):
                 adjacent_streets.append(str(adj_name))
-    
-    # Call the AI resolver (without map image)
-    result = resolver.resolve_street(
+
+    return resolver.resolve_street(
         osm_id,
         osm_street_name,
         city_name,
         lamas_candidates,
-        adjacent_streets
+        adjacent_streets,
+        city_lexicon=city_lexicon,
     )
-    
-    return result
 
 
 if __name__ == "__main__":
-    # Test the local AI resolver
     print("Local AI Resolver module loaded successfully")
     print(f"Transformers available: {TRANSFORMERS_AVAILABLE}")
-    
     if TRANSFORMERS_AVAILABLE:
         print("Attempting to initialize model...")
         resolver = LocalAIResolver()
