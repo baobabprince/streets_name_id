@@ -1,7 +1,12 @@
+import json
 import unittest
 from unittest.mock import patch
 
-from batch_process_settlements import worker_wrapper
+from batch_process_settlements import (
+    OFFICIAL_CITIES_FILE,
+    filter_to_official_cities,
+    worker_wrapper,
+)
 from pipeline import PipelineStatus
 
 
@@ -49,6 +54,37 @@ class TestBatchSkipHtml(unittest.TestCase):
         )
 
         self.assertEqual(run_pipeline.call_args.kwargs["place"], place)
+
+    @patch("batch_process_settlements.run_pipeline", return_value=PipelineStatus.SUCCESS)
+    def test_worker_passes_model_and_cloud_fallback_options(self, run_pipeline):
+        worker_wrapper(
+            "יישוב",
+            "יישוב, Israel",
+            use_ai=True,
+            use_local_ai=True,
+            local_ai_model="laya",
+            use_gemini=False,
+        )
+
+        self.assertEqual(run_pipeline.call_args.kwargs["local_ai_model"], "laya")
+        self.assertFalse(run_pipeline.call_args.kwargs["use_gemini"])
+
+    def test_city_filter_selects_exactly_the_configured_83_cities(self):
+        with open(OFFICIAL_CITIES_FILE, "r", encoding="utf-8") as file:
+            cities = json.load(file)["cities"]
+
+        settlements = filter_to_official_cities(["יישוב נוסף", *cities])
+
+        self.assertEqual(len(settlements), 83)
+        self.assertNotIn("יישוב נוסף", settlements)
+        self.assertEqual(set(settlements), set(cities))
+
+    def test_city_filter_fails_if_lamas_data_is_missing_a_city(self):
+        with open(OFFICIAL_CITIES_FILE, "r", encoding="utf-8") as file:
+            cities = json.load(file)["cities"]
+
+        with self.assertRaisesRegex(ValueError, "missing official city names"):
+            filter_to_official_cities(cities[:-1])
 
 
 if __name__ == "__main__":

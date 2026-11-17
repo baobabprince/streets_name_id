@@ -24,6 +24,7 @@ import pandas as pd
 from pathlib import Path
 
 # Import local modules
+from data_loader import normalize_city
 from settlement_matcher import SettlementMatcher, SettlementMatch
 from lamas_streets import fetch_all_LAMAS_data
 from pipeline import PipelineStatus, run_pipeline
@@ -31,7 +32,47 @@ from pipeline import PipelineStatus, run_pipeline
 
 # Output directory for reports
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "batch_reports")
+OFFICIAL_CITIES_FILE = os.path.join(
+    os.path.dirname(__file__), "config", "israel_83_cities_lamas.json"
+)
 os.makedirs(REPORTS_DIR, exist_ok=True)
+
+
+def filter_to_official_cities(settlements: List[str]) -> List[str]:
+    """Select the configured 83 cities and fail if the LAMAS data is incomplete."""
+    with open(OFFICIAL_CITIES_FILE, "r", encoding="utf-8") as file:
+        city_list = json.load(file)
+
+    expected_count = city_list.get("count")
+    target_cities = city_list.get("cities")
+    if (
+        expected_count != 83
+        or not isinstance(target_cities, list)
+        or len(target_cities) != expected_count
+        or len(set(target_cities)) != expected_count
+    ):
+        raise ValueError(f"Invalid official city list in {OFFICIAL_CITIES_FILE}")
+
+    normalized_targets = set(normalize_city(pd.Series(target_cities)).tolist())
+    normalized_settlements = normalize_city(pd.Series(settlements)).tolist()
+    available_targets = set(normalized_settlements)
+    missing = sorted(normalized_targets - available_targets)
+    if missing:
+        raise ValueError(
+            "LAMAS data is missing official city names: " + ", ".join(missing)
+        )
+
+    filtered = [
+        settlement
+        for settlement, normalized in zip(settlements, normalized_settlements)
+        if normalized in normalized_targets
+    ]
+    if len(filtered) != expected_count:
+        raise ValueError(
+            f"Expected {expected_count} unique official cities in LAMAS data, "
+            f"found {len(filtered)}"
+        )
+    return filtered
 
 
 def worker_wrapper(
@@ -41,6 +82,8 @@ def worker_wrapper(
     use_local_ai: bool,
     skip_html: bool = False,
     use_pbf: bool = True,
+    local_ai_model: str = "qwen",
+    use_gemini: bool = True,
 ) -> Dict[str, Any]:
     """
     Worker function to run the pipeline in a separate process.
@@ -70,6 +113,8 @@ def worker_wrapper(
             skip_html=skip_html,
             output_name=settlement_name,
             use_pbf=use_pbf,
+            local_ai_model=local_ai_model,
+            use_gemini=use_gemini,
         )
         
         result['pipeline_success'] = pipeline_result == PipelineStatus.SUCCESS
@@ -107,13 +152,16 @@ class BatchProcessor:
     
     def __init__(self, use_ai: bool = False, use_local_ai: bool = True, 
                  skip_html: bool = False, quiet: bool = False, workers: int = 1,
-                 use_pbf: bool = True):
+                 use_pbf: bool = True, local_ai_model: str = "qwen",
+                 use_gemini: bool = True):
         self.use_ai = use_ai
         self.use_local_ai = use_local_ai
         self.skip_html = skip_html
         self.quiet = quiet
         self.workers = workers
         self.use_pbf = use_pbf
+        self.local_ai_model = local_ai_model
+        self.use_gemini = use_gemini
         self.matcher = SettlementMatcher()
         
         # Statistics tracking
@@ -372,6 +420,8 @@ class BatchProcessor:
                     self.use_local_ai,
                     self.skip_html,
                     self.use_pbf,
+                    self.local_ai_model,
+                    self.use_gemini,
                 )
                 
                 # Store context with future
@@ -454,7 +504,11 @@ Examples:
     parser.add_argument('--workers', type=int, default=1,
                        help='Number of parallel workers (default: 1)')
     parser.add_argument('--cities', action='store_true',
-                       help='Process only the 82 official cities of Israel')
+                       help='Process only the 83 cities in config/israel_83_cities_lamas.json')
+    parser.add_argument('--local-ai-model', choices=('qwen', 'laya'), default='qwen',
+                       help='Local model to use for AI resolution (default: qwen)')
+    parser.add_argument('--no-gemini', action='store_true',
+                       help='Disable Gemini cloud fallback')
     parser.add_argument('--no-pbf', action='store_true',
                        help='Disable local OSM PBF extraction and use live Overpass API instead')
     
@@ -483,18 +537,16 @@ Examples:
         quiet=args.quiet,
         workers=args.workers,
         use_pbf=(not args.no_pbf),
+        local_ai_model=args.local_ai_model,
+        use_gemini=(not args.no_gemini),
     )
     
     # Step 3: Get unique settlements
     settlements = processor.get_unique_settlements(lamas_df)
     
     if args.cities:
-        cities_file = os.path.join(os.path.dirname(__file__), "data", "israel_82_cities_lamas.json")
-        if os.path.exists(cities_file):
-            with open(cities_file, "r", encoding="utf-8") as f:
-                target_cities = set(json.load(f))
-            settlements = [s for s in settlements if s in target_cities]
-            print(f"Filtered to {len(settlements)} official cities of Israel.")
+        settlements = filter_to_official_cities(settlements)
+        print(f"Filtered to {len(settlements)} configured cities of Israel.")
     
     if not settlements:
         print("Error: No settlements found in LAMAS data")

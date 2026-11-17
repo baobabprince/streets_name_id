@@ -108,6 +108,21 @@ python batch_process_settlements.py --dry-run
 | `--limit N` | First N settlements only |
 | `--skip-html` | Skip HTML map generation |
 | `--force` | Reprocess even if already done |
+| `--cities` | Process exactly the 83 cities listed in `config/israel_83_cities_lamas.json` |
+| `--local-ai-model laya` | Use Laya for local AI decisions |
+| `--no-gemini` | Keep all unresolved decisions local |
+
+### GitHub Actions: all 83 cities
+
+Run **Actions → Run Laya for 83 Israeli cities → Run workflow** to process
+the configured cities with the local Laya model on a GitHub-hosted runner.
+The workflow requires no Gemini key. It uses the national OSM PBF and
+`osmium-tool`, and fails if the LAMAS dataset does not contain all 83 cities
+or if any city pipeline fails.
+
+The workflow uploads batch summaries, per-city diagnostic CSV files, and
+HTML maps as the `israel-cities-results` artifact, retained for 90 days. The
+artifact can be downloaded from the completed workflow run.
 
 ### Index dashboard
 
