@@ -495,7 +495,24 @@ def fetch_pbf_street_data(
         try:
             query_geom = find_settlement_boundary(city_name)
         except Exception as e:
-            logger.debug("Failed finding boundary for %s: %s", city_name, e)
+            logger.warning("Failed finding boundary for %s: %s", city_name, e)
+
+        if query_geom is None:
+            from settlement_matcher import SettlementMatcher
+
+            match = SettlementMatcher().search_settlement(city_name)
+            if match is not None:
+                query_geom = box(
+                    match.lon - 0.018,
+                    match.lat - 0.015,
+                    match.lon + 0.018,
+                    match.lat + 0.015,
+                )
+                logger.info(
+                    "No local boundary found for '%s'; using a geocoded local "
+                    "search area with the PBF.",
+                    city_name,
+                )
 
     if query_geom is None:
         logger.warning("Could not determine spatial geometry or bounding box for place: %s", place)
