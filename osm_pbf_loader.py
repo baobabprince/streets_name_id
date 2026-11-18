@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -92,6 +93,27 @@ def download_osm_pbf(
     return target_path
 
 
+def _find_osmium_executable() -> Optional[str]:
+    """Find osmium on PATH, or at an optional path supplied by the user."""
+    return shutil.which(os.environ.get("OSMIUM_BIN", "osmium"))
+
+
+def _osmium_install_instructions() -> str:
+    """Return an installation command appropriate for the current platform."""
+    prefix = os.environ.get("PREFIX", "").lower()
+    if os.environ.get("TERMUX_VERSION") or "com.termux" in prefix:
+        return "pkg install osmium-tool"
+
+    system = platform.system()
+    if system == "Windows":
+        return "conda install -c conda-forge osmium-tool"
+    if system == "Darwin":
+        return "brew install osmium-tool"
+    if system == "Linux":
+        return "sudo apt install osmium-tool (Debian/Ubuntu), or install via conda-forge"
+    return "see https://osmcode.org/osmium-tool/manual.html#installation"
+
+
 def extract_pbf_to_cache(
     pbf_path: str = DEFAULT_PBF_PATH,
     streets_pkl: str = DEFAULT_STREETS_PKL,
@@ -102,19 +124,23 @@ def extract_pbf_to_cache(
     Extract national named streets and administrative boundaries from PBF
     using osmium-tool, saving them as optimized GeoPandas pickle files.
     """
-    if not os.path.exists(pbf_path):
-        download_osm_pbf(target_path=pbf_path)
-
     needs_streets = force or not os.path.exists(streets_pkl)
     needs_boundaries = force or not os.path.exists(boundaries_pkl)
 
     if not needs_streets and not needs_boundaries:
         return streets_pkl, boundaries_pkl
 
-    if not shutil.which("osmium"):
+    osmium_executable = _find_osmium_executable()
+    if not osmium_executable:
         raise RuntimeError(
-            "osmium tool is not installed. Please install via 'pkg install osmium-tool'"
+            "The osmium executable is required to build the local PBF caches. "
+            f"Install it with: {_osmium_install_instructions()}. "
+            "If it is installed outside PATH, set OSMIUM_BIN to its executable "
+            "path. Alternatively, run with --no-pbf to use live Overpass data."
         )
+
+    if not os.path.exists(pbf_path):
+        download_osm_pbf(target_path=pbf_path)
 
     # 1. Extract highways if needed
     if needs_streets:
@@ -123,14 +149,22 @@ def extract_pbf_to_cache(
         highways_seq = os.path.join(DATA_DIR, "israel_highways.geojsonseq")
 
         subprocess.run(
-            ["osmium", "tags-filter", pbf_path, "w/highway", "-o", highways_pbf, "--overwrite"],
+            [
+                osmium_executable,
+                "tags-filter",
+                pbf_path,
+                "w/highway",
+                "-o",
+                highways_pbf,
+                "--overwrite",
+            ],
             check=True,
         )
 
         logger.info("Exporting highway linestrings to GeoJSONSeq...")
         subprocess.run(
             [
-                "osmium",
+                osmium_executable,
                 "export",
                 highways_pbf,
                 "--geometry-types",
@@ -195,7 +229,7 @@ def extract_pbf_to_cache(
 
         subprocess.run(
             [
-                "osmium",
+                osmium_executable,
                 "tags-filter",
                 pbf_path,
                 "r/boundary=administrative",
@@ -209,7 +243,7 @@ def extract_pbf_to_cache(
         logger.info("Exporting boundary polygons to GeoJSONSeq...")
         subprocess.run(
             [
-                "osmium",
+                osmium_executable,
                 "export",
                 boundaries_pbf,
                 "--geometry-types",

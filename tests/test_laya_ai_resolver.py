@@ -45,8 +45,9 @@ class TestLayaAIResolver(unittest.TestCase):
         self.assertEqual(result["confidence"], 0.82)
         state, questions = agent.predict.call_args.args
         self.assertEqual(state["רחובות סמוכים ב-OSM"], ["בלפור"])
-        self.assertEqual(state["לקסיקון למ״ס בעיר"], "ID 202: הרצל, הרצליה")
+        self.assertNotIn("לקסיקון למ״ס בעיר", state)
         self.assertIn("הרצליה", questions["street_match"]["criteria"]["candidate_2"])
+        self.assertIn("כינויים", questions["street_match"]["instructions"])
         self.assertIn("no_match", questions["street_match"]["criteria"])
 
     def test_no_match_choice_returns_no_lamas_id(self):

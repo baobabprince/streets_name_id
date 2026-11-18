@@ -11,8 +11,9 @@ import logging
 import re
 from typing import Dict, List, Tuple
 
+import numpy as np
 import pandas as pd
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 
 logger = logging.getLogger(__name__)
 
@@ -124,115 +125,172 @@ def find_fuzzy_candidates(
 
     Matching is done per LAMAS_id: score is the max over all synonym names
     of that ID. Candidate formatting includes every known alias for the ID.
+
+    RapidFuzz computes the three score matrices in native code; Python then
+    visits only name pairs that pass the candidate threshold.
     """
     unique_osm_streets = osm_gdf[["normalized_name"]].drop_duplicates().dropna()
+    if unique_osm_streets.empty:
+        return pd.DataFrame(
+            {
+                "osm_id": osm_gdf["osm_id"].tolist(),
+                "status": ["MISSING"] * len(osm_gdf),
+                "best_score": [0.0] * len(osm_gdf),
+                "best_LAMAS_id": [None] * len(osm_gdf),
+                "best_LAMAS_name": [None] * len(osm_gdf),
+                "all_candidates": [None] * len(osm_gdf),
+            }
+        )
 
     aliases_by_id = build_lamas_aliases(lamas_df)
+    normalized_lamas_df = lamas_df.dropna(
+        subset=["LAMAS_id", "normalized_name"]
+    ).copy()
 
-    id_to_norm_names: Dict[str, List[str]] = {}
-    id_to_display: Dict[str, str] = {}
-    for _, row in lamas_df.iterrows():
-        lid = str(row["LAMAS_id"])
-        nname = row.get("normalized_name")
-        if pd.isna(nname):
-            continue
-        id_to_norm_names.setdefault(lid, [])
-        if nname not in id_to_norm_names[lid]:
-            id_to_norm_names[lid].append(nname)
-        if lid not in id_to_display and pd.notna(row.get("LAMAS_name")):
-            id_to_display[lid] = str(row["LAMAS_name"])
+    if normalized_lamas_df.empty:
+        return pd.DataFrame(
+            {
+                "osm_id": osm_gdf["osm_id"].tolist(),
+                "status": ["MISSING"] * len(osm_gdf),
+                "best_score": [0.0] * len(osm_gdf),
+                "best_LAMAS_id": [None] * len(osm_gdf),
+                "best_LAMAS_name": [None] * len(osm_gdf),
+                "all_candidates": [None] * len(osm_gdf),
+            }
+        )
+
+    normalized_lamas_df["normalized_name"] = normalized_lamas_df["normalized_name"].astype(str)
+    normalized_lamas_df["LAMAS_id"] = normalized_lamas_df["LAMAS_id"].astype(str)
+
+    unique_name_to_ids: Dict[str, List[str]] = {}
+    display_name_by_id: Dict[str, str] = {}
+    id_order: Dict[str, int] = {}
+    lamas_columns = normalized_lamas_df[
+        ["LAMAS_id", "normalized_name", "LAMAS_name"]
+    ]
+    for lamas_id, normalized_name, display_name in lamas_columns.itertuples(
+        index=False, name=None
+    ):
+        lid = str(lamas_id)
+        name = str(normalized_name)
+        if name not in unique_name_to_ids:
+            unique_name_to_ids[name] = []
+        if lid not in unique_name_to_ids[name]:
+            unique_name_to_ids[name].append(lid)
+        if lid not in display_name_by_id and pd.notna(display_name):
+            display_name_by_id[lid] = str(display_name)
+        id_order.setdefault(lid, len(id_order))
+
+    lamas_name_candidates = list(unique_name_to_ids)
+    osm_names = unique_osm_streets["normalized_name"].astype(str).tolist()
 
     logger.info(
-        "Processing %s unique OSM street names against %s LAMAS ids (%s name rows)...",
+        "Processing %s unique OSM street names against %s LAMAS normalized names (%s LAMAS rows)...",
         len(unique_osm_streets),
-        len(id_to_norm_names),
-        len(lamas_df),
+        len(lamas_name_candidates),
+        len(normalized_lamas_df),
     )
 
     street_name_results = {}
 
-    for _, osm_row in unique_osm_streets.iterrows():
-        osm_name = osm_row["normalized_name"]
-
-        matches = []
-        for lid, norm_names in id_to_norm_names.items():
-            best_for_id = 0.0
-            best_name_for_id = id_to_display.get(
-                lid, norm_names[0] if norm_names else ""
+    def _fmt_candidates(matches):
+        lines = []
+        for match in matches[:8]:
+            alias_str = " | ".join(match.get("aliases") or [match["lamas_name"]])
+            lines.append(
+                f"ID: {match['lamas_id']}, Names: [{alias_str}], Score: {match['score']:.1f}"
             )
-            for lamas_name in norm_names:
-                score_ratio = fuzz.ratio(osm_name, lamas_name)
-                score_token_sort = fuzz.token_sort_ratio(osm_name, lamas_name)
-                score_token_set = fuzz.token_set_ratio(osm_name, lamas_name)
-                score = (
-                    (score_ratio * 0.3)
-                    + (score_token_sort * 0.3)
-                    + (score_token_set * 0.4)
-                )
-                if score > best_for_id:
-                    best_for_id = score
-            if best_for_id >= needs_ai_threshold:
-                aliases = aliases_by_id.get(lid, [best_name_for_id])
-                matches.append(
-                    {
-                        "score": best_for_id,
-                        "lamas_id": lid,
-                        "lamas_name": best_name_for_id,
-                        "aliases": aliases,
-                    }
-                )
+        return "\n".join(lines)
 
-        matches.sort(key=lambda x: x["score"], reverse=True)
+    batch_size = 128
+    for batch_start in range(0, len(osm_names), batch_size):
+        batch_names = osm_names[batch_start : batch_start + batch_size]
+        score_matrix = process.cdist(
+            batch_names,
+            lamas_name_candidates,
+            scorer=fuzz.ratio,
+            dtype=np.float64,
+            workers=1,
+        )
+        score_matrix *= 0.3
+        score_matrix += process.cdist(
+            batch_names,
+            lamas_name_candidates,
+            scorer=fuzz.token_sort_ratio,
+            dtype=np.float64,
+            workers=1,
+        ) * 0.3
+        score_matrix += process.cdist(
+            batch_names,
+            lamas_name_candidates,
+            scorer=fuzz.token_set_ratio,
+            dtype=np.float64,
+            workers=1,
+        ) * 0.4
 
-        def _fmt_candidates(ms):
-            lines = []
-            for m in ms[:8]:
-                alias_str = " | ".join(m.get("aliases") or [m["lamas_name"]])
-                lines.append(
-                    f"ID: {m['lamas_id']}, Names: [{alias_str}], Score: {m['score']:.1f}"
-                )
-            return "\n".join(lines)
+        for row_index, osm_name in enumerate(batch_names):
+            candidate_matches: Dict[str, dict] = {}
+            for name_index in np.flatnonzero(score_matrix[row_index] >= needs_ai_threshold):
+                lamas_name = lamas_name_candidates[name_index]
+                score = float(score_matrix[row_index, name_index])
+                for lid in unique_name_to_ids[lamas_name]:
+                    existing = candidate_matches.get(lid)
+                    if existing is None or score > existing["score"]:
+                        candidate_matches[lid] = {
+                            "score": score,
+                            "lamas_id": lid,
+                            "lamas_name": display_name_by_id.get(lid, lamas_name),
+                            "aliases": aliases_by_id.get(
+                                lid, [display_name_by_id.get(lid, lamas_name)]
+                            ),
+                        }
 
-        if not matches:
-            status = "MISSING"
-            best_score = 0
-            best_lamas_id = None
-            best_lamas_name = None
-            all_candidates = None
-        elif len(matches) == 1 and matches[0]["score"] >= confident_threshold:
-            status = "CONFIDENT"
-            best_score = matches[0]["score"]
-            best_lamas_id = matches[0]["lamas_id"]
-            best_lamas_name = matches[0]["lamas_name"]
-            all_candidates = _fmt_candidates(matches)
-        elif matches[0]["score"] >= confident_threshold and len(matches) > 1:
-            if matches[0]["score"] - matches[1]["score"] >= 5:
+            matches = sorted(
+                candidate_matches.values(),
+                key=lambda candidate: (
+                    -candidate["score"],
+                    id_order[candidate["lamas_id"]],
+                ),
+            )
+
+            if not matches:
+                status = "MISSING"
+                best_score = 0
+                best_lamas_id = None
+                best_lamas_name = None
+                all_candidates = None
+            elif len(matches) == 1 and matches[0]["score"] >= confident_threshold:
                 status = "CONFIDENT"
+                best_score = matches[0]["score"]
+                best_lamas_id = matches[0]["lamas_id"]
+                best_lamas_name = matches[0]["lamas_name"]
+                all_candidates = _fmt_candidates(matches)
+            elif matches[0]["score"] >= confident_threshold and len(matches) > 1:
+                if matches[0]["score"] - matches[1]["score"] >= 5:
+                    status = "CONFIDENT"
+                else:
+                    status = "NEEDS_AI"
+                best_score = matches[0]["score"]
+                best_lamas_id = matches[0]["lamas_id"]
+                best_lamas_name = matches[0]["lamas_name"]
+                all_candidates = _fmt_candidates(matches)
             else:
                 status = "NEEDS_AI"
-            best_score = matches[0]["score"]
-            best_lamas_id = matches[0]["lamas_id"]
-            best_lamas_name = matches[0]["lamas_name"]
-            all_candidates = _fmt_candidates(matches)
-        else:
-            status = "NEEDS_AI"
-            best_score = matches[0]["score"]
-            best_lamas_id = matches[0]["lamas_id"]
-            best_lamas_name = matches[0]["lamas_name"]
-            all_candidates = _fmt_candidates(matches)
+                best_score = matches[0]["score"]
+                best_lamas_id = matches[0]["lamas_id"]
+                best_lamas_name = matches[0]["lamas_name"]
+                all_candidates = _fmt_candidates(matches)
 
-        street_name_results[osm_name] = {
-            "status": status,
-            "best_score": best_score,
-            "best_LAMAS_id": best_lamas_id,
-            "best_LAMAS_name": best_lamas_name,
-            "all_candidates": all_candidates,
-        }
+            street_name_results[osm_name] = {
+                "status": status,
+                "best_score": best_score,
+                "best_LAMAS_id": best_lamas_id,
+                "best_LAMAS_name": best_lamas_name,
+                "all_candidates": all_candidates,
+            }
 
     results = []
-    for _, osm_row in osm_gdf.iterrows():
-        osm_id = osm_row["osm_id"]
-        osm_name = osm_row["normalized_name"]
+    for osm_id, osm_name in zip(osm_gdf["osm_id"], osm_gdf["normalized_name"]):
 
         if pd.isna(osm_name) or osm_name not in street_name_results:
             results.append(

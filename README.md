@@ -53,6 +53,29 @@ export GEMINI_MODEL="gemini-2.5-flash-preview-09-2025"
 
 > Local AI pulls large `torch` / `transformers` wheels. For fuzzy-only runs you can skip them if install is slow.
 
+**Optional — offline OSM PBF support (`osmium` executable):**
+
+Install the system tool for your platform:
+
+```bash
+# Termux
+pkg update && pkg install osmium-tool
+
+# Debian / Ubuntu desktop or server
+sudo apt install osmium-tool
+
+# macOS
+brew install osmium-tool
+
+# Windows desktop (in an activated Conda environment)
+conda install -c conda-forge osmium-tool
+```
+
+The program looks for `osmium` on `PATH`. If it is installed elsewhere, set
+`OSMIUM_BIN` to the executable path (for example, `osmium.exe` on Windows).
+If the tool is not installed, local PBF extraction stops before downloading the
+large regional extract; use `--no-pbf` to fall back to live Overpass data.
+
 **Optional — Laya local decision model:**
 
 ```bash
@@ -63,6 +86,9 @@ The Laya option uses its multilingual checkpoint for a single-choice decision
 between the LAMAS candidates. The model weights download from Hugging Face on
 first use. Its score is a model confidence, not measured street-matching
 accuracy; review the diagnostic report before relying on its matches.
+The resolver is reused across settlements handled by the same batch worker.
+For faster decisions, Laya receives the fuzzy candidate list and adjacent-street
+context rather than the full city lexicon.
 
 ## Usage
 

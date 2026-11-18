@@ -39,6 +39,7 @@ from OSM_streets import place_name as OSM_PLACE_NAME
 logger = logging.getLogger(__name__)
 
 ISRAEL_BOUNDS = (29.0, 34.0, 33.7, 36.0)
+_LOCAL_RESOLVER_CACHE: dict[str, LayaAIResolver | LocalAIResolver] = {}
 
 
 class PipelineStatus(Enum):
@@ -55,6 +56,20 @@ def _setup_logging(level: int = logging.INFO) -> None:
             format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
             datefmt="%H:%M:%S",
         )
+
+
+def _get_local_resolver(local_ai_model: str):
+    """Reuse the initialized model across settlements handled by this process."""
+    resolver = _LOCAL_RESOLVER_CACHE.get(local_ai_model)
+    if resolver is not None:
+        return resolver
+
+    resolver_class = LayaAIResolver if local_ai_model == "laya" else LocalAIResolver
+    resolver = resolver_class()
+    if resolver.is_available():
+        _LOCAL_RESOLVER_CACHE[local_ai_model] = resolver
+        return resolver
+    return None
 
 
 def run_pipeline(
@@ -207,15 +222,11 @@ def run_pipeline(
         if use_local_ai:
             try:
                 logger.info("Initializing local %s AI resolver...", local_ai_model)
-                resolver_class = (
-                    LayaAIResolver if local_ai_model == "laya" else LocalAIResolver
-                )
-                local_resolver = resolver_class()
-                if not local_resolver.is_available():
+                local_resolver = _get_local_resolver(local_ai_model)
+                if local_resolver is None:
                     logger.info(
                         "Local AI unavailable; the configured cloud fallback will be used if enabled."
                     )
-                    local_resolver = None
                 else:
                     logger.info("Local AI initialized successfully.")
             except Exception as e:
@@ -232,6 +243,20 @@ def run_pipeline(
         unique_ai_streets = ai_candidates_to_process.drop_duplicates(
             subset=["normalized_name"]
         )
+        osm_ids_by_name = (
+            osm_gdf_in_city.groupby("normalized_name", sort=False)["osm_id"]
+            .agg(list)
+            .to_dict()
+        )
+        osm_name_by_id = dict(
+            zip(osm_gdf_in_city["osm_id"], osm_gdf_in_city["normalized_name"])
+        )
+        osm_name_order = {
+            name: order
+            for order, name in enumerate(
+                osm_gdf_in_city["normalized_name"].dropna().drop_duplicates()
+            )
+        }
         logger.info(
             "Found %s unique street names requiring AI resolution.",
             len(unique_ai_streets),
@@ -243,20 +268,18 @@ def run_pipeline(
             normalized_street_name = row["normalized_name"]
             representative_osm_id = row["osm_id"]
 
-            all_osm_ids_for_street = osm_gdf_in_city[
-                osm_gdf_in_city["normalized_name"] == normalized_street_name
-            ]["osm_id"].tolist()
-
             all_adjacent_ids: set = set()
-            for osm_id in all_osm_ids_for_street:
+            for osm_id in osm_ids_by_name.get(normalized_street_name, []):
                 all_adjacent_ids.update(map_of_adjacents.get(osm_id, []))
 
-            adjacent_names = (
-                osm_gdf_in_city[osm_gdf_in_city["osm_id"].isin(all_adjacent_ids)][
-                    "normalized_name"
-                ]
-                .unique()
-                .tolist()
+            adjacent_names = sorted(
+                {
+                    osm_name_by_id[osm_id]
+                    for osm_id in all_adjacent_ids
+                    if osm_id in osm_name_by_id
+                    and pd.notna(osm_name_by_id[osm_id])
+                },
+                key=osm_name_order.get,
             )
 
             lamas_candidates_str = row["all_candidates"]

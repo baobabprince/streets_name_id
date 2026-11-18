@@ -69,14 +69,13 @@ class LayaAIResolver:
                 for candidate in lamas_candidates
             ],
         }
-        if city_lexicon:
-            state["לקסיקון למ״ס בעיר"] = city_lexicon
         questions = {
             "street_match": {
                 "type": "choice",
                 "instructions": (
                     "איזה מועמד למ״ס מתייחס לאותו רחוב כמו רחוב OSM? "
-                    "היעזר בשם היישוב וברחובות הסמוכים. בחר no_match אם אין "
+                    "השווה את שמות המועמדים והכינויים שלהם, והיעזר בשם היישוב "
+                    "וברחובות הסמוכים. בחר no_match אם אין "
                     "מועמד שמזהה את אותו רחוב."
                 ),
                 "criteria": criteria,
