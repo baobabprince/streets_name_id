@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -7,6 +8,77 @@ import osm_pbf_loader
 
 
 class TestOsmiumToolSetup(unittest.TestCase):
+    def test_pbf_decompression_error_refreshes_and_retries_once(self):
+        command = ["/usr/bin/osmium", "tags-filter", "region.osm.pbf"]
+        success = subprocess.CompletedProcess(command, 0)
+        with (
+            patch.object(
+                osm_pbf_loader.subprocess,
+                "run",
+                side_effect=[
+                    subprocess.CalledProcessError(
+                        1, command, stderr="failed to uncompress data: buffer error"
+                    ),
+                    success,
+                ],
+            ) as run,
+            patch.object(osm_pbf_loader, "download_osm_pbf") as download,
+        ):
+            result = osm_pbf_loader._run_osmium_with_pbf_retry(
+                command, "region.osm.pbf"
+            )
+
+        self.assertIs(result, success)
+        self.assertEqual(run.call_count, 2)
+        download.assert_called_once_with(
+            target_path="region.osm.pbf", force=True
+        )
+
+    def test_other_osmium_errors_do_not_redownload_pbf(self):
+        command = ["/usr/bin/osmium", "tags-filter", "region.osm.pbf"]
+        failure = subprocess.CalledProcessError(
+            1, command, stderr="permission denied writing output"
+        )
+        with (
+            patch.object(osm_pbf_loader.subprocess, "run", side_effect=failure),
+            patch.object(osm_pbf_loader, "download_osm_pbf") as download,
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                osm_pbf_loader._run_osmium_with_pbf_retry(command, "region.osm.pbf")
+
+        download.assert_not_called()
+
+    def test_forced_download_discards_stale_partial_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pbf_path = os.path.join(temp_dir, "region.osm.pbf")
+            temp_path = pbf_path + ".tmp"
+            with open(pbf_path, "wb") as target:
+                target.write(b"old")
+            with open(temp_path, "wb") as partial:
+                partial.write(b"truncated")
+
+            def write_fresh_download(_url, target_path):
+                with open(target_path, "wb") as fresh:
+                    fresh.write(b"fresh")
+
+            with (
+                patch.object(osm_pbf_loader.shutil, "which", return_value=None),
+                patch.object(
+                    osm_pbf_loader.urllib.request,
+                    "urlretrieve",
+                    side_effect=write_fresh_download,
+                ),
+            ):
+                osm_pbf_loader.download_osm_pbf(
+                    url="https://example.test/region.osm.pbf",
+                    target_path=pbf_path,
+                    force=True,
+                )
+
+            with open(pbf_path, "rb") as target:
+                self.assertEqual(target.read(), b"fresh")
+            self.assertFalse(os.path.exists(temp_path))
+
     def test_platform_install_instructions(self):
         with patch.dict(
             os.environ,

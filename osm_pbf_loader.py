@@ -73,6 +73,9 @@ def download_osm_pbf(
 
     # Try wget or curl first if available (they handle progress and resumes well)
     temp_target = target_path + ".tmp"
+    if force and os.path.exists(temp_target):
+        os.remove(temp_target)
+
     if shutil.which("wget"):
         cmd = ["wget", "-q", "--show-progress", "-c", url, "-O", temp_target]
         ret = subprocess.run(cmd)
@@ -91,6 +94,34 @@ def download_osm_pbf(
     urllib.request.urlretrieve(url, temp_target)
     os.replace(temp_target, target_path)
     return target_path
+
+
+def _run_osmium_with_pbf_retry(
+    command: list[str], pbf_path: str
+) -> subprocess.CompletedProcess:
+    """Retry once with a fresh PBF when Osmium reports a decompression error."""
+    try:
+        return subprocess.run(command, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as error:
+        stderr = error.stderr or ""
+        error_text = stderr.lower()
+        corruption_markers = ("uncompress", "buffer error", "invalid pbf")
+        if not any(marker in error_text for marker in corruption_markers):
+            if stderr.strip():
+                logger.error("Osmium failed: %s", stderr.strip())
+            raise
+
+        logger.warning(
+            "Osmium reported a PBF decompression/format error; downloading a fresh "
+            "extract and retrying once."
+        )
+        download_osm_pbf(target_path=pbf_path, force=True)
+        try:
+            return subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as retry_error:
+            if retry_error.stderr and retry_error.stderr.strip():
+                logger.error("Osmium retry failed: %s", retry_error.stderr.strip())
+            raise
 
 
 def _find_osmium_executable() -> Optional[str]:
@@ -148,7 +179,7 @@ def extract_pbf_to_cache(
         highways_pbf = os.path.join(DATA_DIR, "israel_highways.osm.pbf")
         highways_seq = os.path.join(DATA_DIR, "israel_highways.geojsonseq")
 
-        subprocess.run(
+        _run_osmium_with_pbf_retry(
             [
                 osmium_executable,
                 "tags-filter",
@@ -158,7 +189,7 @@ def extract_pbf_to_cache(
                 highways_pbf,
                 "--overwrite",
             ],
-            check=True,
+            pbf_path,
         )
 
         logger.info("Exporting highway linestrings to GeoJSONSeq...")
@@ -227,7 +258,7 @@ def extract_pbf_to_cache(
         boundaries_pbf = os.path.join(DATA_DIR, "israel_boundaries.osm.pbf")
         boundaries_seq = os.path.join(DATA_DIR, "israel_boundaries.geojsonseq")
 
-        subprocess.run(
+        _run_osmium_with_pbf_retry(
             [
                 osmium_executable,
                 "tags-filter",
@@ -237,7 +268,7 @@ def extract_pbf_to_cache(
                 boundaries_pbf,
                 "--overwrite",
             ],
-            check=True,
+            pbf_path,
         )
 
         logger.info("Exporting boundary polygons to GeoJSONSeq...")

@@ -75,6 +75,8 @@ The program looks for `osmium` on `PATH`. If it is installed elsewhere, set
 `OSMIUM_BIN` to the executable path (for example, `osmium.exe` on Windows).
 If the tool is not installed, local PBF extraction stops before downloading the
 large regional extract; use `--no-pbf` to fall back to live Overpass data.
+If Osmium detects a PBF decompression/format error, the pipeline downloads a
+fresh extract and retries once before falling back to Overpass.
 
 **Optional — Laya local decision model:**
 
