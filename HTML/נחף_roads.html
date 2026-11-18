@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>מפת רחובות — נחף</title>
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --accent: #3b82f6;
+            --border: rgba(255,255,255,0.1);
+            --map-bg: #1a2332;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: 'Heebo', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            direction: rtl;
+        }
+        .container { max-width: 1280px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            margin: 0 0 8px;
+            font-size: clamp(1.4rem, 3vw, 2rem);
+            font-weight: 700;
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--muted);
+            margin-bottom: 20px;
+            font-size: 0.95rem;
+        }
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+        }
+        .toolbar input[type="search"] {
+            flex: 1;
+            min-width: 160px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.95rem;
+        }
+        .toolbar input:focus {
+            outline: 2px solid var(--accent);
+            border-color: transparent;
+        }
+        .filter-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .filter-btn {
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.85rem;
+            transition: all 0.15s;
+        }
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+        .zoom-controls {
+            display: flex;
+            gap: 4px;
+            margin-right: auto;
+        }
+        .zoom-controls button {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .zoom-controls button:hover { background: var(--accent); border-color: var(--accent); }
+        .map-wrap {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            background: var(--map-bg);
+            touch-action: none;
+        }
+        #street-map {
+            width: 100%;
+            height: auto;
+            display: block;
+            cursor: grab;
+            background: var(--map-bg);
+        }
+        #street-map.dragging { cursor: grabbing; }
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.15s, filter 0.15s, opacity 0.2s;
+        }
+        .street-path:hover {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 4px rgba(59,130,246,0.7));
+        }
+        .street-path.pinned {
+            stroke-width: 9 !important;
+            filter: drop-shadow(0 0 6px rgba(250,204,21,0.85));
+        }
+        .street-path.dimmed { opacity: 0.12; }
+        #tooltip {
+            position: fixed;
+            background: rgba(15, 23, 42, 0.95);
+            color: var(--text);
+            padding: 12px 16px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 320px;
+            direction: rtl;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        #tooltip.visible { opacity: 1; }
+        .legend {
+            margin: 18px 0;
+            padding: 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            text-align: center;
+        }
+        .legend-title { font-weight: 600; margin-bottom: 10px; }
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+        .legend-color { width: 28px; height: 4px; border-radius: 2px; }
+        .stats {
+            margin-top: 12px;
+            padding: 12px 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .coverage {
+            height: 8px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 12px 0 6px;
+        }
+        .coverage-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #22c55e, #3b82f6);
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+        .coverage-label {
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-bottom: 12px;
+        }
+        .diagnostics {
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .diagnostics h2 {
+            text-align: center;
+            margin-top: 0;
+            font-size: 1.15rem;
+        }
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .diagnostics-card {
+            background: var(--bg);
+            padding: 14px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        .diagnostics-card .label {
+            font-weight: 600;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+        .diagnostics-card .value {
+            font-size: 1.5em;
+            color: var(--accent);
+            margin-top: 4px;
+        }
+        .unmatched-list {
+            margin-top: 16px;
+            padding: 14px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+            border-radius: 10px;
+        }
+        .unmatched-list h3 {
+            margin-top: 0;
+            color: #f87171;
+            font-size: 1rem;
+        }
+        .unmatched-list ul {
+            columns: 3;
+            padding-right: 18px;
+            list-style-type: none;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .unmatched-list li { margin-bottom: 4px; }
+        .unmatched-list a { color: inherit; }
+        .unmatched-list a:hover { color: var(--text); }
+        @media (max-width: 640px) {
+            .unmatched-list ul { columns: 1; }
+            .toolbar { flex-direction: column; align-items: stretch; }
+            .zoom-controls { margin-right: 0; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>מפת רחובות — נחף</h1>
+        <p class="subtitle">התאמת שמות רחובות OSM ↔ למ״ס</p>
+
+        
+        <div class="coverage"><div class="coverage-bar" style="width:0.0%"></div></div>
+        <div class="coverage-label">כיסוי התאמות: 0.0% (0/20)</div>
+        
+
+        <div class="toolbar">
+            <input type="search" id="street-search" placeholder="חיפוש רחוב..." autocomplete="off" />
+            <div class="filter-group">
+                <button type="button" class="filter-btn active" data-filter="all">הכל</button>
+                <button type="button" class="filter-btn" data-filter="perfect">מלא</button>
+                <button type="button" class="filter-btn" data-filter="partial">חלקי</button>
+                <button type="button" class="filter-btn" data-filter="ai">AI</button>
+                <button type="button" class="filter-btn" data-filter="unmatched">ללא התאמה</button>
+                <button type="button" class="filter-btn" data-filter="unnamed">ללא שם</button>
+            </div>
+            <div class="zoom-controls">
+                <button type="button" id="zoom-in" title="הגדל">+</button>
+                <button type="button" id="zoom-out" title="הקטן">−</button>
+                <button type="button" id="zoom-reset" title="איפוס">⟲</button>
+            </div>
+        </div>
+
+        <div class="legend">
+            <div class="legend-title">מקרא צבעים</div>
+            <div class="legend-items">
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #f8fafc;"></span>
+                    <span>התאמה מלאה (100)</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: linear-gradient(to left, #c06666, #ffcccc);"></span>
+                    <span>התאמה חלקית (0–99)</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #00BFFF;"></span>
+                    <span>התאמה ע״י AI</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #FF8C00;"></span>
+                    <span>שם קיים, ללא התאמה</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: repeating-linear-gradient(to right, #CCCCCC 0px, #CCCCCC 5px, transparent 5px, transparent 10px);"></span>
+                    <span>ללא שם</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="map-wrap">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4946.926851361524 2528.612423690036" id="street-map">
+                <rect x="0" y="0" width="4946.926851361524" height="2528.612423690036" fill="#1a2332" />
+                <path d="M 983.9975069183856,2528.612423690036 L 970.4387929392979,2487.0506696486846 L 956.1119744740427,2440.4626063737087 L 950.1675136657432,2421.166898333002 L 938.9131131465547,2384.5646433313377 L 1189.9163009873591,2301.3603969132528 L 1262.0290671228431,2277.462606627494 L 1544.491143062245,2183.8337252247147 L 1554.3095221500844,2180.5845509143546" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרמש#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרמש"></path>
+<path d="M 2414.7201303890906,2422.0023832558654 L 2412.8610948924907,2416.432482647244 L 2387.89213310834,2341.822082939092 L 2367.520666292403,2280.9504669541493 L 2364.759942921344,2272.6883474630304 L 2361.576205484569,2263.1796088418923 L 2335.761215568986,2185.9423725614324 L 2318.0168887376785,2132.8547397134826" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="העסקים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="העסקים"></path>
+<path d="M 1210.1875802604482,2337.9894349514507 L 1219.6720008761622,2334.9392297747545 L 1278.9718936220743,2315.192447521258 L 1287.1204803474247,2312.487042933237 L 1557.2038289099,2222.54524708353 L 1566.6659856275655,2219.402178643737 L 1574.135523459874,2216.829370940104 L 1661.7662266124971,2186.645254921168 L 1666.7199439527467,2187.6133758407086 L 1672.0410156124271,2190.1596660981886 L 1679.7777202227153,2195.597054897342 L 1721.9232794377021,2237.3985549043864 L 1733.9569163923152,2249.334235065151" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המגל#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המגל"></path>
+<path d="M 2364.759942921344,2272.6883474630304 L 2591.272842787206,2201.710798807908" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המלאכה#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המלאכה"></path>
+<path d="M 2608.8167945360765,2271.335640347097 L 2805.2845638380386,2198.726867796853" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הסדן#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="הסדן"></path>
+<path d="M 1802.852549244184,2206.352467762772 L 1817.7470971122384,2221.669962285552 L 1824.3928707130253,2233.075183318462 L 1831.1276999055408,2246.509458524175" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היזם#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היזם"></path>
+<path d="M 1844.742073629517,2241.8943291897886 L 1839.1983629884198,2232.319256220013 L 1833.932951073628,2225.1976248589344 L 1829.758470168803,2221.1660104030743 L 1821.531959799584,2214.7870386480354 L 1802.852549244184,2206.352467762772" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היזם#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היזם"></path>
+<path d="M 1608.4441905221902,2334.9392297747545 L 1671.862904427573,2314.1182428337634 L 1762.7775325579569,2284.8494426719844 L 1802.9193409387954,2271.030618133489 L 1840.4117454378866,2259.0816981908865 L 1850.0408813916147,2255.7662354516797 L 1878.638858575374,2246.297268710099 L 2300.4506730898283,2104.5801392598078" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2304.569494249299,2092.7901942725293 L 2232.9687977707945,2116.834242755547 L 2007.6247525578365,2189.934213336557 L 1844.742073629517,2241.8943291897886 L 1831.1276999055408,2246.509458524175 L 1765.9167421991006,2268.56391645642 L 1735.7268962957896,2278.762265731115 L 1603.84669555258,2323.587154849898" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 1535.585583799053,2121.2637532074004 L 1554.3095221500844,2180.5845509143546 L 1566.6659856275655,2219.402178643737 L 1587.7165013365448,2287.939446317032 L 1589.6534604770131,2294.2785928789526" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היוצרים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היוצרים"></path>
+<path d="M 2591.272842787206,2201.710798807908 L 2605.755508538801,2197.188485289924 L 2779.25806688983,2140.5201684334315 L 2785.74799320288,2138.4115129364654" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המלאכה#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המלאכה"></path>
+<path d="M 2724.3441620809026,1974.6115873008966 L 2732.9380267704837,1983.9348895172589 L 2740.02907833457,1997.2103042150848 L 2757.6732176248915,2051.6910695768893 L 2785.74799320288,2138.4115129364654 L 2805.2845638380386,2198.726867796853 L 2834.1051800036803,2287.740519068204" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2847.7863454227336,2287.0774282147177 L 2794.586760772392,2126.714435931761 L 2747.465220319573,1984.6510461373255 L 2743.3909269566648,1974.412654739339 L 2740.5856757876463,1962.2247134381905" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2335.761215568986,2185.9423725614324 L 2341.7168083265424,2184.059178103227 L 2753.6879798546433,2052.9509674389847 L 2757.6732176248915,2051.6910695768893" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="השיש#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="השיש"></path>
+<path d="M 2300.4506730898283,2104.5801392598078 L 2310.3024480259046,2122.8817176860757 L 2318.0168887376785,2132.8547397134826" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="העסקים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="העסקים"></path>
+<path d="M 2318.0168887376785,2132.8547397134826 L 2316.5029436619952,2121.542255307082 L 2314.6884359624237,2111.158101168927 L 2314.3322135913186,2109.1555365417153 L 2312.050164030399,2100.7341517587192" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="העסקים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="העסקים"></path>
+<path d="M 1318.1563543812372,2123.810057861265 L 1417.7316388958134,2090.8539367080666" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היוצרים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היוצרים"></path>
+<path d="M 2300.4506730898283,2104.5801392598078 L 2312.050164030399,2100.7341517587192" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2304.569494249299,2092.7901942725293 L 2300.4506730898283,2104.5801392598078" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="העסקים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="העסקים"></path>
+<path d="M 1502.4902991848066,2073.4143421920016 L 1512.7984840329736,2079.236384611111 L 1519.3663339898922,2083.413930355571 L 1524.5538222612813,2091.769017378334 L 1530.7097901022062,2106.410298386123 L 1535.585583799053,2121.2637532074004" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היוצרים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היוצרים"></path>
+<path d="M 2312.050164030399,2100.7341517587192 L 2304.569494249299,2092.7901942725293" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="העסקים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="העסקים"></path>
+<path d="M 1417.7316388958134,2090.8539367080666 L 1454.9234807691537,2078.9976676665246" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היוצרים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היוצרים"></path>
+<path d="M 2312.050164030399,2100.7341517587192 L 2414.4084358154796,2066.796572925523 L 2455.507591816131,2053.1764228311367 L 2466.7508603860624,2049.4497772566974" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 1454.9234807691537,2078.9976676665246 L 1479.9481023000553,2071.027171342168 L 1491.291558411438,2070.430378555786 L 1502.4902991848066,2073.4143421920016" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היוצרים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היוצרים"></path>
+<path d="M 1519.633500767406,1911.1784539418295 L 1525.0213641221635,1916.443562943954 L 1646.2148937489837,2035.0604051211849 L 1703.2550008310936,2100.1373604815453 L 1738.209320940543,2140.1620948864147 L 1786.065570032224,2194.960482680239 L 1802.852549244184,2206.352467762772" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היזם#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היזם"></path>
+<path d="M 2466.7508603860624,2049.4497772566974 L 2503.92043836182,2036.9701476935297 L 2574.4635996776633,2013.2707508704625" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2707.690766258631,1952.8748695803806 L 2697.8055954761803,1958.8428558809683 L 2685.861014114693,1964.7180038746446 L 2654.079299493227,1975.394055337645 L 2601.5810276349075,1993.0327277821489 L 2404.601188675966,2059.197406419087 L 2382.6155892438255,2066.571117795538 L 2304.569494249299,2092.7901942725293" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2574.4635996776633,2013.2707508704625 L 2582.634450301528,2010.5254902830347 L 2609.718482411932,2001.4276655791327 L 2635.967618341092,1992.6216011331417 L 2689.211730787065,1974.7309468341991 L 2700.1544367326424,1972.2376585262828 L 2713.1231574094854,1970.5666245743632" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2713.1231574094854,1970.5666245743632 L 2718.3440415281802,1973.5904001211748 L 2724.3441620809026,1974.6115873008966" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="כיכר החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="כיכר החרושת"></path>
+<path d="M 2724.3441620809026,1974.6115873008966 L 2728.218080360908,1974.1208869786933 L 2733.6059437156655,1971.7602202785201 L 2737.9028760599904,1967.662207855843 L 2740.5856757876463,1962.2247134381905" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="כיכר החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="כיכר החרושת"></path>
+<path d="M 2707.690766258631,1952.8748695803806 L 2707.089641008526,1958.7367583722807 L 2709.3048988757655,1966.0044354349375 L 2713.1231574094854,1970.5666245743632" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="כיכר החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="כיכר החרושת"></path>
+<path d="M 2740.5856757876463,1962.2247134381905 L 2741.0309537514113,1960.2619099542499 L 2741.1311412928626,1955.4477351577953 L 2739.394557236694,1949.7582533047535 L 2737.9696677546017,1947.4241061070934 L 2735.8323335316963,1945.0103852194734" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="כיכר החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="כיכר החרושת"></path>
+<path d="M 2741.0309537514113,1960.2619099542499 L 2756.4041754300706,1951.9465158828534 L 2767.691971796099,1942.9016945878975" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2710.239982598461,1947.5567281190306 L 2707.690766258631,1952.8748695803806" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="כיכר החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="כיכר החרושת"></path>
+<path d="M 2767.691971796099,1942.9016945878975 L 2737.9696677546017,1947.4241061070934" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2735.8323335316963,1945.0103852194734 L 2730.8674842421897,1941.774406987708 L 2725.123398517724,1940.434923933819 L 2719.7689310102724,1940.9786744988523 L 2714.4255954520777,1943.4321828330867 L 2710.239982598461,1947.5567281190306" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="כיכר החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="כיכר החרושת"></path>
+<path d="M 2735.8323335316963,1945.0103852194734 L 2729.620705944486,1932.809151158668 L 2726.314517068211,1922.889008029364" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2884.321402300615,1903.1017456143163 L 2776.931489531882,1938.339494691696 L 2767.691971796099,1942.9016945878975" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החרושת#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="החרושת"></path>
+<path d="M 2696.9818312451243,1872.2934951526113 L 2711.5424206410535,1918.0615556645207 L 2713.4905117298476,1929.6527428911068 L 2713.4905117298476,1935.6207410022616 L 2710.239982598461,1947.5567281190306" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2726.314517068211,1922.889008029364 L 2714.3921996043064,1886.404559213668 L 2709.4273503152654,1871.205987630412" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 1519.633500767406,1911.1784539418295 L 1508.1675932165235,1856.6837738798931" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היזם#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היזם"></path>
+<path d="M 2709.4273503152654,1871.205987630412 L 2693.9762049932033,1823.8462635492906" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2670.85514675593,1793.183691128157 L 2696.9818312451243,1872.2934951526113" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2693.9762049932033,1823.8462635492906 L 2682.1540750712156,1789.5497996388003 L 2679.3933516996913,1781.0486111403443 L 2672.2021125946194,1758.8473503529094 L 2659.489426746033,1720.7841591387987 L 2656.595119984355,1711.8850467982702" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2745.8288238048553,1769.0859298417345 L 2743.201683822088,1760.7438754653558" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2647.1663591149263,1725.545380405616 L 2668.072159485426,1784.6559804920107 L 2670.85514675593,1793.183691128157" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2802.9134586839937,1747.9058533273637 L 2798.8948250655085,1748.913797722198" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2866.231985046994,1727.6143227494322 L 2861.612226178404,1730.3065997408703 L 2802.9134586839937,1747.9058533273637" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2644.093941168394,1716.553434440866 L 2647.1663591149263,1725.545380405616" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2865.719915389549,1710.04156366596 L 2867.1336729219183,1722.8133149570785 L 2866.231985046994,1727.6143227494322" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2743.201683822088,1760.7438754653558 L 2740.4075646027923,1751.8713182760403 L 2737.4798619947396,1742.6671935645863 L 2735.754409887828,1737.150020247791 L 2730.4889979739673,1719.590537904296 L 2723.531529798638,1673.065740114078 L 2721.2494802377187,1658.7289565200917 L 2719.4795003337786,1642.4292987585068 L 2718.410833222326,1619.4452839614823" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2614.549748312682,1617.920088079758 L 2632.6169016677886,1680.5988441775553 L 2644.093941168394,1716.553434440866" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2166.088047702331,1682.468856937252 L 2167.145582865458,1666.8986706878059 L 2165.3978668591008,1654.6043097060174 L 2161.824511204846,1644.4452055841684 L 2155.457036331296,1637.8802445856854" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع 1#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع 1"></path>
+<path d="M 2155.457036331296,1637.8802445856854 L 2155.6351475166157,1645.678622088395 L 2156.8373980177566,1654.0340208052658 L 2160.6333926538937,1668.3575476189144 L 2166.088047702331,1682.468856937252" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع ١#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع ١"></path>
+<path d="M 1535.585583799053,2121.2637532074004 L 1526.902663516812,2124.168131907936 L 1232.8967563831247,2222.611556535121 L 939.503106447868,2320.8419668585993 L 933.4918539449573,2320.7226108452305 L 927.4026777986437,2318.87922336068 L 922.1595297814347,2316.3860081718303 L 917.6844862522557,2312.9379437412135 L 903.1238968563266,2275.605950516183 L 899.6284648450091,2266.640949734021" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="האופן#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="האופן"></path>
+<path d="M 12.234012037981302,2178.873760813847 L 6.578981905709952,2188.5549728232436 L 1.0464032129384577,2204.2040383610874 L 0.0,2217.996417803224 L 1.4916811767034233,2229.9453795794398 L 4.397119886241853,2241.576044342015" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שדרות נשיאי ישראל#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="שדרות נשיאי ישראל"></path>
+<path d="M 19.681285972241312,2222.744175437838 L 19.714681819546968,2208.3417538953945 L 22.330689852591604,2181.579196206294" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שדרות נשיאי ישראל#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="שדרות נשיאי ישראל"></path>
+<path d="M 995.6303937053308,2231.9744473518804 L 1016.8256247527897,2224.4019115897827 L 1050.3439234304242,2213.1823487435468 L 1155.1846198597923,2178.0780444033444 L 1219.3046465562657,2156.6069428795017 L 1235.8133270405233,2151.076702215243 L 1256.3072452964261,2144.2865710239857 L 1318.1563543812372,2123.810057861265" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היוצרים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="היוצרים"></path>
+<path d="M 22.330689852591604,2181.579196206294 L 21.36221028259024,2164.6569528104737" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שדרות נשיאי ישראל#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="שדרות נשיאי ישראל"></path>
+<path d="M 21.36221028259024,2164.6569528104737 L 12.234012037981302,2178.873760813847" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שדרות נשיאי ישראל#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="שדרות נשיאי ישראל"></path>
+<path d="M 1655.276300299447,729.0950423623435 L 1607.486842901446,736.0053647458553 L 1585.9799172808416,738.989667779766 L 1578.3545321617275,729.4531589779072 L 1541.1849541859701,740.8067763657309 L 1482.9759924495593,755.7150142872706 L 1471.3876334577799,761.6968731097877 L 1464.3188457922079,775.6633741832338 L 1453.0087855285965,794.5373563384637 L 1432.3256241381168,795.1342140287161 L 1416.9857983072288,783.7673857007176 L 1393.0966355828568,749.1362924161367 L 1380.562060920056,738.989667779766 L 1374.8068432458676,741.3373189656995 L 1369.2742645530961,748.008890111465 L 1361.9049142631702,769.8937390027568 L 1343.3924829442985,793.6619650055654 L 1338.1159390797839,802.9331517126411 L 1310.6311568031088,842.6439887029119 L 1296.3599980836734,845.2834149873815 L 1221.1191542567685,854.8330930676311 L 1181.2890404504724,860.2047835714184 L 982.2497909129597,887.0764625957236 L 884.1550556248985,907.5551342074759 L 873.5685720508918,909.7701179194264 L 830.5658527575433,919.3330068700016 L 791.1587530164979,915.7518981909379 L 748.1671656719409,896.639370045159 L 711.0421154927462,878.1369276400656 L 604.7876615300775,825.1627483675256 L 504.45540447859094,794.0996606806293 L 463.85718618612736,785.7436495264992 L 416.078860737849,790.5185137717053 L 387.4140918585472,785.7436495264992 L 385.03185475524515,766.6309095760807 L 381.98170070769265,661.9280883604661 L 381.44736715219915,643.6242308989167 L 374.51216287584975,624.3255676445551" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع 17#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع 17"></path>
+<path d="M 2656.595119984355,1711.8850467982702 L 2639.4741823007353,1661.6467122328468 L 2632.4165265844204,1639.286074926611 L 2613.2361783208326,1567.9731290554628 L 2605.4660778637044,1556.3020086740144" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2849.166707108263,1506.606778641697 L 2860.4656354235485,1602.2171902605332 L 2857.62698840769,1618.1057641110383 L 2865.719915389549,1710.04156366596" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2718.410833222326,1619.4452839614823 L 2717.1195271289907,1597.0580410356633 L 2716.9191520456225,1594.3259456683882 L 2717.408957805019,1574.2330888393335 L 2718.9117709309794,1568.4107958436944" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2605.4660778637044,1556.3020086740144 L 2605.6553209978156,1570.9306952161714 L 2614.549748312682,1617.920088079758" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2718.9117709309794,1568.4107958436944 L 2722.407202941831,1563.1322680339217 L 2729.999192214571,1554.856380455196 L 2735.208944383543,1551.7396584609523 L 2740.1960575706325,1549.0075525413267" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 2740.1960575706325,1549.0075525413267 L 2753.0979865537956,1541.9252944295295 L 2771.265327451285,1532.972995754797 L 2789.4549322458915,1524.0339529295452 L 2807.3885022131726,1515.2275301930495 L 2826.0901766661555,1506.0364825478755 L 2838.858522261493,1499.7764863772318 L 2841.407738600392,1499.4051305674948 L 2843.8345034988597,1499.935638862662 L 2845.815990435891,1501.155807854142 L 2847.296539662406,1502.70754432166 L 2848.409734570887,1504.7765259589069 L 2849.166707108263,1506.606778641697" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה כמון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה כמון"></path>
+<path d="M 1859.6477534472942,995.0665677655488 L 1898.208825057838,1000.491247146856 L 1953.835174607113,1068.0276322741993 L 2010.5635871146806,1152.2220942666754 L 2053.1878201398067,1218.5108816539869 L 2064.854102774989,1245.036902135238 L 2083.2997423987836,1315.5427730190568 L 2106.1647658087313,1408.9133269228041 L 2138.6032654251903,1559.710507530719 L 2153.197250668425,1627.508924977854 L 2155.457036331296,1637.8802445856854" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع 1#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع 1"></path>
+<path d="M 1831.4727903269231,248.61206989968196 L 1830.1926161823794,280.5387676730752 L 1819.4725492196158,306.6424593217671 L 1812.2590462160297,327.4006889103912 L 1796.540734115988,382.9105345415883 L 1795.5833864952438,389.05175102548674 L 1802.1623684014194,425.4745369274169 L 1815.8880616156384,447.57220988720655 L 1844.5528304949403,461.8972097360529 L 1886.954424538184,487.57605456840247 L 1918.0682222153991,515.7749692075886 L 1947.8573179510422,574.1621583555825 L 1960.4586843084544,604.231049486436 L 1965.178630719427,623.1318348548375 L 1975.932093529962,649.4071918497793 L 1982.9452214492485,670.8279971401207 L 1989.6800506426953,691.1346191675402 L 1988.7338349707425,716.9588617221452 L 1982.8005061112344,742.5310397283174 L 1962.0282891290262,792.5876210085116 L 1911.8677265779115,847.6310449028388 L 1891.273620781023,893.0184642584063 L 1876.690767487511,936.3764165332541 L 1870.746306678746,953.6718046069145 L 1859.6477534472942,995.0665677655488 L 1848.2041097930633,1005.4119199165143 L 1819.8844313351437,1058.7566550592892 L 1816.5782424588688,1076.980285721831 L 1807.906454125885,1129.887012318708 L 1804.6113971984014,1159.596375645604 L 1796.7299772496335,1229.6385545479134 L 1799.256929691881,1267.2656611129642 L 1794.2698165043257,1300.1047291685827 L 1788.5591266262345,1317.7311538807116 L 1783.649937082082,1336.1533256717958 L 1780.6777066774666,1347.8246650444344 L 1782.4476865814067,1361.233428102918 L 1786.021042236127,1369.6022922364064 L 1790.807780340314,1376.750968598295 L 1811.1124554611742,1383.9261662815697 L 1848.0927903018892,1392.9316299920902 L 1857.354571936652,1406.6453861943446 L 1865.5365545097739,1419.3113653534092 L 1872.9393006470054,1435.2532380120829 L 1879.9079007711262,1480.5322823226452 L 1883.971062184777,1506.9383461275138 L 1888.8245919835754,1549.0738657992333 L 1894.7022610972635,1605.6654635416344 L 1897.0956301488914,1651.6467646360397 L 1901.8712363047525,1672.521977134049 L 1904.5651679816656,1684.9622068181634" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع 2/شارع 6#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع 2/شارع 6"></path>
+<path d="M 1221.1191542567685,854.8330930676311 L 1219.9169037556276,894.2519597620703 L 1256.63007181976,907.1704962751828 L 1314.2601722027175,929.426422120072 L 1368.2167293909006,957.3722715964541 L 1407.4345859969035,963.5131873586215 L 1431.3014848227613,965.0119416895323 L 1445.6505671865307,965.9138468587771 L 1495.8111297376454,961.1257906835526 L 1551.949548944831,958.7383935232647 L 1607.5758984941058,958.2343873945065 L 1700.126923140604,969.5082035330124 L 1745.4228239431977,974.2697296836413 L 1786.121229778044,974.9859479349107" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع 4#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع 4"></path>
+<path d="M 1796.540734115988,382.9105345415883 L 1770.0689592049457,418.3120169499889 L 1744.933018184267,452.7451285175048 L 1700.0378675470129,483.39794056490064 L 1681.792603005655,520.629526224453 L 1664.2152554099448,569.387206046842 L 1650.0220203343779,617.6273987493478 L 1649.1425963570364,625.1479168301448 L 1655.276300299447,729.0950423623435 L 1655.3096961467527,773.2892028093338 L 1673.4213772984222,802.8668342381716 L 1716.223721508868,858.5999083942734 L 1767.5420067650266,944.6262137172744 L 1786.121229778044,974.9859479349107 L 1799.2124018957838,987.9839752623811 L 1820.1515981126577,996.8040570323355 L 1859.6477534472942,995.0665677655488" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع 1#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع 1"></path>
+<path d="M 2519.805729697924,199.1367911696434 L 2517.390096747782,167.89961093710735 L 2506.480786649976,155.23228059802204 L 2470.379875786137,132.2718804711476 L 2326.388114444446,58.61525020422414 L 2299.25955453841,43.02964426064864 L 2234.660854030866,7.136246618814766 L 2123.096460357774,0.10611522290855646 L 2087.1068689841777,0.0 L 2030.8571302867495,27.0726151894778 L 1957.9205999192782,44.76727454457432 L 1933.5082355872728,65.45964592928067 L 1891.7411626428366,113.55600402317941 L 1907.9826763495803,138.18773598596454 L 1892.3311559436843,152.56617058394477 L 1879.195456030313,169.29235322820023 L 1853.5140495039523,193.18117384053767 L 1831.4171305820346,215.8761715674773 L 1831.4727903269231,248.61206989968196" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="شارع 14#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="شارع 14"></path>
+<path d="M 3234.5770481326617,2510.9215100002475 L 3278.025045388844,2510.0462467116304 L 3419.6234376784414,2490.724129908718 L 3459.0082735209726,2481.228829552885 L 3643.598253154196,2425.7421721811406 L 3770.836431130767,2372.562792108394 L 3785.397020526696,2365.7064804323018 L 3826.585232120473,2345.7873471882194 L 3873.695640624035,2324.157411213033 L 3955.292827375699,2282.1175074419007 L 4026.192211061716,2241.9208529265597 L 4064.051969880238,2220.4498682171106 L 4212.5521705988795,2126.4226719555445 L 4259.885218084324,2098.903991745785 L 4499.645137355197,1948.5779175646603 L 4640.486557106487,1856.1665440183133 L 4853.75243756827,1706.80552063277 L 4906.406556713395,1666.4875326100737 L 4925.108231166843,1653.8881329423748 L 4946.926851361524,1644.471730671823" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="צור#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="צור"></path>
+            </svg>
+        </div>
+
+        <div class="stats">
+            <strong>הוראות:</strong> העבר עכבר / לחץ על רחוב לפרטים · גרירה להזזה · גלגלת / כפתורים לזום · סינון וחיפוש בסרגל
+        </div>
+
+        
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">20</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">133</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">20</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (20)</h3>
+            <ul><li>האופן</li><li>החרושת</li><li>החרמש</li><li>היוצרים</li><li>היזם</li><li>המגל</li><li>המלאכה</li><li>הסדן</li><li>העסקים</li><li>השיש</li><li>כיכר החרושת</li><li>מעלה כמון</li><li>צור</li><li>שדרות נשיאי ישראל</li><li>شارع 1</li><li>شارع 14</li><li>شارع 17</li><li>شارع 2/شارع 6</li><li>شارع 4</li><li>شارع ١</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (133 - 100.0%)</h3>
+            <ul><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20100%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 100</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201000%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1000</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201001%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1001</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201002%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1002</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201003%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1003</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201004%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1004</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201005%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1005</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201006%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1006</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201008%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1008</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20101%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 101</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20102%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 102</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20103%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 103</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20104%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 104</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20105%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 105</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201100%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1100</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201101%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1101</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201103%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1103</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201105%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1105</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201200%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1200</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201201%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1201</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201202%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1202</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201203%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1203</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201204%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1204</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201300%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1300</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201301%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1301</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201302%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1302</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201303%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1303</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201304%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1304</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201305%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1305</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201307%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1307</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201309%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1309</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201311%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1311</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201400%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1400</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201402%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1402</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201404%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1404</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201406%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1406</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201500%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1500</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201501%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1501</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201502%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1502</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201504%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1504</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201506%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1506</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201600%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1600</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201601%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1601</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201603%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1603</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201605%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1605</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201607%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1607</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201700%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1700</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201701%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1701</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201702%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1702</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201703%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1703</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201704%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1704</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201705%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1705</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201706%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1706</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201707%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1707</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201708%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1708</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201709%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1709</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201710%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1710</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201711%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1711</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201713%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1713</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201800%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1800</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201801%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1801</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201803%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1803</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201900%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1900</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201902%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1902</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201904%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1904</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%201906%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 1906</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20200%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 200</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202000%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2000</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202002%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2002</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20201%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 201</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20202%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 202</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20203%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 203</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20204%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 204</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20206%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 206</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20208%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 208</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20210%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 210</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202100%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2100</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20212%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 212</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20214%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 214</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202200%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2200</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202201%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2201</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202203%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2203</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202205%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2205</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202207%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2207</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202209%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2209</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%202211%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 2211</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20300%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 300</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20301%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 301</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20302%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 302</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20304%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 304</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20306%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 306</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20308%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 308</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20310%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 310</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20400%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 400</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20401%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 401</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20403%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 403</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20500%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 500</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20501%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 501</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20502%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 502</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20503%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 503</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20504%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 504</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20600%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 600</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20601%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 601</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20602%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 602</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20603%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 603</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20604%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 604</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20605%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 605</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20606%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 606</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20607%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 607</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20609%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 609</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20611%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 611</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20700%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 700</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20701%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 701</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20702%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 702</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20703%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 703</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20705%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 705</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20707%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 707</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20709%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 709</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20711%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 711</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20713%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 713</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20715%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 715</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20717%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 717</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20800%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 800</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20801%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 801</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20802%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 802</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20803%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 803</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20804%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 804</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20806%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 806</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20900%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 900</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20901%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 901</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20902%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 902</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20903%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 903</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A8%D7%97%20904%2C%20%D7%A0%D7%97%D7%A3&amp;z=16" target="_blank" rel="noopener noreferrer">רח 904</a></li></ul>
+        </div>
+        
+    </div>
+    
+    </div>
+
+    <div id="tooltip"></div>
+
+    <script>
+    (function () {
+        const tooltip = document.getElementById('tooltip');
+        const paths = document.querySelectorAll('.street-path');
+        const searchInput = document.getElementById('street-search');
+        const filterBtns = document.querySelectorAll('.filter-btn');
+        const svg = document.getElementById('street-map');
+        let pinnedPath = null;
+        let activeFilter = 'all';
+        let searchTerm = '';
+
+        function applyFilters() {
+            paths.forEach(path => {
+                const status = path.getAttribute('data-status') || '';
+                const name = path.getAttribute('data-name') || '';
+                const statusOk = activeFilter === 'all' || status === activeFilter;
+                const searchOk = !searchTerm || name.includes(searchTerm);
+                path.classList.toggle('dimmed', !(statusOk && searchOk));
+            });
+        }
+
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                activeFilter = btn.getAttribute('data-filter');
+                applyFilters();
+            });
+        });
+
+        searchInput.addEventListener('input', () => {
+            searchTerm = searchInput.value.trim().toLowerCase();
+            applyFilters();
+        });
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    tooltip.classList.remove('visible');
+                    pinnedPath = null;
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    tooltip.textContent = path.getAttribute('data-tooltip');
+                    tooltip.classList.add('visible');
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }
+            });
+            path.addEventListener('mouseenter', (e) => {
+                if (pinnedPath !== path) {
+                    tooltip.textContent = path.getAttribute('data-tooltip');
+                    tooltip.classList.add('visible');
+                }
+            });
+            path.addEventListener('mousemove', (e) => {
+                if (pinnedPath !== path) {
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }
+            });
+            path.addEventListener('mouseleave', () => {
+                if (pinnedPath !== path) tooltip.classList.remove('visible');
+            });
+        });
+
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                tooltip.classList.remove('visible');
+                pinnedPath = null;
+            }
+        });
+
+        // Zoom / pan
+        let scale = 1;
+        let tx = 0, ty = 0;
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        const baseVB = svg.viewBox.baseVal;
+        const orig = { x: baseVB.x, y: baseVB.y, w: baseVB.width, h: baseVB.height };
+
+        function applyView() {
+            const w = orig.w / scale;
+            const h = orig.h / scale;
+            const cx = orig.x + orig.w / 2 + tx;
+            const cy = orig.y + orig.h / 2 + ty;
+            svg.setAttribute('viewBox', `${cx - w/2} ${cy - h/2} ${w} ${h}`);
+        }
+
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            scale = Math.min(scale * 1.3, 12);
+            applyView();
+        });
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            scale = Math.max(scale / 1.3, 0.5);
+            applyView();
+        });
+        document.getElementById('zoom-reset').addEventListener('click', () => {
+            scale = 1; tx = 0; ty = 0;
+            applyView();
+        });
+
+        svg.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+            scale = Math.min(12, Math.max(0.5, scale * factor));
+            applyView();
+        }, { passive: false });
+
+        svg.addEventListener('pointerdown', (e) => {
+            if (e.target.classList && e.target.classList.contains('street-path')) return;
+            dragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            svg.classList.add('dragging');
+            svg.setPointerCapture(e.pointerId);
+        });
+        svg.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            const rect = svg.getBoundingClientRect();
+            tx -= dx * (orig.w / scale) / rect.width;
+            ty -= dy * (orig.h / scale) / rect.height;
+            applyView();
+        });
+        svg.addEventListener('pointerup', () => {
+            dragging = false;
+            svg.classList.remove('dragging');
+        });
+        svg.addEventListener('pointercancel', () => {
+            dragging = false;
+            svg.classList.remove('dragging');
+        });
+    })();
+    </script>
+</body>
+</html>

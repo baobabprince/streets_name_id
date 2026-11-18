@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>מפת רחובות — הדר עם</title>
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --accent: #3b82f6;
+            --border: rgba(255,255,255,0.1);
+            --map-bg: #1a2332;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: 'Heebo', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            direction: rtl;
+        }
+        .container { max-width: 1280px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            margin: 0 0 8px;
+            font-size: clamp(1.4rem, 3vw, 2rem);
+            font-weight: 700;
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--muted);
+            margin-bottom: 20px;
+            font-size: 0.95rem;
+        }
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+        }
+        .toolbar input[type="search"] {
+            flex: 1;
+            min-width: 160px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.95rem;
+        }
+        .toolbar input:focus {
+            outline: 2px solid var(--accent);
+            border-color: transparent;
+        }
+        .filter-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .filter-btn {
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.85rem;
+            transition: all 0.15s;
+        }
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+        .zoom-controls {
+            display: flex;
+            gap: 4px;
+            margin-right: auto;
+        }
+        .zoom-controls button {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .zoom-controls button:hover { background: var(--accent); border-color: var(--accent); }
+        .map-wrap {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            background: var(--map-bg);
+            touch-action: none;
+        }
+        #street-map {
+            width: 100%;
+            height: auto;
+            display: block;
+            cursor: grab;
+            background: var(--map-bg);
+        }
+        #street-map.dragging { cursor: grabbing; }
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.15s, filter 0.15s, opacity 0.2s;
+        }
+        .street-path:hover {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 4px rgba(59,130,246,0.7));
+        }
+        .street-path.pinned {
+            stroke-width: 9 !important;
+            filter: drop-shadow(0 0 6px rgba(250,204,21,0.85));
+        }
+        .street-path.dimmed { opacity: 0.12; }
+        #tooltip {
+            position: fixed;
+            background: rgba(15, 23, 42, 0.95);
+            color: var(--text);
+            padding: 12px 16px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 320px;
+            direction: rtl;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        #tooltip.visible { opacity: 1; }
+        .legend {
+            margin: 18px 0;
+            padding: 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            text-align: center;
+        }
+        .legend-title { font-weight: 600; margin-bottom: 10px; }
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+        .legend-color { width: 28px; height: 4px; border-radius: 2px; }
+        .stats {
+            margin-top: 12px;
+            padding: 12px 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .coverage {
+            height: 8px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 12px 0 6px;
+        }
+        .coverage-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #22c55e, #3b82f6);
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+        .coverage-label {
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-bottom: 12px;
+        }
+        .diagnostics {
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .diagnostics h2 {
+            text-align: center;
+            margin-top: 0;
+            font-size: 1.15rem;
+        }
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .diagnostics-card {
+            background: var(--bg);
+            padding: 14px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        .diagnostics-card .label {
+            font-weight: 600;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+        .diagnostics-card .value {
+            font-size: 1.5em;
+            color: var(--accent);
+            margin-top: 4px;
+        }
+        .unmatched-list {
+            margin-top: 16px;
+            padding: 14px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+            border-radius: 10px;
+        }
+        .unmatched-list h3 {
+            margin-top: 0;
+            color: #f87171;
+            font-size: 1rem;
+        }
+        .unmatched-list ul {
+            columns: 3;
+            padding-right: 18px;
+            list-style-type: none;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .unmatched-list li { margin-bottom: 4px; }
+        .unmatched-list a { color: inherit; }
+        .unmatched-list a:hover { color: var(--text); }
+        @media (max-width: 640px) {
+            .unmatched-list ul { columns: 1; }
+            .toolbar { flex-direction: column; align-items: stretch; }
+            .zoom-controls { margin-right: 0; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>מפת רחובות — הדר עם</h1>
+        <p class="subtitle">התאמת שמות רחובות OSM ↔ למ״ס</p>
+
+        
+        <div class="coverage"><div class="coverage-bar" style="width:58.8%"></div></div>
+        <div class="coverage-label">כיסוי התאמות: 58.8% (20/34)</div>
+        
+
+        <div class="toolbar">
+            <input type="search" id="street-search" placeholder="חיפוש רחוב..." autocomplete="off" />
+            <div class="filter-group">
+                <button type="button" class="filter-btn active" data-filter="all">הכל</button>
+                <button type="button" class="filter-btn" data-filter="perfect">מלא</button>
+                <button type="button" class="filter-btn" data-filter="partial">חלקי</button>
+                <button type="button" class="filter-btn" data-filter="ai">AI</button>
+                <button type="button" class="filter-btn" data-filter="unmatched">ללא התאמה</button>
+                <button type="button" class="filter-btn" data-filter="unnamed">ללא שם</button>
+            </div>
+            <div class="zoom-controls">
+                <button type="button" id="zoom-in" title="הגדל">+</button>
+                <button type="button" id="zoom-out" title="הקטן">−</button>
+                <button type="button" id="zoom-reset" title="איפוס">⟲</button>
+            </div>
+        </div>
+
+        <div class="legend">
+            <div class="legend-title">מקרא צבעים</div>
+            <div class="legend-items">
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #f8fafc;"></span>
+                    <span>התאמה מלאה (100)</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: linear-gradient(to left, #c06666, #ffcccc);"></span>
+                    <span>התאמה חלקית (0–99)</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #00BFFF;"></span>
+                    <span>התאמה ע״י AI</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #FF8C00;"></span>
+                    <span>שם קיים, ללא התאמה</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: repeating-linear-gradient(to right, #CCCCCC 0px, #CCCCCC 5px, transparent 5px, transparent 10px);"></span>
+                    <span>ללא שם</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="map-wrap">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1242.9600383504294 1279.596943049226" id="street-map">
+                <rect x="0" y="0" width="1242.9600383504294" height="1279.596943049226" fill="#1a2332" />
+                <path d="M 1027.9464418832213,886.5310375499539 L 1155.4406546889804,935.9038101420738 L 1180.9996097744443,945.7994226426817" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 983.2627982790582,937.3927643452771 L 911.9181366297416,921.5940284016542 L 901.8659866107628,917.5751639581285 L 896.6451024925336,913.1609998107888 L 892.6264688749798,905.5185624971054 L 893.0383509914391,897.4939980451018 L 904.7825572695583,867.7806622767821" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הנוטע#10;ציון: 100.0#10;מזהה: 111" data-status="perfect" data-name="הנוטע"></path>
+<path d="M 989.930835777428,892.8031171443872 L 1000.2167567266151,889.8647273252718 L 1010.1575872539543,887.3084593587555 L 1017.5492014428601,886.451977701392 L 1027.9464418832213,886.5310375499539" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 939.7480093277991,882.4594547022134 L 948.1637628315948,885.9907952453941 L 956.5238565900363,889.3376618097536 L 964.41640848713,892.684527433943 L 973.4332872414961,896.2026883172803" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 694.2328723832034,908.7073041782714 L 796.8694428945892,865.8700461345725" stroke="#dd0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היובל - היבול#10;ציון: 80.0#10;מזהה: 118" data-status="partial" data-name="היובל"></path>
+<path d="M 203.5142930680886,1168.8240576889366 L 311.28269210550934,1218.9730613348074 L 332.4222634071484,1229.6590146147646 L 383.95205569500104,1256.5253825848922 L 403.25485539855435,1265.8146227500401 L 423.77103755204007,1271.493573101703 L 448.7288673873991,1277.2252255864441 L 465.69395778514445,1279.043542349711 L 498.59999926248565,1279.596943049226 L 538.1295504434966,1279.399299944751 L 567.2173333885148,1274.3791640060954 L 588.434828333091,1267.9623467507772 L 605.9565161843784,1259.1474525271915 L 624.9030935172923,1246.4587368438952 L 652.6773064699955,1222.9391190954484 L 675.2862950502895,1201.5540146157146 L 756.5829191762023,1095.1022675912827 L 769.2399452794343,1076.4708082559519 L 779.4813384334557,1061.8581369617023 L 788.8767034560442,1043.6350961737335 L 795.8675674772821,1025.8073221552186 L 801.7786324387416,1005.6604560138658 L 803.6376679353416,989.7827513813972 L 796.8694428945892,865.8700461345725" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="בני גאולים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="בני גאולים"></path>
+<path d="M 694.2328723832034,908.7073041782714 L 697.9509433759376,924.7827657829039 L 700.6226111548021,944.4685884164646 L 700.8786459839903,964.1543785431422 L 698.7635756582022,983.9587249625474 L 693.4425039985217,1004.5668056672439 L 686.0063620139845,1019.2586061558686 L 675.9542119950056,1034.9781538047828 L 660.6700459085405,1051.9757972578518 L 607.6597043927759,1102.718230561819 L 574.2749891038984,1133.2874447368085 L 549.072256389074,1150.0873027723283 L 531.0496308295988,1159.8246214152314 L 510.0547748655081,1167.1243110951036 L 490.2510374542326,1170.0231035910547 L 471.72747418563813,1169.1534659154713 L 452.40241058403626,1163.8829331966117 L 427.4111849004403,1151.707993707154 L 384.29714611684904,1127.3976065516472 L 270.77352940523997,1060.448256998323" stroke="#dd0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הפרסה - הפרדס#10;ציון: 80.0#10;מזהה: 104" data-status="partial" data-name="הפרסה"></path>
+<path d="M 270.77352940523997,1060.448256998323 L 149.16811766289175,984.2486086976714 L 135.66506343055516,974.3003219366074 L 127.69458788866177,967.3826341950335" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="אביחייל#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="אביחייל"></path>
+<path d="M 466.4175344747491,1029.509914518334 L 573.7295235986821,948.3029717742465" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="על עבודת האדמה#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="על עבודת האדמה"></path>
+<path d="M 270.77352940523997,1060.448256998323 L 323.3274610093795,978.1083426177502 L 370.4156056144275,901.2888666363433 L 378.76456742407754,881.6556792836636" stroke="#da0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שער הכפר - שדרת הכפר#10;ציון: 82.4#10;מזהה: 103" data-status="partial" data-name="שער הכפר"></path>
+<path d="M 450.476583392825,907.2183463918045 L 464.8034018580802,1004.6722177532502 L 466.4175344747491,1029.509914518334" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הפיקוסים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="הפיקוסים"></path>
+<path d="M 700.8786459839903,964.1543785431422 L 637.7493627546355,965.4983871248551 L 573.7295235986821,948.3029717742465 L 450.476583392825,907.2183463918045" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המייסדים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המייסדים"></path>
+<path d="M 450.476583392825,907.2183463918045 L 415.12151311757043,868.0441955141723" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המייסדים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המייסדים"></path>
+<path d="M 378.76456742407754,881.6556792836636 L 389.25086345663294,866.4629960055463" stroke="#da0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שער הכפר - שדרת הכפר#10;ציון: 82.4#10;מזהה: 103" data-status="partial" data-name="שער הכפר"></path>
+<path d="M 381.2247281707823,861.8379862350412 L 378.76456742407754,881.6556792836636" stroke="#da0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שער הכפר - שדרת הכפר#10;ציון: 82.4#10;מזהה: 103" data-status="partial" data-name="שער הכפר"></path>
+<path d="M 399.8930067764595,865.2902728999034 L 415.12151311757043,868.0441955141723" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המייסדים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המייסדים"></path>
+<path d="M 149.16811766289175,984.2486086976714 L 297.3120960108936,742.4831248661503" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מול הים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מול הים"></path>
+<path d="M 415.12151311757043,868.0441955141723 L 408.1640449431725,855.8426005314104" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המייסדים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המייסדים"></path>
+<path d="M 502.78561211703345,770.2202576417476 L 593.5555249094032,807.5499881361611 L 620.2833346496336,819.6593955443241 L 647.0111443889327,833.3895248603076 L 664.310193257872,847.9761228468269 L 678.5256922319531,867.1745358104818 L 688.3106754734181,889.5880179316737 L 694.2328723832034,908.7073041782714" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הזורע#10;ציון: 100.0#10;מזהה: 108" data-status="perfect" data-name="הזורע"></path>
+<path d="M 406.31614139536396,842.0466136233881 L 413.21794982487336,825.9973938632756" stroke="#da0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שער הכפר - שדרת הכפר#10;ציון: 82.4#10;מזהה: 103" data-status="partial" data-name="שער הכפר"></path>
+<path d="M 375.94818430766463,826.959293521475 L 380.30077639687806,840.9529482661746" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הראשונים#10;ציון: 100.0#10;מזהה: 105" data-status="perfect" data-name="הראשונים"></path>
+<path d="M 413.21794982487336,825.9973938632756 L 400.63884736504406,836.7891129786149" stroke="#da0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שער הכפר - שדרת הכפר#10;ציון: 82.4#10;מזהה: 103" data-status="partial" data-name="שער הכפר"></path>
+<path d="M 388.0708768540062,835.5636801640503 L 375.94818430766463,826.959293521475" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הראשונים#10;ציון: 100.0#10;מזהה: 105" data-status="perfect" data-name="הראשונים"></path>
+<path d="M 126.99327509710565,675.5184366530739 L 127.17138628195971,805.8765434897505 L 122.26219673873857,947.8417917108163 L 122.98577342834324,957.2498614769429 L 127.69458788866177,967.3826341950335" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="בית האריזה#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="בית האריזה"></path>
+<path d="M 417.99355597933754,817.4061770332046 L 445.7121091876179,819.0137364817783 L 478.18400465138257,792.5548615888692 L 492.73346209852025,779.2858718410134 L 502.78561211703345,770.2202576417476 L 540.2891485644504,748.6103355232626 L 578.5051297545433,735.2358823912218 L 626.2834552032873,739.0571562461555 L 682.6556453411467,752.4316050903872 L 730.4228388397023,770.5892071910203 L 793.4853303749114,804.0318010887131 L 852.0059866844676,841.2955422438681" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 259.22969821002334,700.3699960913509 L 126.99327509710565,675.5184366530739" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="האקליפטוס#10;ציון: 100.0#10;מזהה: 101" data-status="perfect" data-name="האקליפטוס"></path>
+<path d="M 126.99327509710565,675.5184366530739 L 2.6605358300730586,661.2346961153671 L 0.0,660.9052738542669" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="האקליפטוס#10;ציון: 100.0#10;מזהה: 101" data-status="perfect" data-name="האקליפטוס"></path>
+<path d="M 413.21794982487336,825.9973938632756 L 417.99355597933754,817.4061770332046 L 447.2371862111613,727.5933310077526 L 460.6400529020466,694.4404134457 L 464.1577488114126,684.0175176891498 L 494.982115812134,598.7628954588436 L 502.017507630866,574.0165400798433 L 507.80612115142867,553.6976092336699 L 552.1001465381123,422.8755441531539 L 618.290715763811,279.8103267061524" stroke="#da0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="שער הכפר - שדרת הכפר#10;ציון: 82.4#10;מזהה: 103" data-status="partial" data-name="שער הכפר"></path>
+<path d="M 396.0413523958996,531.7578687504865 L 272.61030100332573,520.8077489337884" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הברוש#10;ציון: 100.0#10;מזהה: 116" data-status="perfect" data-name="הברוש"></path>
+<path d="M 382.5271662129089,178.0151570662856 L 331.9992493423633,258.449884865433 L 303.33448046213016,305.2688662405126 L 285.601285578683,356.0013009905815 L 284.187528045848,372.7759000957012 L 276.7847819086164,481.1315987696871 L 273.56764862407,512.1108957026154 L 272.61030100332573,520.8077489337884 L 259.22969821002334,700.3699960913509 L 297.3120960108936,742.4831248661503 L 375.94818430766463,826.959293521475" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הראשונים#10;ציון: 100.0#10;מזהה: 105" data-status="perfect" data-name="הראשונים"></path>
+<path d="M 1214.5735681978986,806.4826730731875 L 1049.831853773445,738.4905536482111" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="האסיף#10;ציון: 100.0#10;מזהה: 106" data-status="perfect" data-name="האסיף"></path>
+<path d="M 464.1577488114126,684.0175176891498 L 585.1954311514273,623.4433148037642 L 612.9028524099849,614.8387750466354 L 653.9908764618449,613.8900352134369 L 693.1642052717507,625.3539698026143 L 908.1444058916532,748.6103355232626 L 852.0059866844676,841.2955422438681" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההולנדים#10;ציון: 100.0#10;מזהה: 107" data-status="perfect" data-name="ההולנדים"></path>
+<path d="M 1240.7002526870929,746.7524074632674 L 1242.9600383504294,739.3338691317476 L 1242.1808019145392,731.2433087443933 L 1238.5963143110275,726.2229419643991 L 1233.1082634157501,724.6021931823343 L 1219.1265353718773,722.7179077370092 L 1209.720038399566,719.9903051992878 L 1200.391465071123,716.8410435225815 L 1082.136770001147,667.7309012678452" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הבציר#10;ציון: 100.0#10;מזהה: 119" data-status="perfect" data-name="הבציר"></path>
+<path d="M 1049.831853773445,738.4905536482111 L 1051.9135282514617,733.9445550874807 L 1079.064352055546,674.4774635210633 L 1082.136770001147,667.7309012678452" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הגדיד#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="הגדיד"></path>
+<path d="M 995.3298310809769,691.0276078730822 L 974.9249684186652,699.8429221971892" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הגדיד#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="הגדיד"></path>
+<path d="M 1020.6661471854895,800.6585571011528 L 1012.3617131724022,793.8593592871912 L 1003.8791679735295,783.0148942852393 L 999.7603468140587,776.6505195875652 L 997.0664151376113,772.4734850702807 L 991.1998779727146,760.8515706066974 L 986.891813678667,748.7421034593135 L 979.9454774530604,720.3592563029379 L 974.9249684186652,699.8429221971892 L 957.9821419194341,624.4315846683457 L 955.4551894790493,618.0407714243047 L 952.4384312778711,613.8109735576436 L 947.2398110576905,609.2385735521093 L 830.8552834345028,542.8002176564187 L 819.0220215623267,535.7768632718362 L 806.1757523245178,529.0961076980457 L 794.8322962131351,523.8252919805236 L 781.4516934189014,519.6745229633525 L 648.836784038227,482.66014104289934" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המסיק#10;ציון: 100.0#10;מזהה: 120" data-status="perfect" data-name="המסיק"></path>
+<path d="M 1082.136770001147,667.7309012678452 L 1117.4695763792843,585.032495889347 L 1117.8257987499237,579.3136875652708 L 1116.4899648595601,573.2522748252377 L 1113.9630124191754,569.5363637525588 L 1109.7440037182532,566.1630534050055 L 1071.4389669364318,550.680073749274 L 1065.8507284992374,549.6390897142701 L 1061.3756849691272,550.1398162236437 L 1057.223467961885,551.9845979171805 L 1053.4831330706365,555.3183812540956 L 1006.3838565163314,677.6003826451488 L 1002.1425839178264,684.5050616883673 L 999.5154439345933,687.9442228488624 L 995.3298310809769,691.0276078730822" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הגדיד#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="הגדיד"></path>
+<path d="M 830.8552834345028,542.8002176564187 L 848.1320684044622,488.6161832008511 L 847.4641514597461,480.67040063161403 L 845.7275674040429,473.5943012461066 L 842.0985520035028,467.4405950154178 L 835.8423966215923,463.13168105250224 L 667.8835489121266,414.0468478323892" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="התירוש#10;ציון: 100.0#10;מזהה: 121" data-status="perfect" data-name="התירוש"></path>
+<path d="M 612.9028524099849,614.8387750466354 L 642.035163150169,507.7756437668577 L 648.836784038227,482.66014104289934 L 667.8835489121266,414.0468478323892 L 700.811854289379,310.05221930658445" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="זו-הדרך - זו הדרך#10;ציון: 100.0#10;מזהה: 114" data-status="perfect" data-name="זו-הדרך"></path>
+<path d="M 873.8134749308228,306.5075308554806 L 804.8399184355512,282.10317876795307" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הפרדס#10;ציון: 100.0#10;מזהה: 104" data-status="perfect" data-name="הפרדס"></path>
+<path d="M 846.0726578249596,169.47618292598054 L 804.8399184355512,282.10317876795307 L 778.134372593835,343.4961053086445" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="מעלה הכפר#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="מעלה הכפר"></path>
+<path d="M 951.213916879613,201.44459481537342 L 897.5913181644864,155.50809475407004" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="סמטת הלול#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="סמטת הלול"></path>
+<path d="M 618.290715763811,279.8103267061524 L 719.9254108578898,24.958388656843454" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="באר המים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="באר המים"></path>
+<path d="M 767.7705280012451,0.0 L 904.0367166809738,15.286030933726579 L 927.1355110206641,30.044938751030713 L 941.2730863513425,69.47221714863554 L 931.3099919254892,109.84814515011385 L 915.7141312658787,135.01714333472773 L 897.5913181644864,155.50809475407004 L 881.9286658093333,166.37948554567993 L 846.0726578249596,169.47618292598054 L 803.7935152221471,135.93956634309143 L 744.2264556982554,27.19857937982306" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="קדמה#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="קדמה"></path>
+<path d="M 522.901044103317,239.9620687039569 L 446.6583248595707,364.5137870684266 L 411.32551848096773,417.4597327094525 L 402.1861882871017,446.6866372972727 L 396.0413523958996,531.7578687504865 L 389.97444014716893,643.7357729421929 L 390.24160692468286,661.7222410477698 L 460.6400529020466,694.4404134457" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="נבטים#10;ציון: 100.0#10;מזהה: 115" data-status="perfect" data-name="נבטים"></path>
+<path d="M 618.290715763811,279.8103267061524 L 522.901044103317,239.9620687039569 L 382.5271662129089,178.0151570662856" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="באר המים#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="באר המים"></path>
+<path d="M 429.38153988774866,94.29868515627459 L 382.5271662129089,178.0151570662856" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="המגדל#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="המגדל"></path>
+<path d="M 675.5757257263176,6.9314268017187715 L 522.901044103317,239.9620687039569" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="התאנה#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="התאנה"></path>
+<path d="M 968.1901392261498,880.9441403429955 L 962.5017132461071,883.3686432256363 L 960.8430528328754,883.6980593404733 L 957.7261070911773,884.3173616114073 L 951.0358056942932,883.843002427835 L 939.7480093277991,882.4594547022134" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 1027.9464418832213,886.5310375499539 L 1016.6920413640328,882.7625175509602 L 1011.0147473337129,881.2999098170549 L 1006.8180025308393,880.8914337526076 L 1001.4746669731103,880.4961343207397 L 995.1962476922199,879.6791821210645 L 990.4651693329215,878.3615171634592" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 904.7825572695583,867.7806622767821 L 939.7480093277991,882.4594547022134" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 989.5634814579971,877.4259749557823 L 988.1497239246964,870.956237395294 L 987.3704874888062,865.9886361118406 L 987.3704874888062,861.5085695167072 L 988.6283977353014,854.5117562632076" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החריש#10;ציון: 100.0#10;מזהה: 109" data-status="perfect" data-name="החריש"></path>
+<path d="M 988.6283977353014,854.5117562632076 L 985.7452229233459,859.3607722884044 L 976.4166495953687,873.3148590303026" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החריש#10;ציון: 100.0#10;מזהה: 109" data-status="perfect" data-name="החריש"></path>
+<path d="M 852.0059866844676,841.2955422438681 L 897.5245264703408,864.736852967646 L 904.7825572695583,867.7806622767821" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ההדרים#10;ציון: 100.0#10;מזהה: 102" data-status="perfect" data-name="ההדרים"></path>
+<path d="M 796.8694428945892,865.8700461345725 L 827.1928721871227,856.6990843885578 L 841.4528989573009,849.1224942905828 L 852.0059866844676,841.2955422438681" stroke="#dd0b0b" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="היובל - היבול#10;ציון: 80.0#10;מזהה: 118" data-status="partial" data-name="היובל"></path>
+<path d="M 1155.4406546889804,935.9038101420738 L 1186.0201188097708,866.6869992804714 L 1214.5735681978986,806.4826730731875 L 1240.7002526870929,746.7524074632674" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הקטיף#10;ציון: 100.0#10;מזהה: 112" data-status="perfect" data-name="הקטיף"></path>
+<path d="M 1186.0201188097708,866.6869992804714 L 1020.6661471854895,800.6585571011528" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="הקציר#10;ציון: 100.0#10;מזהה: 113" data-status="perfect" data-name="הקציר"></path>
+<path d="M 1049.831853773445,738.4905536482111 L 1020.6661471854895,800.6585571011528 L 988.6283977353014,854.5117562632076" stroke="#f8fafc" stroke-width="5" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="החריש#10;ציון: 100.0#10;מזהה: 109" data-status="perfect" data-name="החריש"></path>
+            </svg>
+        </div>
+
+        <div class="stats">
+            <strong>הוראות:</strong> העבר עכבר / לחץ על רחוב לפרטים · גרירה להזזה · גלגלת / כפתורים לזום · סינון וחיפוש בסרגל
+        </div>
+
+        
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">34</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">21</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">20</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">20</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">14</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (14)</h3>
+            <ul><li>אביחייל</li><li>באר המים</li><li>בית האריזה</li><li>בני גאולים</li><li>הגדיד</li><li>המגדל</li><li>המייסדים</li><li>הפיקוסים</li><li>התאנה</li><li>מול הים</li><li>מעלה הכפר</li><li>סמטת הלול</li><li>על עבודת האדמה</li><li>קדמה</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (2 - 9.5%)</h3>
+            <ul><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%9C%D7%99%D7%9E%D7%95%D7%9F%2C%20%D7%94%D7%93%D7%A8%20%D7%A2%D7%9D&amp;z=16" target="_blank" rel="noopener noreferrer">הלימון</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%AA%D7%A4%D7%95%D7%96%2C%20%D7%94%D7%93%D7%A8%20%D7%A2%D7%9D&amp;z=16" target="_blank" rel="noopener noreferrer">התפוז</a></li></ul>
+        </div>
+        
+    </div>
+    
+    </div>
+
+    <div id="tooltip"></div>
+
+    <script>
+    (function () {
+        const tooltip = document.getElementById('tooltip');
+        const paths = document.querySelectorAll('.street-path');
+        const searchInput = document.getElementById('street-search');
+        const filterBtns = document.querySelectorAll('.filter-btn');
+        const svg = document.getElementById('street-map');
+        let pinnedPath = null;
+        let activeFilter = 'all';
+        let searchTerm = '';
+
+        function applyFilters() {
+            paths.forEach(path => {
+                const status = path.getAttribute('data-status') || '';
+                const name = path.getAttribute('data-name') || '';
+                const statusOk = activeFilter === 'all' || status === activeFilter;
+                const searchOk = !searchTerm || name.includes(searchTerm);
+                path.classList.toggle('dimmed', !(statusOk && searchOk));
+            });
+        }
+
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                activeFilter = btn.getAttribute('data-filter');
+                applyFilters();
+            });
+        });
+
+        searchInput.addEventListener('input', () => {
+            searchTerm = searchInput.value.trim().toLowerCase();
+            applyFilters();
+        });
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    tooltip.classList.remove('visible');
+                    pinnedPath = null;
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    tooltip.textContent = path.getAttribute('data-tooltip');
+                    tooltip.classList.add('visible');
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }
+            });
+            path.addEventListener('mouseenter', (e) => {
+                if (pinnedPath !== path) {
+                    tooltip.textContent = path.getAttribute('data-tooltip');
+                    tooltip.classList.add('visible');
+                }
+            });
+            path.addEventListener('mousemove', (e) => {
+                if (pinnedPath !== path) {
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }
+            });
+            path.addEventListener('mouseleave', () => {
+                if (pinnedPath !== path) tooltip.classList.remove('visible');
+            });
+        });
+
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                tooltip.classList.remove('visible');
+                pinnedPath = null;
+            }
+        });
+
+        // Zoom / pan
+        let scale = 1;
+        let tx = 0, ty = 0;
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        const baseVB = svg.viewBox.baseVal;
+        const orig = { x: baseVB.x, y: baseVB.y, w: baseVB.width, h: baseVB.height };
+
+        function applyView() {
+            const w = orig.w / scale;
+            const h = orig.h / scale;
+            const cx = orig.x + orig.w / 2 + tx;
+            const cy = orig.y + orig.h / 2 + ty;
+            svg.setAttribute('viewBox', `${cx - w/2} ${cy - h/2} ${w} ${h}`);
+        }
+
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            scale = Math.min(scale * 1.3, 12);
+            applyView();
+        });
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            scale = Math.max(scale / 1.3, 0.5);
+            applyView();
+        });
+        document.getElementById('zoom-reset').addEventListener('click', () => {
+            scale = 1; tx = 0; ty = 0;
+            applyView();
+        });
+
+        svg.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+            scale = Math.min(12, Math.max(0.5, scale * factor));
+            applyView();
+        }, { passive: false });
+
+        svg.addEventListener('pointerdown', (e) => {
+            if (e.target.classList && e.target.classList.contains('street-path')) return;
+            dragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            svg.classList.add('dragging');
+            svg.setPointerCapture(e.pointerId);
+        });
+        svg.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            const rect = svg.getBoundingClientRect();
+            tx -= dx * (orig.w / scale) / rect.width;
+            ty -= dy * (orig.h / scale) / rect.height;
+            applyView();
+        });
+        svg.addEventListener('pointerup', () => {
+            dragging = false;
+            svg.classList.remove('dragging');
+        });
+        svg.addEventListener('pointercancel', () => {
+            dragging = false;
+            svg.classList.remove('dragging');
+        });
+    })();
+    </script>
+</body>
+</html>

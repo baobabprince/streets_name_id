@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>מפת רחובות — מחולה</title>
+    <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --accent: #3b82f6;
+            --border: rgba(255,255,255,0.1);
+            --map-bg: #1a2332;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            padding: 16px;
+            font-family: 'Heebo', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            direction: rtl;
+        }
+        .container { max-width: 1280px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            margin: 0 0 8px;
+            font-size: clamp(1.4rem, 3vw, 2rem);
+            font-weight: 700;
+        }
+        .subtitle {
+            text-align: center;
+            color: var(--muted);
+            margin-bottom: 20px;
+            font-size: 0.95rem;
+        }
+        .toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 12px 14px;
+        }
+        .toolbar input[type="search"] {
+            flex: 1;
+            min-width: 160px;
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.95rem;
+        }
+        .toolbar input:focus {
+            outline: 2px solid var(--accent);
+            border-color: transparent;
+        }
+        .filter-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .filter-btn {
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--muted);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.85rem;
+            transition: all 0.15s;
+        }
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+        .zoom-controls {
+            display: flex;
+            gap: 4px;
+            margin-right: auto;
+        }
+        .zoom-controls button {
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 1.1rem;
+            line-height: 1;
+        }
+        .zoom-controls button:hover { background: var(--accent); border-color: var(--accent); }
+        .map-wrap {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+            background: var(--map-bg);
+            touch-action: none;
+        }
+        #street-map {
+            width: 100%;
+            height: auto;
+            display: block;
+            cursor: grab;
+            background: var(--map-bg);
+        }
+        #street-map.dragging { cursor: grabbing; }
+        .street-path {
+            cursor: pointer;
+            transition: stroke-width 0.15s, filter 0.15s, opacity 0.2s;
+        }
+        .street-path:hover {
+            stroke-width: 10 !important;
+            filter: drop-shadow(0 0 4px rgba(59,130,246,0.7));
+        }
+        .street-path.pinned {
+            stroke-width: 9 !important;
+            filter: drop-shadow(0 0 6px rgba(250,204,21,0.85));
+        }
+        .street-path.dimmed { opacity: 0.12; }
+        #tooltip {
+            position: fixed;
+            background: rgba(15, 23, 42, 0.95);
+            color: var(--text);
+            padding: 12px 16px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.15s;
+            z-index: 1000;
+            white-space: pre-line;
+            font-size: 14px;
+            max-width: 320px;
+            direction: rtl;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+        #tooltip.visible { opacity: 1; }
+        .legend {
+            margin: 18px 0;
+            padding: 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            text-align: center;
+        }
+        .legend-title { font-weight: 600; margin-bottom: 10px; }
+        .legend-items {
+            display: flex;
+            justify-content: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: var(--muted);
+        }
+        .legend-color { width: 28px; height: 4px; border-radius: 2px; }
+        .stats {
+            margin-top: 12px;
+            padding: 12px 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .coverage {
+            height: 8px;
+            background: rgba(255,255,255,0.08);
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 12px 0 6px;
+        }
+        .coverage-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #22c55e, #3b82f6);
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+        .coverage-label {
+            text-align: center;
+            color: var(--muted);
+            font-size: 0.85rem;
+            margin-bottom: 12px;
+        }
+        .diagnostics {
+            margin-top: 20px;
+            padding: 16px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+        }
+        .diagnostics h2 {
+            text-align: center;
+            margin-top: 0;
+            font-size: 1.15rem;
+        }
+        .diagnostics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .diagnostics-card {
+            background: var(--bg);
+            padding: 14px;
+            border-radius: 10px;
+            text-align: center;
+            border: 1px solid var(--border);
+        }
+        .diagnostics-card .label {
+            font-weight: 600;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+        .diagnostics-card .value {
+            font-size: 1.5em;
+            color: var(--accent);
+            margin-top: 4px;
+        }
+        .unmatched-list {
+            margin-top: 16px;
+            padding: 14px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+            border-radius: 10px;
+        }
+        .unmatched-list h3 {
+            margin-top: 0;
+            color: #f87171;
+            font-size: 1rem;
+        }
+        .unmatched-list ul {
+            columns: 3;
+            padding-right: 18px;
+            list-style-type: none;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .unmatched-list li { margin-bottom: 4px; }
+        .unmatched-list a { color: inherit; }
+        .unmatched-list a:hover { color: var(--text); }
+        @media (max-width: 640px) {
+            .unmatched-list ul { columns: 1; }
+            .toolbar { flex-direction: column; align-items: stretch; }
+            .zoom-controls { margin-right: 0; justify-content: center; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>מפת רחובות — מחולה</h1>
+        <p class="subtitle">התאמת שמות רחובות OSM ↔ למ״ס</p>
+
+        
+        <div class="coverage"><div class="coverage-bar" style="width:0.0%"></div></div>
+        <div class="coverage-label">כיסוי התאמות: 0.0% (0/2)</div>
+        
+
+        <div class="toolbar">
+            <input type="search" id="street-search" placeholder="חיפוש רחוב..." autocomplete="off" />
+            <div class="filter-group">
+                <button type="button" class="filter-btn active" data-filter="all">הכל</button>
+                <button type="button" class="filter-btn" data-filter="perfect">מלא</button>
+                <button type="button" class="filter-btn" data-filter="partial">חלקי</button>
+                <button type="button" class="filter-btn" data-filter="ai">AI</button>
+                <button type="button" class="filter-btn" data-filter="unmatched">ללא התאמה</button>
+                <button type="button" class="filter-btn" data-filter="unnamed">ללא שם</button>
+            </div>
+            <div class="zoom-controls">
+                <button type="button" id="zoom-in" title="הגדל">+</button>
+                <button type="button" id="zoom-out" title="הקטן">−</button>
+                <button type="button" id="zoom-reset" title="איפוס">⟲</button>
+            </div>
+        </div>
+
+        <div class="legend">
+            <div class="legend-title">מקרא צבעים</div>
+            <div class="legend-items">
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #f8fafc;"></span>
+                    <span>התאמה מלאה (100)</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: linear-gradient(to left, #c06666, #ffcccc);"></span>
+                    <span>התאמה חלקית (0–99)</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #00BFFF;"></span>
+                    <span>התאמה ע״י AI</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: #FF8C00;"></span>
+                    <span>שם קיים, ללא התאמה</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-color" style="background: repeating-linear-gradient(to right, #CCCCCC 0px, #CCCCCC 5px, transparent 5px, transparent 10px);"></span>
+                    <span>ללא שם</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="map-wrap">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 7227.473599499557 18400.74845538661" id="street-map">
+                <rect x="0" y="0" width="7227.473599499557" height="18400.74845538661" fill="#1a2332" />
+                <path d="M 2162.0805460345,3527.9337493581697 L 2159.0415239362046,3535.723203450907 L 2155.0562861654907,3567.9880961081944 L 2160.0990590984,3596.0352847422473 L 2384.3187774545513,3909.0311033562757 L 2784.7906455835328,4474.50623815041 L 2800.9097078498453,4493.734504091088 L 2839.9605852202512,4548.572451937944 L 2877.5531772612594,4601.2883378821425 L 2892.414329282008,4622.5854896605015 L 2905.2939943671227,4645.358639548067 L 2915.346144385636,4667.446444734 L 2919.520625289995,4685.96274151979 L 2921.9139943420887,4703.8727834192105 L 2921.9139943420887,4720.00365904253 L 2918.3295067390427,4736.121334035881 L 2909.368287729565,4754.637524107471 L 2891.456981661264,4780.915967952926 L 2875.9279126953334,4800.618173446041 L 2858.0500024748035,4821.809539379552 L 2820.513070178684,4866.30074225273 L 2779.3693863814697,4915.786467376165 L 2762.3152403924614,4936.859021360055 L 2746.9420187133364,4959.460249539465 L 2733.060478211846,4984.038212869316 L 2731.056727377232,4988.43983741058 L 2720.069493636489,5012.609207867645 L 2715.9395405272953,5024.087664889172 L 2710.362434037961,5039.572362644132 L 2705.7426751712337,5068.749432078097 L 2703.9504313687794,5092.035686910618 L 2704.3957093325444,5117.79943026742 L 2710.9524273402058,5203.708921823185 L 2712.7780669895,5227.574755942915 L 2717.987819158472,5324.012797106057 L 2717.854235769715,5337.414961069357 L 2721.5945706600323,5438.451242046431 L 2721.394195576664,5475.705436532386 L 2715.460866717156,5525.689392143395 L 2708.2473637140356,5586.887495782692 L 2658.977357089054,6164.366530943662 L 2633.6633048825897,6461.03463338688 L 2665.333700013347,6911.109030793421 L 2660.3688507238403,7016.664611588232 L 2655.0589110129513,7129.7164877126925 L 2650.628395278938,7178.810709847137 L 2645.607886244543,7237.44417776214 L 2641.7896277103573,7304.075164180715 L 2637.793257990852,7330.954080383759 L 2620.0823270054534,7394.540922273882 L 2593.877718871925,7481.158673085738 L 2580.363532690797,7522.227441502735 L 2548.4259707815945,7608.699332905002 L 2527.7762052398175,7664.576995903626 L 2522.599848918151,7686.395696313586 L 2520.072896476835,7703.234013898298 L 2520.306667407509,7720.757433395367 L 2523.746439673472,7738.149072396103 L 2527.509038461838,7749.559027838521 L 2592.7422600663267,7946.715009327512 L 2596.4714630078524,7977.110258545261 L 2605.43268201733,8094.171428669244 L 2605.922487777192,8119.9945596545 L 2605.0207999013364,8130.389671595767 L 2602.7387503399514,8140.771599445492 L 2584.5714094419964,8196.989318257198 L 2573.662099344656,8226.804232422262 L 2563.6544771227054,8248.371580781415 L 2547.268248077482,8270.953356379643 L 2516.132186502684,8296.011962793767 L 2492.298683523666,8314.733421442099 L 2471.6711818799376,8333.006906921975 L 2446.1678865388967,8364.771348925307 L 2419.4066809527576,8410.263784819748 L 2399.0797419329174,8446.336146101821 L 2385.5989515986294,8475.465354558546 L 2377.1720661455765,8502.75004385272 L 2368.8787640817463,8537.97895159712 L 2361.976955652237,8588.424352948554 L 2358.526051437948,8612.836741385981 L 2355.075147223193,8630.819931341335 L 2341.694544429425,8673.149486809038 L 2327.4122537607327,8703.990814340767 L 2316.5140756121837,8733.949379071128 L 2311.126212257892,8754.72534920508 L 2306.706828473136,8779.743416127283 L 2304.035160694737,8810.610816579778 L 2303.3895076476038,8854.283506602515 L 2301.363492914941,8907.349232683424 L 2299.8718117387034,8935.476079638116 L 2301.808770878706,8956.633748434018 L 2306.907203556504,8976.632058406249 L 2312.918456059415,8991.11039232742 L 2324.9632249637507,9012.636836291756 L 2366.7859576544724,9071.485245826654 L 2385.2093333806843,9107.83226036653 L 2390.3077660594136,9128.67344889231 L 2392.200197402388,9145.377990900539 L 2391.7103916429915,9158.14351235656 L 2390.3077660594136,9170.922194043174 L 2379.5988310440443,9196.360951569863 L 2367.520666293334,9216.292990374845 L 2348.0174915064126,9235.131568804849 L 2325.38623902807,9251.585659467615 L 2289.8753214655444,9263.731899179984 L 2256.768904903438,9265.220537254587 L 2207.8773845466785,9264.509152711835 L 2167.1789787127636,9265.760662526824 L 2122.1725085857324,9273.902060011867 L 2087.908369319048,9285.165634749923 L 1977.7020734339021,9344.368389540352 L 1766.818430075422,9461.205362714827 L 1697.5777068021707,9499.882904375438 L 1618.273701560218,9545.63448025519 L 1569.1706741712987,9580.899827991147 L 1533.5150412712246,9616.151898064185 L 1215.4307282781228,9922.64028132381 L 1165.5373325040564,9968.587830903009 L 1136.193514731247,9996.659483533353 L 1116.0335549484007,10017.881134848576 L 1088.1257586064748,10055.779669634067 L 1071.427834988106,10080.67645177478 L 1057.3013916052878,10109.459174835589 L 1046.1360466787592,10135.40967110591 L 1037.2082235179842,10163.928806213662 L 1029.0930326385424,10195.662026987411 L 1023.0929120853543,10229.160308348946 L 1020.2542650704272,10259.470705230255 L 1019.2635216019116,10288.147615650669 L 1032.8222355805337,10525.779995015357 L 1036.1284244568087,10619.14556816686 L 1025.3972255452536,10695.518274476752 L 997.6230125911534,10759.271590763237 L 962.2679423154332,10808.508939490654 L 931.3433877732605,10841.333725756034 L 898.515269937925,10870.364882014692 L 639.7197177424096,11059.10519133322 L 588.5906756208278,11100.767542818561 L 548.8273535096087,11141.165264161304 L 523.5800929977559,11180.93060848862 L 494.5368378502317,11240.255672137719 L 483.8056389368139,11284.4463304854 L 474.3434822191484,11352.608947564848 L 483.78337503876537,11453.396706677042 L 741.5102601237595,11955.281257135328 L 758.586670011282,11996.979992155451 L 779.692845466081,12098.460354128852 L 780.1937831738032,12148.693143283017 L 766.6239372463897,12231.088157122955 L 742.6123230829835,12284.915922424756 L 712.945678785909,12337.307871900033 L 632.2947077066638,12412.945215287618 L 337.3648487981409,12689.531739740167 L 228.7281577331014,12786.067501625512 L 154.68956440733746,12860.766944166739 L 126.83742781030014,12896.786342580337 L 103.11524432199076,12936.216594138183 L 79.72701930627227,12999.049234200735 L 72.41332876123488,13036.174463860225 L 68.72865361673757,13073.299578052014 L 70.07561945496127,13087.799280903302 L 72.20182172954082,13110.819663056638 L 80.08324167691171,13153.528412358835 L 90.8923642328009,13185.60925953323 L 104.2952309246175,13216.662805341184 L 292.3806425696239,13584.992785696406 L 313.98775573214516,13693.004592584446 L 312.97474836558104,13740.728591002058 L 306.95236391341314,13779.41860200977 L 289.3638843689114,13832.159548482858 L 213.5107833421789,13957.762392470147 L 119.60166090819985,14117.957434294745 L 41.33292693272233,14250.510128246155 L 9.0391426528804,14365.192172713112 L 1.5028131259605289,14430.492892905604 L 0.0,14483.24413144309 L 7.536329527385533,14548.05699162092 L 33.65188206732273,14658.575143120717 L 54.25711981346831,14711.825749550946 L 211.4959005592391,15053.248142351396 L 607.4259334625676,15912.96940539591 L 672.648023118265,16059.247791983653 L 709.9511844837107,16146.197659989353 L 728.3300324138254,16220.217778712045 L 731.90338806808,16257.688478593715 L 738.1038837051019,16322.78136154078 L 734.5305280508474,16386.67579021072 L 723.1759399897419,16453.558526834007 L 699.887902516406,16533.580332645215 L 657.4974404219538,16627.33339851955 L 608.5279964217916,16701.376867037266 L 545.8217272581533,16766.480497790035 L 433.11074282974005,16847.579772083554" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="ציר אלון#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="ציר אלון"></path>
+<path d="M 781.6743324021809,0.0 L 780.2160470723175,42.45251668523997 L 777.5889070900157,118.62935495330021 L 778.6575742010027,150.63982966262847 L 783.5333678978495,185.08922708267346 L 838.9816062622704,424.5974558987655 L 850.0356316985562,484.45068910112604 L 858.7742117247544,530.2237075632438 L 882.897145380266,687.1716181202792 L 928.8943589762785,974.2603131053038 L 951.1248612869531,1112.9969342607073 L 1008.5100587913767,1487.8044742299244 L 1082.3482770337723,2022.23283559829 L 1103.5991678261198,2157.767289910931 L 1117.9148543425836,2259.515979932621 L 1149.373742441181,2482.993598483503 L 1172.8064952529967,2566.483571040444 L 1196.8515052646399,2608.3733304743655 L 1258.9566491781734,2684.8105577589013 L 1390.3359122122638,2841.2687432253733 L 1767.798041593749,3297.121082443744 L 1815.0086376392283,3332.418101314921 L 2162.0805460345,3527.9337493581697 L 2922.370404254645,3944.0627158875577 L 3065.338026280515,4022.639645199757 L 3220.4506047512405,4107.884879118763 L 3624.328849298414,4324.395542224869 L 3648.1957481256686,4336.349114704877 L 3720.6870005303062,4370.443747837562 L 3823.991487985477,4409.968096069526 L 4105.640931641683,4494.222129347734 L 4284.375506059267,4556.822503482457 L 4378.5406633215025,4612.450896809809 L 4557.876362989657,4739.16563487798 L 4687.018104258459,4860.541671144776 L 4872.175813294947,5093.6698083491065 L 4917.315866811667,5166.82286993321 L 5064.825324061792,5447.926232161 L 5139.2980634029955,5592.685749426018 L 5224.95841156831,5759.186670377385 L 5254.268833493814,5839.3592956434 L 5293.620273489505,6010.824645339046 L 5290.792758423369,6144.429389599711 L 5276.076321740635,6298.154033106286 L 5259.901599728502,6435.748162393924 L 5250.851325125899,6507.904724630527 L 5244.873468471691,6551.493612327147 L 5237.114499961957,6605.241601144895 L 5228.7544062039815,6651.228288144339 L 5214.416455789935,6730.0509017640725 L 5209.050856333692,6759.302892574575 L 5206.891258212738,6778.34300118126 L 5205.466368729714,6790.95293872105 L 5202.483006377239,6826.186904573347 L 5200.690762575716,6865.004758354742 L 5199.043234111741,6934.681566476822 L 5188.746181213297,7370.811185260303 L 5190.026355357375,7408.849891339894 L 5194.801961512305,7450.050666757859 L 5204.264118229505,7507.549688091036 L 5213.236469187308,7545.9305257792585 L 5219.203193893656,7571.45180397341 L 5271.835049140733,7745.053019025829 L 5282.588511951733,7777.293342825957 L 5289.757487159222,7796.4108782117255 L 5303.394124780782,7825.844708051067 L 5317.732075194828,7847.939795778599 L 5402.078853369225,7975.502882763743 L 5473.14521629177,8069.441775812302 L 5516.270387025084,8115.620441401377 L 5540.048230258748,8138.373743814416 L 5574.668591895141,8169.769804349635 L 5680.9564417046495,8233.062324692495 L 5723.469355238602,8275.301067893859 L 5731.92963653896,8323.178489228245 L 5726.2857383550145,8379.948688271455 L 5682.080768561456,8647.11676211143 L 5615.300206034444,8808.516104350332 L 5532.5230326806195,8977.712335064542 L 5523.127667658031,9045.624652999453 L 5534.560179362539,9243.984373007901 L 5544.267238959204,9279.026658492628 L 5555.6552228676155,9312.71194639802 L 5653.983729084954,9446.595863561146 L 5684.930547525641,9485.29979968397 L 5765.136240642052,9729.745584032498 L 5807.181612315122,9847.05301568564 L 5831.137566734105,9899.626920905896 L 5860.459120608866,9934.548722860403 L 6077.031189946923,10131.049464765005 L 6185.278262794949,10223.680454363115 L 6200.51790108392,10239.96193623403 L 6211.549662621692,10255.07102614874 L 6219.4088186719455,10272.116480380762 L 6224.60743889166,10289.346327446401 L 6226.689113369212,10304.508045375347 L 6224.90800151648,10325.294452713802 L 6221.568416793365,10337.755741648376 L 6216.22508123517,10352.574910806026 L 6209.089501874987,10368.61911052838 L 6141.1623485931195,10470.376771387178 L 6133.848658048082,10484.405429371167 L 6128.449662744533,10496.405517147388 L 6124.297445738222,10518.271727284882 L 6123.874431672972,10531.90515729785 L 6123.429153710138,10546.065466662403 L 6124.542348617688,10584.950248351786 L 6129.039656045847,10629.973187524825 L 6140.9842374078,10730.701190114953 L 6155.199736381415,10848.762757949997 L 6162.157204556745,11036.212569531519 L 6170.461638569832,11099.568912543822 L 6200.3509218478575,11269.45708825998 L 6205.994820030872,11336.23678347515 L 6197.523406781722,11384.088749424554 L 6134.806005668826,11687.502364392392 L 6112.876065982971,11805.88374029519 L 6100.642053943593,11859.291953925043 L 6100.174512082711,11945.640214907471 L 6111.517968195025,12106.863231853582 L 6073.8029247135855,12394.730659434572 L 6061.145898610819,12491.387337753084 L 6063.027198005002,12618.255448326003 L 6160.843634565361,13016.630724860355 L 6166.487532749306,13223.603090581018 L 6178.710412837565,13281.469372491352 L 6208.855730944313,13333.448699721135 L 6282.1818795297295,13417.218302088324 L 6591.63893198641,13777.732994884718 L 6641.487799963448,13872.310989230406 L 6663.117177024484,13953.548437159974 L 6697.915649846196,14398.599744478706 L 6721.6044374872,14992.63844680693 L 6723.641584168654,15041.660824819002 L 6727.237203721423,15229.492489429656 L 6729.830947856419,15274.076564263552 L 6738.981409999542,15313.8939788742 L 6793.138342271093,15494.426893960219 L 6803.86954118358,15527.673304192722 L 6813.609996628482,15547.910776709672 L 6841.874015340116,15595.943365348503 L 6875.336654272862,15640.934241496492 L 6969.679922719952,15761.159248420969 L 7001.261262257583,15810.375970362686 L 7015.532420977484,15841.396357576828 L 7028.100391488522,15884.095341138542 L 7038.419708285015,16126.408852569293 L 7030.894510706887,16445.685342245735 L 7034.657109496184,16550.248183277436 L 7049.707504651509,16777.184053678997 L 7043.117390796542,16862.83848634083 L 7014.530545560643,16985.908059303183 L 6985.743325241841,17109.79260272626 L 6979.197739182971,17170.220410165377 L 6984.607866435312,17205.779201498255 L 6987.557832941879,17225.158105792012 L 7025.7738141305745,17301.607050033752 L 7147.523941210937,17457.965800556354 L 7182.322414033115,17521.3670649454 L 7205.844222438522,17627.039479484316 L 7227.473599499557,17817.252736266237 L 7227.473599499557,17948.500619155355 L 7210.541904949583,18063.06817939412 L 7143.060029630549,18400.74845538661" stroke="#FF8C00" stroke-width="4" stroke-dasharray="none" vector-effect="non-scaling-stroke" stroke-linecap="round" stroke-linejoin="round" fill="none" class="street-path" data-tooltip="גנדי(זאבי)#10;סטטוס: לא נמצאה התאמה" data-status="unmatched" data-name="גנדי(זאבי)"></path>
+            </svg>
+        </div>
+
+        <div class="stats">
+            <strong>הוראות:</strong> העבר עכבר / לחץ על רחוב לפרטים · גרירה להזזה · גלגלת / כפתורים לזום · סינון וחיפוש בסרגל
+        </div>
+
+        
+    <div class="diagnostics">
+        <h2>סיכום דיאגנוסטיקה</h2>
+        <div class="diagnostics-grid">
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות OSM</div>
+                <div class="value">2</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ רחובות למ"ס</div>
+                <div class="value">10</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות ודאיות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">התאמות בעזרת AI</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">סה"כ התאמות</div>
+                <div class="value">0</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="value">2</div>
+            </div>
+        </div>
+        
+        <div class="unmatched-list">
+            <h3>רחובות OSM ללא התאמה (2)</h3>
+            <ul><li>גנדיזאבי</li><li>ציר אלון</li></ul>
+        </div>
+        
+        
+        <div class="unmatched-list">
+            <h3>רחובות למ"ס ללא התאמה (10 - 100.0%)</h3>
+            <ul><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%92%D7%A4%D7%9F%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">הגפן</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%97%D7%A6%D7%91%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">החצב</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%A2%D7%99%D7%A8%D7%99%D7%AA%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">העירית</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%A8%D7%95%D7%AA%D7%9D%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">הרותם</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%A9%D7%99%D7%96%D7%A3%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">השיזף</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%94%D7%AA%D7%9E%D7%A8%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">התמר</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A0%D7%94%D7%A8%20%D7%94%D7%99%D7%A8%D7%93%D7%9F%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">נהר הירדן</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A0%D7%97%D7%9C%20%D7%91%D7%96%D7%A7%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">נחל בזק</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A0%D7%97%D7%9C%20%D7%A4%D7%99%D7%A8%D7%90%D7%9F%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">נחל פיראן</a></li><li><a href="https://www.govmap.gov.il/?q=%D7%A0%D7%97%D7%9C%20%D7%AA%D7%A8%D7%A6%D7%94%2C%20%D7%9E%D7%97%D7%95%D7%9C%D7%94&amp;z=16" target="_blank" rel="noopener noreferrer">נחל תרצה</a></li></ul>
+        </div>
+        
+    </div>
+    
+    </div>
+
+    <div id="tooltip"></div>
+
+    <script>
+    (function () {
+        const tooltip = document.getElementById('tooltip');
+        const paths = document.querySelectorAll('.street-path');
+        const searchInput = document.getElementById('street-search');
+        const filterBtns = document.querySelectorAll('.filter-btn');
+        const svg = document.getElementById('street-map');
+        let pinnedPath = null;
+        let activeFilter = 'all';
+        let searchTerm = '';
+
+        function applyFilters() {
+            paths.forEach(path => {
+                const status = path.getAttribute('data-status') || '';
+                const name = path.getAttribute('data-name') || '';
+                const statusOk = activeFilter === 'all' || status === activeFilter;
+                const searchOk = !searchTerm || name.includes(searchTerm);
+                path.classList.toggle('dimmed', !(statusOk && searchOk));
+            });
+        }
+
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                activeFilter = btn.getAttribute('data-filter');
+                applyFilters();
+            });
+        });
+
+        searchInput.addEventListener('input', () => {
+            searchTerm = searchInput.value.trim().toLowerCase();
+            applyFilters();
+        });
+
+        paths.forEach(path => {
+            path.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (pinnedPath === path) {
+                    path.classList.remove('pinned');
+                    tooltip.classList.remove('visible');
+                    pinnedPath = null;
+                } else {
+                    if (pinnedPath) pinnedPath.classList.remove('pinned');
+                    path.classList.add('pinned');
+                    pinnedPath = path;
+                    tooltip.textContent = path.getAttribute('data-tooltip');
+                    tooltip.classList.add('visible');
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }
+            });
+            path.addEventListener('mouseenter', (e) => {
+                if (pinnedPath !== path) {
+                    tooltip.textContent = path.getAttribute('data-tooltip');
+                    tooltip.classList.add('visible');
+                }
+            });
+            path.addEventListener('mousemove', (e) => {
+                if (pinnedPath !== path) {
+                    tooltip.style.left = (e.clientX + 15) + 'px';
+                    tooltip.style.top = (e.clientY + 15) + 'px';
+                }
+            });
+            path.addEventListener('mouseleave', () => {
+                if (pinnedPath !== path) tooltip.classList.remove('visible');
+            });
+        });
+
+        document.addEventListener('click', () => {
+            if (pinnedPath) {
+                pinnedPath.classList.remove('pinned');
+                tooltip.classList.remove('visible');
+                pinnedPath = null;
+            }
+        });
+
+        // Zoom / pan
+        let scale = 1;
+        let tx = 0, ty = 0;
+        let dragging = false;
+        let lastX = 0, lastY = 0;
+        const baseVB = svg.viewBox.baseVal;
+        const orig = { x: baseVB.x, y: baseVB.y, w: baseVB.width, h: baseVB.height };
+
+        function applyView() {
+            const w = orig.w / scale;
+            const h = orig.h / scale;
+            const cx = orig.x + orig.w / 2 + tx;
+            const cy = orig.y + orig.h / 2 + ty;
+            svg.setAttribute('viewBox', `${cx - w/2} ${cy - h/2} ${w} ${h}`);
+        }
+
+        document.getElementById('zoom-in').addEventListener('click', () => {
+            scale = Math.min(scale * 1.3, 12);
+            applyView();
+        });
+        document.getElementById('zoom-out').addEventListener('click', () => {
+            scale = Math.max(scale / 1.3, 0.5);
+            applyView();
+        });
+        document.getElementById('zoom-reset').addEventListener('click', () => {
+            scale = 1; tx = 0; ty = 0;
+            applyView();
+        });
+
+        svg.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.15 : 1/1.15;
+            scale = Math.min(12, Math.max(0.5, scale * factor));
+            applyView();
+        }, { passive: false });
+
+        svg.addEventListener('pointerdown', (e) => {
+            if (e.target.classList && e.target.classList.contains('street-path')) return;
+            dragging = true;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            svg.classList.add('dragging');
+            svg.setPointerCapture(e.pointerId);
+        });
+        svg.addEventListener('pointermove', (e) => {
+            if (!dragging) return;
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX;
+            lastY = e.clientY;
+            const rect = svg.getBoundingClientRect();
+            tx -= dx * (orig.w / scale) / rect.width;
+            ty -= dy * (orig.h / scale) / rect.height;
+            applyView();
+        });
+        svg.addEventListener('pointerup', () => {
+            dragging = false;
+            svg.classList.remove('dragging');
+        });
+        svg.addEventListener('pointercancel', () => {
+            dragging = false;
+            svg.classList.remove('dragging');
+        });
+    })();
+    </script>
+</body>
+</html>
