@@ -30,7 +30,6 @@ class LayaAIResolver:
         city_name: str,
         lamas_candidates: list[dict[str, Any]],
         adjacent_streets: list[str],
-        city_lexicon: str = "",
     ) -> dict[str, Any]:
         """Select one LAMAS candidate, or abstain when none is suitable."""
         if not lamas_candidates:
@@ -43,31 +42,45 @@ class LayaAIResolver:
 
         candidate_ids: dict[str, str] = {}
         criteria: dict[str, str] = {}
-        for index, candidate in enumerate(lamas_candidates, start=1):
+        bounded_candidates = lamas_candidates[:8]
+        for index, candidate in enumerate(bounded_candidates, start=1):
             option = f"candidate_{index}"
             candidate_ids[option] = str(candidate["id"])
             names = candidate.get("names") or candidate.get("aliases") or [
                 candidate.get("name", "")
             ]
-            names = [str(name) for name in names if name]
+            names = [str(name)[:120] for name in names if name][:3]
+            try:
+                score = float(candidate.get("score", 0.0))
+            except (TypeError, ValueError):
+                score = 0.0
             criteria[option] = (
-                f'{", ".join(names)} (LAMAS ID {candidate["id"]})'
+                f'{", ".join(names)} (LAMAS ID {candidate["id"]}, '
+                f"fuzzy score {score:.1f})"
             )
         criteria["no_match"] = "אף אחד מהמועמדים אינו אותו רחוב כמו רחוב OSM"
 
         state = {
-            "יישוב": city_name,
-            "שם הרחוב ב-OSM": osm_street_name,
-            "רחובות סמוכים ב-OSM": adjacent_streets,
+            "יישוב": str(city_name)[:120],
+            "שם הרחוב ב-OSM": str(osm_street_name)[:120],
+            "רחובות סמוכים ב-OSM": [str(name)[:100] for name in adjacent_streets[:8]],
             "מועמדי למ״ס": [
                 {
                     "id": candidate["id"],
-                    "names": candidate.get("names")
-                    or candidate.get("aliases")
-                    or [candidate.get("name", "")],
+                    "names": [
+                        str(name)[:120]
+                        for name in (
+                            candidate.get("names")
+                            or candidate.get("aliases")
+                            or [candidate.get("name", "")]
+                        )
+                        if name
+                    ][:3],
+                    "fuzzy_score": candidate.get("score", 0.0),
                 }
-                for candidate in lamas_candidates
+                for candidate in bounded_candidates
             ],
+            "הערה": "תוצאת המודל היא הצעה בלבד ואינה אישור התאמה.",
         }
         questions = {
             "street_match": {
@@ -75,7 +88,8 @@ class LayaAIResolver:
                 "instructions": (
                     "איזה מועמד למ״ס מתייחס לאותו רחוב כמו רחוב OSM? "
                     "השווה את שמות המועמדים והכינויים שלהם, והיעזר בשם היישוב "
-                    "וברחובות הסמוכים. בחר no_match אם אין "
+                    "וברחובות הסמוכים. זו הצעה לבדיקה ולא אישור אוטומטי. "
+                    "בחר no_match אם אין "
                     "מועמד שמזהה את אותו רחוב."
                 ),
                 "criteria": criteria,

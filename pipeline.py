@@ -8,9 +8,9 @@ normalization, fuzzy matching, topology, and optional AI resolution.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
-import re
 import sys
 import traceback
 from enum import Enum
@@ -25,14 +25,14 @@ from data_loader import (
 )
 from diagnostics import calculate_diagnostics
 from gemini_client import API_KEY, get_ai_resolution
+from geospatial_validation import validate_candidate_geography
 from laya_ai_resolver import LayaAIResolver
 from local_ai_resolver import LocalAIResolver
 from map_of_adjacents import build_adjacency_map
 from normalization import (
-    build_lamas_aliases,
     find_fuzzy_candidates,
-    format_city_lexicon,
     normalize_street_name,
+    select_ai_candidates,
 )
 from OSM_streets import place_name as OSM_PLACE_NAME
 
@@ -70,6 +70,92 @@ def _get_local_resolver(local_ai_model: str):
         _LOCAL_RESOLVER_CACHE[local_ai_model] = resolver
         return resolver
     return None
+
+
+def _build_candidate_score_report(
+    candidates_df: pd.DataFrame, osm_gdf: pd.DataFrame
+) -> pd.DataFrame:
+    """Flatten every above-threshold fuzzy candidate for quality review."""
+    osm_columns = ["osm_id", "osm_name", "normalized_name", "city"]
+    available_osm_columns = [column for column in osm_columns if column in osm_gdf]
+    osm_by_id = {
+        str(row["osm_id"]): row
+        for row in osm_gdf[available_osm_columns].to_dict("records")
+    }
+
+    records = []
+    for row in candidates_df.to_dict("records"):
+        osm_info = osm_by_id.get(str(row["osm_id"]), {})
+        candidate_details = row.get("candidate_details")
+        if not isinstance(candidate_details, list):
+            continue
+        for rank, candidate in enumerate(candidate_details, start=1):
+            records.append(
+                {
+                    "osm_id": row["osm_id"],
+                    "osm_name": osm_info.get("osm_name"),
+                    "normalized_name": osm_info.get("normalized_name"),
+                    "city": osm_info.get("city"),
+                    "fuzzy_status": row.get("status"),
+                    "best_score": row.get("best_score"),
+                    "candidate_rank": rank,
+                    "lamas_id": candidate["lamas_id"],
+                    "lamas_name": candidate["lamas_name"],
+                    "matched_alias": candidate.get("matched_alias"),
+                    "fuzzy_score": candidate["score"],
+                    "aliases_json": json.dumps(
+                        candidate.get("aliases", []), ensure_ascii=False
+                    ),
+                    "geographic_validation": candidate.get(
+                        "geographic_validation"
+                    ),
+                    "geographic_distance_m": candidate.get(
+                        "geographic_distance_m"
+                    ),
+                }
+            )
+
+    columns = [
+        "osm_id",
+        "osm_name",
+        "normalized_name",
+        "city",
+        "fuzzy_status",
+        "best_score",
+        "candidate_rank",
+        "lamas_id",
+        "lamas_name",
+        "matched_alias",
+        "fuzzy_score",
+        "aliases_json",
+        "geographic_validation",
+        "geographic_distance_m",
+    ]
+    return pd.DataFrame(records, columns=columns)
+
+
+def _merge_ai_suggestions(
+    candidates_df: pd.DataFrame, ai_decisions_df: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Keep AI outputs as proposals and create approved mappings from fuzzy matches only."""
+    merged = candidates_df.merge(ai_decisions_df, on="osm_id", how="left")
+    merged["osm_id"] = merged["osm_id"].astype(str)
+    has_ai_suggestion = merged["ai_suggested_LAMAS_id"].notna()
+    has_geographic_conflict = (
+        merged["geographic_validation"] == "DISTANT_FROM_EXACT_REFERENCE"
+    )
+    merged["mapping_status"] = "UNMATCHED"
+    merged.loc[merged["status"] == "NEEDS_AI", "mapping_status"] = "NEEDS_REVIEW"
+    merged.loc[has_ai_suggestion, "mapping_status"] = "AI_PROPOSED"
+    merged.loc[has_geographic_conflict, "mapping_status"] = "GEOGRAPHIC_REVIEW"
+    merged.loc[
+        (merged["status"] == "CONFIDENT") & ~has_geographic_conflict,
+        "mapping_status",
+    ] = "APPROVED_FUZZY"
+
+    approved = merged[merged["mapping_status"] == "APPROVED_FUZZY"].copy()
+    approved["final_LAMAS_id"] = approved["best_LAMAS_id"].astype(str)
+    return merged, approved
 
 
 def run_pipeline(
@@ -203,16 +289,15 @@ def run_pipeline(
             osm_city_label,
         )
 
-    aliases_by_id = build_lamas_aliases(lamas_city_df)
-    city_lexicon = format_city_lexicon(aliases_by_id)
-    logger.info(
-        "City LAMAS lexicon: %s unique street IDs for '%s'",
-        len(aliases_by_id),
-        osm_city_label,
-    )
-
     candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
+    candidates_df = validate_candidate_geography(
+        osm_gdf, candidates_df, map_of_adjacents
+    )
     save_intermediate_df(candidates_df, "step4_candidates", file_identifier)
+    candidate_scores_df = _build_candidate_score_report(candidates_df, osm_gdf)
+    save_intermediate_df(
+        candidate_scores_df, "step4_candidate_scores", file_identifier
+    )
 
     logger.info("[Step 5/7] (Optional) Invoking AI for ambiguous cases...")
     ai_results: list[dict] = []
@@ -236,7 +321,13 @@ def run_pipeline(
         osm_gdf_in_city = osm_gdf[osm_gdf["city"] == osm_city_label]
 
         ai_candidates_to_process = candidates_df[
-            (candidates_df["status"] == "NEEDS_AI")
+            (
+                (candidates_df["status"] == "NEEDS_AI")
+                | (
+                    candidates_df["geographic_validation"]
+                    == "DISTANT_FROM_EXACT_REFERENCE"
+                )
+            )
             & (candidates_df["osm_id"].isin(osm_gdf_in_city["osm_id"]))
         ].merge(osm_gdf_in_city[["osm_id", "normalized_name"]], on="osm_id")
 
@@ -267,6 +358,9 @@ def run_pipeline(
         for _, row in unique_ai_streets.iterrows():
             normalized_street_name = row["normalized_name"]
             representative_osm_id = row["osm_id"]
+            lamas_candidates = select_ai_candidates(
+                row["candidate_details"], normalized_street_name
+            )
 
             all_adjacent_ids: set = set()
             for osm_id in osm_ids_by_name.get(normalized_street_name, []):
@@ -282,11 +376,10 @@ def run_pipeline(
                 key=osm_name_order.get,
             )
 
-            lamas_candidates_str = row["all_candidates"]
             city_name = osm_gdf_in_city["city"].iloc[0]
 
-            ai_decision_id = "None"
-            confidence = 0.0
+            ai_decision_id = None
+            confidence = None
             reasoning = ""
             method = "none"
 
@@ -294,46 +387,12 @@ def run_pipeline(
                 logger.info(
                     "Consulting Local AI for street: '%s'...", normalized_street_name
                 )
-                local_lamas_candidates = []
-                if pd.notna(lamas_candidates_str):
-                    for line in lamas_candidates_str.split("\n"):
-                        id_match = re.search(r"ID:\s*(\d+)", line)
-                        names_bracket = re.search(r"Names:\s*\[([^\]]+)\]", line)
-                        name_match = re.search(r"Name:\s*['\"]([^'\"]+)['\"]", line)
-                        score_match = re.search(r"Score:\s*([\d.]+)", line)
-                        if not id_match:
-                            continue
-                        lid = id_match.group(1)
-                        if lid in aliases_by_id:
-                            names = aliases_by_id[lid]
-                        elif names_bracket:
-                            names = [
-                                n.strip()
-                                for n in names_bracket.group(1).split("|")
-                                if n.strip()
-                            ]
-                        elif name_match:
-                            names = [name_match.group(1)]
-                        else:
-                            names = []
-                        local_lamas_candidates.append(
-                            {
-                                "id": lid,
-                                "name": names[0] if names else "",
-                                "names": names,
-                                "score": float(score_match.group(1))
-                                if score_match
-                                else 0.0,
-                            }
-                        )
-
                 local_result = local_resolver.resolve_street(
                     representative_osm_id,
                     normalized_street_name,
                     city_name,
-                    local_lamas_candidates,
-                    adjacent_names,
-                    city_lexicon=city_lexicon,
+                    lamas_candidates,
+                    adjacent_names[:8],
                 )
 
                 ai_decision_id = local_result.get("lamas_id")
@@ -341,7 +400,7 @@ def run_pipeline(
                 reasoning = local_result.get("reasoning", "")
                 method = local_result.get("method", "local_ai")
 
-                if str(ai_decision_id) == "None":
+                if ai_decision_id is None:
                     logger.info(
                         "Local AI found no match for '%s'. Confidence: %s",
                         normalized_street_name,
@@ -356,7 +415,7 @@ def run_pipeline(
                     )
 
             if (
-                (str(ai_decision_id) == "None" or method == "none")
+                (ai_decision_id is None or method == "none")
                 and use_gemini
                 and API_KEY
             ):
@@ -369,18 +428,35 @@ def run_pipeline(
                 prompt = (
                     f"OSM Street Name: '{normalized_street_name}'. "
                     f"City: '{city_name}'. "
-                    f"Adjacent Streets: {', '.join(adjacent_names) if adjacent_names else 'None'}. "
-                    f"LAMAS Candidates (each ID may list multiple synonym names): {lamas_candidates_str}. "
-                    f"Full city LAMAS lexicon (id → all names/synonyms):\n{city_lexicon}\n"
-                    f"Choose the best LAMAS ID (number only or 'None'). "
-                    f"Match against any synonym of an ID, not only the primary name."
+                    f"Adjacent Streets: {', '.join(adjacent_names[:8]) if adjacent_names else 'None'}. "
+                    "LAMAS candidates ranked by fuzzy score (at most 8; up to 3 "
+                    "relevant aliases each): "
+                    f"{json.dumps(lamas_candidates, ensure_ascii=False)}. "
+                    "Choose a candidate ID or None. Return a suggestion only; "
+                    "the result will not be automatically approved."
                 )
                 ai_decision_id = get_ai_resolution(prompt, representative_osm_id)
                 method = "gemini"
-                confidence = 0.0
+                confidence = None
+
+            if ai_decision_id is not None:
+                ai_decision_id = str(ai_decision_id).strip()
+                if ai_decision_id.lower() in {"", "none", "null", "nan"}:
+                    ai_decision_id = None
+                elif ai_decision_id not in {
+                    candidate["id"] for candidate in lamas_candidates
+                }:
+                    logger.warning(
+                        "AI returned LAMAS ID %s outside the candidate list for '%s'; "
+                        "discarding the suggestion.",
+                        ai_decision_id,
+                        normalized_street_name,
+                    )
+                    reasoning = "AI returned an ID outside the candidate list"
+                    ai_decision_id = None
 
             ai_decision_cache[normalized_street_name] = {
-                "ai_LAMAS_id": ai_decision_id,
+                "ai_suggested_LAMAS_id": ai_decision_id,
                 "ai_confidence": confidence,
                 "ai_reasoning": reasoning,
                 "ai_method": method,
@@ -394,40 +470,38 @@ def run_pipeline(
 
     ai_decisions_df = pd.DataFrame(
         ai_results,
-        columns=["osm_id", "ai_LAMAS_id", "ai_confidence", "ai_reasoning", "ai_method"],
+        columns=[
+            "osm_id",
+            "ai_suggested_LAMAS_id",
+            "ai_confidence",
+            "ai_reasoning",
+            "ai_method",
+        ],
     )
     save_intermediate_df(ai_decisions_df, "step5_ai_decisions", file_identifier)
 
     logger.info("[Step 6/7] Merging results to create final diagnostic table...")
 
-    ai_decisions_merged = candidates_df.merge(ai_decisions_df, on="osm_id", how="left")
+    ai_decisions_merged, final_mapping_df = _merge_ai_suggestions(
+        candidates_df, ai_decisions_df
+    )
     ai_decisions_merged["osm_id"] = ai_decisions_merged["osm_id"].astype(str)
     osm_gdf["osm_id"] = osm_gdf["osm_id"].astype(str)
-
-    final_mapping_df = ai_decisions_merged[
-        (ai_decisions_merged["status"] == "CONFIDENT")
-        | (
-            (ai_decisions_merged["status"] == "NEEDS_AI")
-            & (ai_decisions_merged["ai_LAMAS_id"].astype(str) != "None")
-            & (ai_decisions_merged["ai_LAMAS_id"].astype(str) != "nan")
-        )
-    ].copy()
-
-    final_mapping_df["final_LAMAS_id"] = final_mapping_df.apply(
-        lambda row: row["best_LAMAS_id"]
-        if row["status"] == "CONFIDENT"
-        else row["ai_LAMAS_id"],
-        axis=1,
-    ).astype(str)
 
     diagnostic_cols = [
         "osm_id",
         "status",
+        "mapping_status",
         "best_score",
+        "best_LAMAS_id",
         "best_LAMAS_name",
         "all_candidates",
-        "ai_LAMAS_id",
+        "geographic_validation",
+        "geographic_distance_m",
+        "ai_suggested_LAMAS_id",
+        "ai_confidence",
         "ai_reasoning",
+        "ai_method",
     ]
 
     osm_cols_for_diag = ["osm_id", "osm_name", "normalized_name", "city", "geometry"]
@@ -444,17 +518,26 @@ def run_pipeline(
     )
 
     save_intermediate_df(diagnostic_df_full, "diagnostic_report", file_identifier)
-    osm_gdf_final = osm_gdf.merge(
-        diagnostic_df_full[["osm_id", "final_LAMAS_id"]], on="osm_id", how="left"
-    )
 
     logger.info("PIPELINE COMPLETED")
-    logger.info("Total OSM streets considered: %s", len(osm_gdf_final))
-    matched_count = final_mapping_df.shape[0]
-    unmatched_count = len(osm_gdf_final) - matched_count
+    named_osm_count = diagnostic_df_full["normalized_name"].nunique()
+    matched_count = diagnostic_df_full.loc[
+        diagnostic_df_full["final_LAMAS_id"].notna(), "normalized_name"
+    ].nunique()
+    ai_proposal_count = diagnostic_df_full.loc[
+        diagnostic_df_full["ai_suggested_LAMAS_id"].notna(), "normalized_name"
+    ].nunique()
+    geographic_review_count = diagnostic_df_full.loc[
+        diagnostic_df_full["mapping_status"] == "GEOGRAPHIC_REVIEW",
+        "normalized_name",
+    ].nunique()
+    unmatched_count = named_osm_count - matched_count
     logger.info(
-        "Successfully matched (Confident + AI): %s | Unmatched: %s",
+        "Approved fuzzy matches: %s | AI proposals (not approved): %s | "
+        "Geographic reviews: %s | Without approved mapping: %s",
         matched_count,
+        ai_proposal_count,
+        geographic_review_count,
         unmatched_count,
     )
 

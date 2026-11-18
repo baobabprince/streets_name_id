@@ -40,7 +40,7 @@ def _build_diagnostics_html(diagnostics: dict, place_name: str) -> str:
         street_list_items = "".join(f"<li>{name}</li>" for name in diagnostics["unmatched_osm_street_names"])
         unmatched_osm_html = f"""
         <div class="unmatched-list">
-            <h3>רחובות OSM ללא התאמה ({diagnostics['unmatched_osm_streets']})</h3>
+            <h3>רחובות OSM ללא התאמה מאושרת ({diagnostics['unmatched_osm_streets']})</h3>
             <ul>{street_list_items}</ul>
         </div>
         """
@@ -62,16 +62,20 @@ def _build_diagnostics_html(diagnostics: dict, place_name: str) -> str:
                 <div class="value">{diagnostics.get('confident_matches', 'N/A')}</div>
             </div>
             <div class="diagnostics-card">
-                <div class="label">התאמות בעזרת AI</div>
-                <div class="value">{diagnostics.get('ai_resolved_matches', 'N/A')}</div>
+                <div class="label">הצעות AI (לא מאושרות)</div>
+                <div class="value">{diagnostics.get('ai_proposed_matches', diagnostics.get('ai_resolved_matches', 'N/A'))}</div>
             </div>
             <div class="diagnostics-card">
-                <div class="label">סה"כ התאמות</div>
+                <div class="label">סה"כ התאמות מאושרות</div>
                 <div class="value">{diagnostics.get('total_matched', 'N/A')}</div>
             </div>
             <div class="diagnostics-card">
-                <div class="label">רחובות OSM ללא התאמה</div>
+                <div class="label">רחובות ללא התאמה מאושרת</div>
                 <div class="value">{diagnostics.get('unmatched_osm_streets', 'N/A')}</div>
+            </div>
+            <div class="diagnostics-card">
+                <div class="label">נדרשת בדיקה גאוגרפית</div>
+                <div class="value">{diagnostics.get('geographic_review_matches', 'N/A')}</div>
             </div>
         </div>
         {unmatched_osm_html}
@@ -107,11 +111,15 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         osm_name_raw = row.get('osm_name', None)
         osm_name = str(osm_name_raw).strip() if pd.notna(osm_name_raw) else ""
 
-        is_matched = pd.notna(row.get('final_LAMAS_id')) and str(row.get('final_LAMAS_id')).lower() != 'none'
+        is_matched = (
+            pd.notna(row.get("final_LAMAS_id"))
+            and str(row.get("final_LAMAS_id")).lower() != "none"
+        )
         best_score = row.get('best_score', None)
-        status = row.get('status', 'UNKNOWN')
+        mapping_status = row.get('mapping_status', '')
         lamas_name = row.get('best_LAMAS_name', '')
         final_lamas_id = row.get('final_LAMAS_id', '')
+        ai_suggestion = row.get('ai_suggested_LAMAS_id', None)
 
         stroke_width = 4
         stroke_dasharray = "none"
@@ -122,12 +130,17 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
             stroke_width = 2
             data_status = "unnamed"
         else:
-            if is_matched:
-                if status == 'NEEDS_AI':
-                    stroke_color = "#00BFFF"
-                    stroke_width = 5
-                    data_status = "ai"
-                elif pd.notna(best_score):
+            if mapping_status == "GEOGRAPHIC_REVIEW":
+                stroke_color = "#c084fc"
+                stroke_width = 5
+                stroke_dasharray = "8,4"
+                data_status = "geo-review"
+            elif mapping_status == "AI_PROPOSED":
+                stroke_color = "#00BFFF"
+                stroke_width = 5
+                data_status = "ai"
+            elif is_matched:
+                if pd.notna(best_score):
                     if best_score >= 100:
                         stroke_color = "#f8fafc"
                         stroke_width = 5
@@ -160,14 +173,37 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         else:
             tooltip_lines.append("רחוב ללא שם")
         if is_matched:
-            if lamas_name and lamas_name.strip() and lamas_name.strip() != osm_name:
+            if (
+                isinstance(lamas_name, str)
+                and lamas_name.strip()
+                and lamas_name.strip() != osm_name
+            ):
                 tooltip_lines[0] += f" -> {lamas_name}"
             if pd.notna(best_score):
                 tooltip_lines.append(f"ציון: {best_score:.1f}")
             if final_lamas_id:
                 tooltip_lines.append(f"מזהה: {final_lamas_id}")
+                tooltip_lines.append("התאמה מאושרת")
+        elif pd.notna(ai_suggestion):
+            tooltip_lines.append(f"הצעת AI (לא מאושרת): {ai_suggestion}")
+            confidence = row.get("ai_confidence")
+            if pd.notna(confidence):
+                tooltip_lines.append(f"ביטחון המודל: {float(confidence):.2f}")
+            if mapping_status == "GEOGRAPHIC_REVIEW":
+                tooltip_lines.append("נדרשת בדיקה גאוגרפית")
+        elif mapping_status == "GEOGRAPHIC_REVIEW":
+            tooltip_lines.append("נדרשת בדיקה גאוגרפית לפני אישור")
         elif osm_name:
-            tooltip_lines.append("סטטוס: לא נמצאה התאמה")
+            tooltip_lines.append("סטטוס: ללא התאמה מאושרת")
+
+        geographic_validation = row.get("geographic_validation")
+        if pd.notna(geographic_validation):
+            tooltip_lines.append(f"אימות גאוגרפי: {geographic_validation}")
+        geographic_distance = row.get("geographic_distance_m")
+        if pd.notna(geographic_distance):
+            tooltip_lines.append(
+                f"מרחק מעוגן התאמה מדויקת: {float(geographic_distance):.0f} מ׳"
+            )
 
         tooltip = "&#10;".join(tooltip_lines)
         safe_tooltip = re.sub(r'[<>&"]', '', tooltip)
@@ -202,7 +238,7 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         match_pct = round(100.0 * total_matched / total_osm, 1) if total_osm else 0
         coverage_html = f"""
         <div class="coverage"><div class="coverage-bar" style="width:{match_pct}%"></div></div>
-        <div class="coverage-label">כיסוי התאמות: {match_pct}% ({total_matched}/{total_osm})</div>
+        <div class="coverage-label">כיסוי התאמות מאושרות: {match_pct}% ({total_matched}/{total_osm})</div>
         """
 
     template_path = os.path.join(os.path.dirname(__file__), "map_template.html")

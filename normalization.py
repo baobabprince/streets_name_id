@@ -114,6 +114,64 @@ def format_city_lexicon(aliases_by_id: Dict[str, List[str]], max_entries: int = 
     return text
 
 
+def select_ai_candidates(
+    candidates: list[dict],
+    osm_street_name: str,
+    max_candidates: int = 8,
+    max_aliases_per_candidate: int = 3,
+    max_candidate_chars: int = 2400,
+) -> list[dict]:
+    """Keep only the highest-ranked candidates and the most relevant aliases."""
+    normalized_osm_name = normalize_street_name(osm_street_name) or str(osm_street_name)
+    selected = []
+    used_chars = 0
+
+    for candidate in candidates[:max_candidates]:
+        aliases = candidate.get("aliases") or candidate.get("names") or [
+            candidate.get("matched_alias") or candidate.get("name", "")
+        ]
+        aliases = [
+            str(alias).strip()
+            for alias in aliases
+            if alias is not None and str(alias).strip()
+        ]
+        matched_alias = candidate.get("matched_alias")
+        aliases.sort(
+            key=lambda alias: (
+                alias != matched_alias,
+                -fuzz.ratio(
+                    normalized_osm_name,
+                    normalize_street_name(alias) or alias,
+                ),
+                alias,
+            )
+        )
+
+        selected_aliases = []
+        for alias in aliases:
+            if len(selected_aliases) >= max_aliases_per_candidate:
+                break
+            bounded_alias = alias[:120]
+            if used_chars + len(bounded_alias) > max_candidate_chars:
+                break
+            selected_aliases.append(bounded_alias)
+            used_chars += len(bounded_alias)
+
+        if not selected_aliases:
+            break
+        selected.append(
+            {
+                "id": str(candidate.get("lamas_id", candidate.get("id"))),
+                "name": selected_aliases[0],
+                "names": selected_aliases,
+                "score": float(candidate.get("score", 0.0)),
+            }
+        )
+        used_chars += 40
+
+    return selected
+
+
 def find_fuzzy_candidates(
     osm_gdf,
     lamas_df,
@@ -139,6 +197,7 @@ def find_fuzzy_candidates(
                 "best_LAMAS_id": [None] * len(osm_gdf),
                 "best_LAMAS_name": [None] * len(osm_gdf),
                 "all_candidates": [None] * len(osm_gdf),
+                "candidate_details": [[] for _ in range(len(osm_gdf))],
             }
         )
 
@@ -156,6 +215,7 @@ def find_fuzzy_candidates(
                 "best_LAMAS_id": [None] * len(osm_gdf),
                 "best_LAMAS_name": [None] * len(osm_gdf),
                 "all_candidates": [None] * len(osm_gdf),
+                "candidate_details": [[] for _ in range(len(osm_gdf))],
             }
         )
 
@@ -164,6 +224,7 @@ def find_fuzzy_candidates(
 
     unique_name_to_ids: Dict[str, List[str]] = {}
     display_name_by_id: Dict[str, str] = {}
+    display_name_by_normalized: Dict[str, str] = {}
     id_order: Dict[str, int] = {}
     lamas_columns = normalized_lamas_df[
         ["LAMAS_id", "normalized_name", "LAMAS_name"]
@@ -179,6 +240,8 @@ def find_fuzzy_candidates(
             unique_name_to_ids[name].append(lid)
         if lid not in display_name_by_id and pd.notna(display_name):
             display_name_by_id[lid] = str(display_name)
+        if name not in display_name_by_normalized and pd.notna(display_name):
+            display_name_by_normalized[name] = str(display_name)
         id_order.setdefault(lid, len(id_order))
 
     lamas_name_candidates = list(unique_name_to_ids)
@@ -240,6 +303,9 @@ def find_fuzzy_candidates(
                             "score": score,
                             "lamas_id": lid,
                             "lamas_name": display_name_by_id.get(lid, lamas_name),
+                            "matched_alias": display_name_by_normalized.get(
+                                lamas_name, lamas_name
+                            ),
                             "aliases": aliases_by_id.get(
                                 lid, [display_name_by_id.get(lid, lamas_name)]
                             ),
@@ -259,12 +325,14 @@ def find_fuzzy_candidates(
                 best_lamas_id = None
                 best_lamas_name = None
                 all_candidates = None
+                candidate_details = []
             elif len(matches) == 1 and matches[0]["score"] >= confident_threshold:
                 status = "CONFIDENT"
                 best_score = matches[0]["score"]
                 best_lamas_id = matches[0]["lamas_id"]
                 best_lamas_name = matches[0]["lamas_name"]
                 all_candidates = _fmt_candidates(matches)
+                candidate_details = matches
             elif matches[0]["score"] >= confident_threshold and len(matches) > 1:
                 if matches[0]["score"] - matches[1]["score"] >= 5:
                     status = "CONFIDENT"
@@ -274,12 +342,14 @@ def find_fuzzy_candidates(
                 best_lamas_id = matches[0]["lamas_id"]
                 best_lamas_name = matches[0]["lamas_name"]
                 all_candidates = _fmt_candidates(matches)
+                candidate_details = matches
             else:
                 status = "NEEDS_AI"
                 best_score = matches[0]["score"]
                 best_lamas_id = matches[0]["lamas_id"]
                 best_lamas_name = matches[0]["lamas_name"]
                 all_candidates = _fmt_candidates(matches)
+                candidate_details = matches
 
             street_name_results[osm_name] = {
                 "status": status,
@@ -287,6 +357,7 @@ def find_fuzzy_candidates(
                 "best_LAMAS_id": best_lamas_id,
                 "best_LAMAS_name": best_lamas_name,
                 "all_candidates": all_candidates,
+                "candidate_details": candidate_details,
             }
 
     results = []
@@ -301,6 +372,7 @@ def find_fuzzy_candidates(
                     "best_LAMAS_id": None,
                     "best_LAMAS_name": None,
                     "all_candidates": None,
+                    "candidate_details": [],
                 }
             )
         else:

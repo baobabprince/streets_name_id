@@ -55,7 +55,11 @@ def normalize_city(col: pd.Series) -> pd.Series:
 def save_intermediate_df(df: pd.DataFrame, step_name: str, place: str) -> None:
     """Save an intermediate DataFrame/GeoDataFrame to the cache directory."""
     safe_place = safe_place_name(place)
-    file_ext = "csv" if step_name.startswith("diagnostic_report") else "pkl"
+    file_ext = (
+        "csv"
+        if step_name.startswith(("diagnostic_report", "step4_candidate_scores"))
+        else "pkl"
+    )
     filename = f"{step_name}_{safe_place}.{file_ext}"
     path = os.path.join(CACHE_DIR, filename)
 
@@ -68,6 +72,8 @@ def save_intermediate_df(df: pd.DataFrame, step_name: str, place: str) -> None:
         logger.info("Saved intermediate result for %s to %s", step_name, path)
     except Exception as e:
         logger.warning("Failed to save %s intermediate result: %s", step_name, e)
+        if step_name == "step4_candidate_scores":
+            raise
 
 
 def load_or_fetch_LAMAS(

@@ -21,17 +21,22 @@ def calculate_diagnostics(
     named_osm_gdf = osm_gdf.dropna(subset=["normalized_name"])
     total_osm_streets = named_osm_gdf["normalized_name"].nunique()
 
-    confident_matches = diagnostic_df_full[
-        diagnostic_df_full["status"] == "CONFIDENT"
-    ]["normalized_name"].nunique()
-    ai_resolved_matches = diagnostic_df_full[
-        (diagnostic_df_full["status"] == "NEEDS_AI")
-        & (diagnostic_df_full["final_LAMAS_id"].notna())
-    ]["normalized_name"].nunique()
+    approved_matches = diagnostic_df_full[
+        diagnostic_df_full["final_LAMAS_id"].notna()
+    ]
+    confident_matches = approved_matches["normalized_name"].nunique()
+    ai_proposed_matches = 0
+    if "ai_suggested_LAMAS_id" in diagnostic_df_full:
+        ai_proposed_matches = diagnostic_df_full[
+            diagnostic_df_full["ai_suggested_LAMAS_id"].notna()
+        ]["normalized_name"].nunique()
+    geographic_review_matches = 0
+    if "mapping_status" in diagnostic_df_full:
+        geographic_review_matches = diagnostic_df_full[
+            diagnostic_df_full["mapping_status"] == "GEOGRAPHIC_REVIEW"
+        ]["normalized_name"].nunique()
 
-    total_matched = diagnostic_df_full[diagnostic_df_full["final_LAMAS_id"].notna()][
-        "normalized_name"
-    ].nunique()
+    total_matched = confident_matches
     unmatched_osm_streets = total_osm_streets - total_matched
 
     matched_osm_names = set(
@@ -82,7 +87,9 @@ def calculate_diagnostics(
         "total_osm_streets": total_osm_streets,
         "total_lamas_streets": total_lamas_streets,
         "confident_matches": confident_matches,
-        "ai_resolved_matches": ai_resolved_matches,
+        "ai_proposed_matches": ai_proposed_matches,
+        "ai_resolved_matches": ai_proposed_matches,
+        "geographic_review_matches": geographic_review_matches,
         "total_matched": total_matched,
         "unmatched_osm_streets": unmatched_osm_streets,
         "unmatched_osm_percentage": f"{unmatched_osm_percentage:.1f}%",

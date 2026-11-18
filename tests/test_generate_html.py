@@ -104,6 +104,34 @@ class TestGenerateHtml(unittest.TestCase):
         self.assertEqual(html.count('vector-effect="non-scaling-stroke"'), 3)
         self.assertEqual(html.count('stroke="#f8fafc"'), 1)
 
+    def test_ai_suggestions_are_displayed_as_unapproved(self):
+        gdf = gpd.GeoDataFrame(
+            {
+                "osm_name": ["רחוב מוצע"],
+                "final_LAMAS_id": [None],
+                "ai_suggested_LAMAS_id": ["123"],
+                "ai_confidence": [0.8],
+                "mapping_status": ["AI_PROPOSED"],
+                "geographic_validation": ["NO_EXACT_NAME_REFERENCE"],
+                "geometry": [LineString([(34.8, 32.0), (34.801, 32.001)])],
+            },
+            crs="EPSG:4326",
+        )
+
+        original_dir = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as output_dir:
+                os.chdir(output_dir)
+                create_html_from_gdf(gdf, "יישוב בדיקה")
+                with open("HTML/יישוב_בדיקה_roads.html", encoding="utf-8") as html_file:
+                    html = html_file.read()
+        finally:
+            os.chdir(original_dir)
+
+        self.assertIn('data-status="ai"', html)
+        self.assertIn("הצעת AI (לא מאושרת): 123", html)
+        self.assertIn("לא מאושרת", html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -50,10 +50,20 @@ def generate_full_report(place):
     print(f"Total Successfully Matched: {matched_df.shape[0]}")
     
     confident_matches = matched_df[matched_df['status'] == 'CONFIDENT']
-    ai_resolved_matches = matched_df[matched_df['status'] == 'NEEDS_AI']
-
     print(f"Total Confident Matches: {confident_matches.shape[0]}")
-    print(f"Total AI-Resolved Matches: {ai_resolved_matches.shape[0]}")
+
+    ai_proposed = (
+        df[df['ai_suggested_LAMAS_id'].notna()]
+        if 'ai_suggested_LAMAS_id' in df
+        else df.iloc[0:0]
+    )
+    geographic_review = (
+        df[df['mapping_status'] == 'GEOGRAPHIC_REVIEW']
+        if 'mapping_status' in df
+        else df.iloc[0:0]
+    )
+    print(f"AI Proposals (not approved): {ai_proposed.shape[0]}")
+    print(f"Geographic Reviews: {geographic_review.shape[0]}")
     
     print("\n**Sample Confident Matches (Top 5):**")
     print(confident_matches
@@ -68,6 +78,8 @@ def generate_full_report(place):
     
     missing_candidates = unmatched_df[unmatched_df['status'].isin(['MISSING', 'NO_CANDIDATES'])]
     ai_rejected = unmatched_df[unmatched_df['status'] == 'NEEDS_AI']
+    if 'ai_suggested_LAMAS_id' in ai_rejected:
+        ai_rejected = ai_rejected[ai_rejected['ai_suggested_LAMAS_id'].isna()]
     
     print("\n**Sample Missing/No Candidates Streets (Top 5):**")
     print("> These require manual inspection. Name might be too different or street is new.")
@@ -81,6 +93,18 @@ def generate_full_report(place):
     print(ai_rejected
           [['osm_name', 'best_score', 'all_candidates']]
           .head(5).to_markdown(index=False))
+
+    if not ai_proposed.empty:
+        print("\n**AI Proposals (Not Approved) (Top 5):**")
+        print(ai_proposed
+              [['osm_name', 'ai_suggested_LAMAS_id', 'ai_confidence', 'ai_reasoning']]
+              .head(5).to_markdown(index=False))
+
+    if not geographic_review.empty:
+        print("\n**Geographic Review Required (Top 5):**")
+        print(geographic_review
+              [['osm_name', 'best_LAMAS_id', 'geographic_validation', 'geographic_distance_m']]
+              .head(5).to_markdown(index=False))
     
     print("\n--- Diagnostic Report Complete ---")
 

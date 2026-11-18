@@ -37,7 +37,6 @@ class TestLayaAIResolver(unittest.TestCase):
                 {"id": "202", "name": "הרצל", "names": ["הרצל", "הרצליה"]},
             ],
             ["בלפור"],
-            city_lexicon="ID 202: הרצל, הרצליה",
         )
 
         self.assertEqual(agent_factory.call_args.args[0], "convaiinnovations/laya-multilingual")
@@ -74,6 +73,34 @@ class TestLayaAIResolver(unittest.TestCase):
 
         self.assertIsNone(result["lamas_id"])
         agent.predict.assert_not_called()
+
+    def test_bounds_candidates_aliases_and_adjacent_context(self):
+        resolver, agent, _ = self.make_resolver(
+            {"answers": {"street_match": {"choice": "no_match", "confidence": 0.9}}}
+        )
+        candidates = [
+            {
+                "id": str(index),
+                "names": [f"שם {index}-{alias}" for alias in range(10)],
+                "score": 80.0,
+            }
+            for index in range(12)
+        ]
+
+        resolver.resolve_street(
+            "osm-4",
+            "רחוב בדיקה",
+            "חיפה",
+            candidates,
+            [f"סמוך {index}" for index in range(12)],
+        )
+
+        state, _ = agent.predict.call_args.args
+        self.assertEqual(len(state["מועמדי למ״ס"]), 8)
+        self.assertTrue(
+            all(len(candidate["names"]) <= 3 for candidate in state["מועמדי למ״ס"])
+        )
+        self.assertEqual(len(state["רחובות סמוכים ב-OSM"]), 8)
 
 
 if __name__ == "__main__":

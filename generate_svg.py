@@ -6,9 +6,7 @@ from shapely.geometry import LineString
 import pandas as pd
 import re
 
-# --- Import from existing project files ---
-# This assumes pipeline.py and its dependencies are in the same directory
-from pipeline import load_or_fetch_osm, _safe_place_name
+from data_loader import load_or_fetch_osm, safe_place_name
 
 def create_svg_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
     """
@@ -47,9 +45,14 @@ def create_svg_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
 
         # Determine color
         is_matched = pd.notna(row.get('final_LAMAS_id')) and str(row.get('final_LAMAS_id')).lower() != 'none'
-        #is_matched = pd.notna(LAMAS_id) and str(LAMAS_id).lower() != 'none'
-        stroke_color = "black" if is_matched else "red"
-        stroke_width = "2" if is_matched else "3"
+        mapping_status = row.get("mapping_status", "")
+        if mapping_status == "GEOGRAPHIC_REVIEW":
+            stroke_color, stroke_width = "#c084fc", "3"
+        elif mapping_status == "AI_PROPOSED":
+            stroke_color, stroke_width = "#00BFFF", "3"
+        else:
+            stroke_color = "black" if is_matched else "red"
+            stroke_width = "2" if is_matched else "3"
         
         if isinstance(geom, LineString):
             # Convert LineString to SVG path data
@@ -62,7 +65,19 @@ def create_svg_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
             if not pd.isna(name):
                 safe_name = re.sub(r'[<&">]', '', name)
                 # Include LAMAS ID in title for matched roads
-                LAMAS_info = f" | LAMAS ID: {row['final_LAMAS_id']}" if is_matched else ""
+                if is_matched:
+                    LAMAS_info = f" | LAMAS ID: {row['final_LAMAS_id']} (approved)"
+                elif pd.notna(row.get("ai_suggested_LAMAS_id")):
+                    LAMAS_info = (
+                        f" | AI suggestion, not approved: "
+                        f"{row['ai_suggested_LAMAS_id']}"
+                    )
+                    if mapping_status == "GEOGRAPHIC_REVIEW":
+                        LAMAS_info += " | Geographic review required"
+                elif mapping_status == "GEOGRAPHIC_REVIEW":
+                    LAMAS_info = " | Geographic review required"
+                else:
+                    LAMAS_info = ""
                 path_element += f'<title>{safe_name}{LAMAS_info}</title>'
             
             path_element += '</path>'
@@ -72,7 +87,7 @@ def create_svg_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
     
     # --- Write to file ---
     svg_content = "\n".join(svg_elements)
-    safe_name = _safe_place_name(place_name)
+    safe_name = safe_place_name(place_name)
     output_filename = f"SVG/{safe_name}_roads.svg"
     
     try:

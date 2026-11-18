@@ -16,6 +16,10 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 - **Two-tier AI resolution**
   - Local model (optional, if torch/transformers available)
   - Cloud fallback: Google Gemini (`GEMINI_API_KEY`)
+- **AI review separation** — AI results are suggestions and do not populate the
+  approved LAMAS mapping or approved-match coverage
+- **Candidate audit trail** — exports every fuzzy candidate above the configured
+  score threshold, with its score, aliases, rank, and geographic evidence
 - **Batch processing** with parallel workers
 - **Interactive HTML reports** — per-settlement maps + master index dashboard
 
@@ -89,8 +93,10 @@ between the LAMAS candidates. The model weights download from Hugging Face on
 first use. Its score is a model confidence, not measured street-matching
 accuracy; review the diagnostic report before relying on its matches.
 The resolver is reused across settlements handled by the same batch worker.
-For faster decisions, Laya receives the fuzzy candidate list and adjacent-street
-context rather than the full city lexicon.
+For bounded prompts, AI receives at most eight ranked candidates, up to three
+relevant aliases per candidate, and limited adjacent-street context rather than
+the full city lexicon. AI output is a suggestion for review, not an approved
+match; the map and coverage statistics keep suggestions separate.
 
 ## Usage
 
@@ -148,9 +154,9 @@ The workflow requires no Gemini key. It uses the national OSM PBF and
 `osmium-tool`, and fails if the LAMAS dataset does not contain all 83 cities
 or if any city pipeline fails.
 
-The workflow uploads batch summaries, per-city diagnostic CSV files, and
-HTML maps as the `israel-cities-results` artifact, retained for 90 days. The
-artifact can be downloaded from the completed workflow run.
+The workflow uploads batch summaries, per-city diagnostic and candidate-score
+CSV files, and HTML maps as the `israel-cities-results` artifact, retained for
+90 days. The artifact can be downloaded from the completed workflow run.
 
 ### Index dashboard
 
@@ -167,15 +173,25 @@ Opens as `index.html` (and on GitHub Pages when published).
    refresh fails)
 2. **Normalize** — abbreviations, punctuation, Hebrew preference (`name:he`)
 3. **Topology** — adjacency map of OSM segments
-4. **Match** — confident / needs-AI / missing by fuzzy score thresholds
-5. **AI (optional)** — local model, then Gemini, with neighbor context
-6. **Report** — diagnostic CSV + interactive HTML map
+4. **Match** — confident / needs-AI / missing by fuzzy score thresholds; exact
+   name matches provide OSM-only geographic anchors for checking proximity and
+   direct topology connections
+5. **AI (optional)** — local model, then Gemini, with a bounded candidate list
+   and neighbor context; suggestions never become approved mappings
+6. **Report** — diagnostic CSV, candidate-score CSV, and interactive HTML map
+
+LAMAS street records do not include geometry. Geographic checks therefore use
+exact-name OSM matches as reference lines; candidate segments directly connected
+to an anchor or within 250 m are marked supported. Candidates without such a
+reference are marked unverified, and candidates farther away are flagged for
+geographic review rather than automatically approved.
 
 Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
 
 ## Outputs
 
-- `data/` — pickle caches, intermediate steps, `diagnostic_report_*.csv`
+- `data/` — pickle caches, intermediate steps, `diagnostic_report_*.csv`, and
+  `step4_candidate_scores_*.csv` (all fuzzy candidates above the score threshold)
 - `HTML/` — per-settlement interactive maps (`*_roads.html`)
 - `batch_reports/` — batch logs and summaries
 - `index.html` — multi-settlement dashboard

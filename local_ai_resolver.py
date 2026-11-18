@@ -68,27 +68,29 @@ class LocalAIResolver:
         city_name: str,
         lamas_candidates: list,
         adjacent_streets: list,
-        city_lexicon: str = "",
     ) -> str:
-        """Build prompt with all synonym names per candidate and optional city lexicon."""
+        """Build a bounded prompt from the top candidates and nearby streets."""
+        osm_street_name = str(osm_street_name)[:120]
+        city_name = str(city_name)[:120]
+        adjacent_streets = [str(name)[:100] for name in adjacent_streets[:8]]
         prompt = f"""אתה מערכת GIS אוטומטית המתמחה בזיהוי רחובות בישראל.
 
-המשימה: למצוא את המזהה (LAMAS ID) הנכון של רחוב מתוך רשימת מועמדים.
+המשימה: להציע מזהה (LAMAS ID) מתוך רשימת מועמדים; ההצעה אינה אישור התאמה.
 
 **פרטי הרחוב:**
 - עיר: {city_name}
 - שם הרחוב ב-OSM: "{osm_street_name}"
 - רחובות סמוכים (קונטקסט טופולוגי): {', '.join(adjacent_streets) if adjacent_streets else 'אין מידע'}
 
-**מועמדים מבסיס נתוני למ"ס (כל כינוי/שם נרדף לכל ID):**
+**מועמדי למ"ס המובילים (עד 8 מועמדים ועד 3 כינויים לכל מועמד):**
 """
 
-        for i, candidate in enumerate(lamas_candidates, 1):
+        for i, candidate in enumerate(lamas_candidates[:8], 1):
             names = candidate.get("names") or candidate.get("aliases")
             if names:
-                names_str = " | ".join(str(n) for n in names)
+                names_str = " | ".join(str(n)[:120] for n in names[:3])
             else:
-                names_str = str(candidate.get("name", ""))
+                names_str = str(candidate.get("name", ""))[:120]
             score = candidate.get("score", 0.0)
             try:
                 score_s = f"{float(score):.1f}"
@@ -96,21 +98,13 @@ class LocalAIResolver:
                 score_s = str(score)
             prompt += f"\n{i}. ID: {candidate['id']}, שמות: [{names_str}] (ציון fuzzy: {score_s})"
 
-        if city_lexicon:
-            prompt += f"""
-
-**לקסיקון רחובות למ"ס בעיר (כל השמות והכינויים לפי ID):**
-{city_lexicon}
-"""
-
         prompt += """
 
 **הוראות:**
-1. השווה את שם ה-OSM לכל הכינויים של כל מועמד — לא רק לשם הראשי.
-2. השתמש בלקסיקון העיר כדי להבין אילו שמות שייכים לאותו ID ואילו לרחובות אחרים.
-3. קח בחשבון את הרחובות הסמוכים (קונטקסט טופולוגי).
-4. שמות עשויים להשתנות בגלל: כינויים, שמות חלקיים, איות, תארים, תרגום/תעתיק עברית↔ערבית.
-5. אם יש התאמה סבירה — החזר את ה-ID. אם אין — null.
+1. השווה לשמות ולכינויים שסופקו ולציון ה-fuzzy שלהם.
+2. קח בחשבון את הרחובות הסמוכים, אך אל תסיק מהם התאמה ללא ראיה בשם.
+3. שמות עשויים להשתנות בגלל: כינויים, שמות חלקיים, איות, תארים, תרגום/תעתיק עברית↔ערבית.
+4. אם אין מועמד מתאים — החזר null.
 
 **פורמט התשובה (JSON בלבד):**
 ```json
@@ -169,7 +163,6 @@ class LocalAIResolver:
         city_name: str,
         lamas_candidates: list,
         adjacent_streets: list,
-        city_lexicon: str = "",
     ) -> Dict[str, Any]:
         if not self.is_available():
             return {
@@ -185,7 +178,6 @@ class LocalAIResolver:
                 city_name,
                 lamas_candidates,
                 adjacent_streets,
-                city_lexicon=city_lexicon,
             )
 
             messages = [
@@ -244,8 +236,8 @@ def get_local_ai_resolution(
     adjacency_map: dict,
     resolver: LocalAIResolver,
 ) -> Dict[str, Any]:
-    """Resolve a street using local AI with full city synonym context."""
-    from normalization import build_lamas_aliases, format_city_lexicon
+    """Resolve a street using bounded candidate and adjacency context."""
+    from normalization import build_lamas_aliases, select_ai_candidates
 
     osm_street = osm_gdf[osm_gdf["osm_id"] == osm_id]
     if osm_street.empty:
@@ -269,10 +261,12 @@ def get_local_ai_resolution(
             city_lamas = lamas_df[city_mask]
 
     aliases_by_id = build_lamas_aliases(city_lamas)
-    city_lexicon = format_city_lexicon(aliases_by_id)
 
     lamas_candidates = []
-    if pd.notna(candidates_row.get("all_candidates")):
+    candidate_details = candidates_row.get("candidate_details")
+    if isinstance(candidate_details, list):
+        lamas_candidates = select_ai_candidates(candidate_details, osm_street_name)
+    elif pd.notna(candidates_row.get("all_candidates")):
         for line in str(candidates_row["all_candidates"]).split("\n"):
             id_match = re.search(r"ID:\s*(\d+)", line)
             names_bracket = re.search(r"Names:\s*\[([^\]]+)\]", line)
@@ -297,6 +291,7 @@ def get_local_ai_resolution(
                     "score": float(score_match.group(1)) if score_match else 0.0,
                 }
             )
+        lamas_candidates = select_ai_candidates(lamas_candidates, osm_street_name)
 
     adjacent_ids = adjacency_map.get(osm_id, [])
     adjacent_streets = []
@@ -314,8 +309,7 @@ def get_local_ai_resolution(
         osm_street_name,
         city_name,
         lamas_candidates,
-        adjacent_streets,
-        city_lexicon=city_lexicon,
+        adjacent_streets[:8],
     )
 
 
