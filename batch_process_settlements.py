@@ -562,6 +562,15 @@ Examples:
     
     print("\n✓ Batch processing complete!")
 
+    if not args.dry_run and not args.skip_html:
+        try:
+            from generate_index import generate_index_html
+
+            print("Refreshing the national dashboard (index.html)…")
+            generate_index_html()
+        except Exception as exc:  # dashboard refresh must never fail the batch
+            print(f"Warning: dashboard refresh failed: {exc}")
+
 
 if __name__ == "__main__":
     main()
