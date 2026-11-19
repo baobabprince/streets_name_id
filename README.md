@@ -35,7 +35,10 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 | `local_ai_resolver.py` | Optional local Qwen-based resolver |
 | `laya_ai_resolver.py` | Optional local Laya decision-model resolver |
 | `batch_process_settlements.py` | Multi-settlement runner |
-| `generate_html.py` / `generate_index.py` | Per-city map + dashboard |
+| `generate_html.py` / `map_template.html` | Per-city interactive street map |
+| `generate_index.py` | National dashboard (`index.html`) |
+| `migrate_legacy_pages.py` | Upgrade old self-contained map pages |
+| `assets/` | Shared UI (design tokens, dashboard, map, JS) |
 
 ## Installation
 
@@ -158,13 +161,53 @@ The workflow uploads batch summaries, per-city diagnostic and candidate-score
 CSV files, and HTML maps as the `israel-cities-results` artifact, retained for
 90 days. The artifact can be downloaded from the completed workflow run.
 
-### Index dashboard
+### Dashboard & visualization
+
+The dashboard scans every page in `HTML/` (old and new formats), aggregates the
+coverage data and writes a fully static `index.html` with an embedded JSON
+payload. No server, CDN or API key is required; it works on GitHub Pages and
+straight from a checkout.
 
 ```bash
 python generate_index.py
+# → index.html + dashboard_data.json (cache, git-ignored)
 ```
 
-Opens as `index.html` (and on GitHub Pages when published).
+What you get:
+
+- **National scorecard** — weighted coverage ring, 797 settlements, 58k streets,
+  approved / pending / AI-proposal split, LAMAS coverage.
+- **Interactive analytics** — coverage distribution histogram (click a column
+  to filter the list), status-mix donut and an “attention needed” shortlist.
+- **City explorer** — instant Hebrew-aware search, coverage-tier chips, sorting
+  by size / coverage / unmatched streets, card and table views, and paged
+  rendering so hundreds of settlements stay fast.
+- **Per-city street inspector** (`HTML/*_roads.html`) — map + synced street
+  list: hover/click a street to highlight every segment, focus with one click,
+  filter chips with live counts, street-name labels that appear as you zoom,
+  AI/geographic-review badges, deep links (`#street=…`), CSV export, print,
+  dark/light themes and a mobile layout.
+- **Match-status palette** — exact (green), partial (amber), AI proposal (sky),
+  geographic review (violet), no match (orange), unnamed (grey). AI proposals
+  and geographic reviews are always labelled as *not approved*.
+
+#### Migrating existing pages
+
+Older pages embed their own CSS/JS and full-precision geometry (up to 14 MB per
+city). The migration tool re-renders them with the shared UI, rounds
+coordinates and moves repeated metadata into one compact record table — about
+**35–40 % smaller** while keeping the same street data:
+
+```bash
+python migrate_legacy_pages.py                 # dry run on a demo set
+python migrate_legacy_pages.py --write         # migrate the demo set in place
+python migrate_legacy_pages.py --all --write   # migrate every legacy page
+python migrate_legacy_pages.py --all --write --out-dir /tmp/new-html
+```
+
+After migrating, re-run `python generate_index.py` to refresh the dashboard.
+New pipeline runs automatically use the new template. `batch_process_settlements.py`
+also refreshes `index.html` at the end of a batch (unless `--skip-html`).
 
 ## Methodology (short)
 
@@ -192,9 +235,10 @@ Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
 
 - `data/` — pickle caches, intermediate steps, `diagnostic_report_*.csv`, and
   `step4_candidate_scores_*.csv` (all fuzzy candidates above the score threshold)
-- `HTML/` — per-settlement interactive maps (`*_roads.html`)
+- `HTML/` — per-settlement interactive street inspectors (`*_roads.html`)
 - `batch_reports/` — batch logs and summaries
-- `index.html` — multi-settlement dashboard
+- `index.html` — national dashboard (search, filters, analytics)
+- `assets/` — shared CSS/JS used by the dashboard and every settlement page
 
 ### LAMAS data fallback
 

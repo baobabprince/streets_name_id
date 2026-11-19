@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 import geopandas as gpd
 from shapely.geometry import LineString, MultiLineString
 
-from generate_html import create_html_from_gdf
+from generate_html import COLOR_PERFECT, create_html_from_gdf
 
 
 class TestGenerateHtml(unittest.TestCase):
@@ -102,7 +102,7 @@ class TestGenerateHtml(unittest.TestCase):
 
         self.assertEqual(html.count('class="street-path"'), 3)
         self.assertEqual(html.count('vector-effect="non-scaling-stroke"'), 3)
-        self.assertEqual(html.count('stroke="#f8fafc"'), 1)
+        self.assertEqual(html.count(f'stroke="{COLOR_PERFECT}"'), 1)
 
     def test_ai_suggestions_are_displayed_as_unapproved(self):
         gdf = gpd.GeoDataFrame(
@@ -131,6 +131,50 @@ class TestGenerateHtml(unittest.TestCase):
         self.assertIn('data-status="ai"', html)
         self.assertIn("הצעת AI (לא מאושרת): 123", html)
         self.assertIn("לא מאושרת", html)
+
+    def test_page_embeds_compact_records_instead_of_per_path_metadata(self):
+        gdf = gpd.GeoDataFrame(
+            {
+                "osm_name": ["שדרות רוטשילד", "שדרות רוטשילד"],
+                "final_LAMAS_id": [123, 123],
+                "best_LAMAS_name": ["רוטשילד", "רוטשילד"],
+                "best_score": [93.4, 93.4],
+                "status": ["CONFIDENT", "CONFIDENT"],
+                "geometry": [
+                    LineString([(34.8, 32.0), (34.801, 32.001)]),
+                    LineString([(34.802, 32.0), (34.803, 32.001)]),
+                ],
+            },
+            crs="EPSG:4326",
+        )
+
+        original_dir = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory() as output_dir:
+                os.chdir(output_dir)
+                create_html_from_gdf(gdf, "יישוב בדיקה")
+                with open("HTML/יישוב_בדיקה_roads.html", encoding="utf-8") as html_file:
+                    html = html_file.read()
+        finally:
+            os.chdir(original_dir)
+
+        self.assertIn('id="street-records"', html)
+        self.assertEqual(html.count("data-rec="), 2)
+        self.assertNotIn("data-osm=", html)
+        import json
+        import re
+
+        payload = re.search(
+            r'id="street-records" type="application/json">(.*?)</script>', html, re.S
+        ).group(1)
+        records = json.loads(payload)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0][0], "partial")
+        self.assertEqual(records[0][1], "שדרות רוטשילד")
+        self.assertEqual(records[0][3], "123")
+        self.assertAlmostEqual(records[0][4], 93.4)
+        # a single decimal keeps geometry compact but sub-metre accurate
+        self.assertNotRegex(html, r"34\.\d{5,}")
 
 
 if __name__ == "__main__":
