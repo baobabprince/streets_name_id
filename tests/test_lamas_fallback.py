@@ -158,10 +158,13 @@ class TestLamasFallback(unittest.TestCase):
                 result = data_loader.load_or_fetch_LAMAS(force_refresh=True)
 
             self.assertTrue(os.path.exists(pickle_path))
-        self.assertEqual(
-            result.to_dict("records"),
-            [{"LAMAS_id": "123", "LAMAS_name": "רחוב הבדיקה", "city": "אבו סנאן"}],
-        )
+        record = result.to_dict("records")[0]
+        self.assertEqual(record["LAMAS_id"], "123")
+        self.assertEqual(record["official_code"], "123")
+        self.assertEqual(record["LAMAS_name"], "רחוב הבדיקה")
+        self.assertEqual(record["city"], "אבו סנאן")
+        self.assertTrue(record["is_official"])
+        self.assertTrue(record["LAMAS_key"].endswith(":123"))
 
     def test_stale_pickle_is_used_when_api_refresh_fails(self):
         cached_data = pd.DataFrame(
@@ -185,7 +188,12 @@ class TestLamasFallback(unittest.TestCase):
             ):
                 result = data_loader.load_or_fetch_LAMAS(force_refresh=True)
 
-        pd.testing.assert_frame_equal(result, cached_data)
+        self.assertEqual(result.iloc[0]["LAMAS_id"], "123")
+        self.assertEqual(result.iloc[0]["LAMAS_name"], "רחוב הבדיקה")
+        self.assertEqual(result.iloc[0]["city"], "אבו סנאן")
+        self.assertEqual(result.iloc[0]["official_code"], "123")
+        self.assertEqual(result.iloc[0]["LAMAS_key"], "אבוסנאנ:123")
+        self.assertTrue(result.iloc[0]["is_official"])
 
     def test_api_error_is_raised_when_no_fallback_exists(self):
         with tempfile.TemporaryDirectory() as temp_dir:

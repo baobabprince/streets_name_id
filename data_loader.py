@@ -14,7 +14,7 @@ import pandas as pd
 import requests
 
 from lamas_streets import CACHE_MAX_AGE_DAYS as LAMAS_CACHE_MAX_AGE_DAYS
-from lamas_streets import fetch_all_LAMAS_data
+from lamas_streets import fetch_all_LAMAS_data, normalize_lamas_data
 from OSM_streets import fetch_osm_street_data
 from settlement_names import canonical_key
 
@@ -30,16 +30,23 @@ SIX_MONTHS_DAYS = 182
 # A batch worker handles many settlements; avoid re-reading the same pickle
 # from disk for every one of them.  Keys include the file mtime so a refresh
 # invalidates the in-memory copy automatically.
-_LAMAS_MEMORY_CACHE: dict[tuple[str, float], pd.DataFrame] = {}
+_LAMAS_MEMORY_CACHE: dict[tuple[str, float, int], pd.DataFrame] = {}
+LAMAS_SCHEMA_VERSION = 2
 _OSM_MEMORY_CACHE: "OrderedDict[tuple[str, float], pd.DataFrame]" = OrderedDict()
 _OSM_MEMORY_CACHE_MAX = 2
 
 
-def _file_signature(path: str) -> tuple[str, float]:
+def _file_signature(path: str) -> tuple[str, float, int]:
+    """Include the schema version so old in-memory caches cannot leak through."""
     try:
-        return (path, os.path.getmtime(path))
+        return (path, os.path.getmtime(path), LAMAS_SCHEMA_VERSION)
     except OSError:
-        return (path, -1.0)
+        return (path, -1.0, LAMAS_SCHEMA_VERSION)
+
+
+def _ensure_lamas_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """Upgrade legacy pickles to the canonical-id schema on every read."""
+    return normalize_lamas_data(df)
 
 
 def city_key(series: pd.Series) -> pd.Series:
@@ -109,7 +116,7 @@ def load_or_fetch_LAMAS(
             return memory_cached.copy()
         try:
             logger.info("Loading LAMAS data from cache: %s", LAMAS_CACHE)
-            cached_df = pd.read_pickle(LAMAS_CACHE)
+            cached_df = _ensure_lamas_schema(pd.read_pickle(LAMAS_CACHE))
             if not _is_valid_lamas_data(cached_df):
                 raise ValueError("LAMAS cache is empty or missing required columns")
             _LAMAS_MEMORY_CACHE.clear()
@@ -120,13 +127,13 @@ def load_or_fetch_LAMAS(
 
     logger.info("Fetching LAMAS data from API...")
     try:
-        df = fetch_all_LAMAS_data(force_refresh=force_refresh)
+        df = _ensure_lamas_schema(fetch_all_LAMAS_data(force_refresh=force_refresh))
         if not _is_valid_lamas_data(df):
             raise ValueError("LAMAS fetch returned empty data or missing required columns")
     except (requests.exceptions.RequestException, ValueError) as fetch_error:
         if os.path.exists(LAMAS_CACHE):
             try:
-                cached_df = pd.read_pickle(LAMAS_CACHE)
+                cached_df = _ensure_lamas_schema(pd.read_pickle(LAMAS_CACHE))
                 if not _is_valid_lamas_data(cached_df):
                     raise ValueError("LAMAS cache is empty or missing required columns")
             except Exception:

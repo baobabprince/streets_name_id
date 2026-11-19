@@ -52,26 +52,58 @@ def calculate_diagnostics(
     )
 
     if not lamas_in_city_df.empty:
-        # 3-digit codes = actual streets; 4-digit = neighborhoods etc.
-        lamas_streets_only = lamas_in_city_df[
-            lamas_in_city_df["LAMAS_id"].astype(str).str.len() == 3
-        ]
-        total_lamas_streets = lamas_streets_only["LAMAS_id"].nunique()
+        # The old "3-digit code = street" heuristic was wrong: official street
+        # codes in the data.gov.il synonyms resource can be 1-5 digits, and
+        # 4/5-digit codes also appear for synonyms.  Trust the source status.
+        if "is_official" in lamas_in_city_df.columns:
+            official_column = lamas_in_city_df["is_official"]
+            if official_column.dtype == bool:
+                official_mask = official_column.fillna(False)
+            else:
+                official_mask = (
+                    official_column.astype("string").str.casefold()
+                    .isin(["true", "1", "yes"])
+                )
+        elif "street_name_status" in lamas_in_city_df.columns:
+            official_mask = (
+                lamas_in_city_df["street_name_status"]
+                .astype("string").str.casefold().eq("official")
+            )
+        else:
+            official_mask = pd.Series(True, index=lamas_in_city_df.index)
+        lamas_streets_only = lamas_in_city_df.loc[official_mask].copy()
+        if lamas_streets_only.empty:
+            # Legacy caches without status metadata: count every unique id.
+            lamas_streets_only = lamas_in_city_df.copy()
+
+        # Prefer the globally unique (city_code:official_code) key when the
+        # pipeline wrote it; otherwise fall back to the city-local LAMAS_id.
+        if (
+            "LAMAS_key" in lamas_streets_only.columns
+            and "final_LAMAS_key" in diagnostic_df_full.columns
+        ):
+            lamas_key_col, diag_key_col = "LAMAS_key", "final_LAMAS_key"
+        else:
+            lamas_key_col, diag_key_col = "LAMAS_id", "final_LAMAS_id"
+        total_lamas_streets = lamas_streets_only[lamas_key_col].nunique()
 
         matched_lamas_ids = set(
-            diagnostic_df_full["final_LAMAS_id"]
+            diagnostic_df_full[diag_key_col]
             .dropna()
             .astype(str)
             .str.replace(r"\.0$", "", regex=True)
         )
-
-        is_matched = lamas_streets_only["LAMAS_id"].astype(str).isin(matched_lamas_ids)
+        is_matched = (
+            lamas_streets_only[lamas_key_col]
+            .astype(str)
+            .isin(matched_lamas_ids)
+        )
         unmatched_lamas_df = lamas_streets_only[~is_matched]
 
         unmatched_lamas_street_names = sorted(
-            unmatched_lamas_df.groupby("LAMAS_id")["LAMAS_name"].first().tolist()
+            unmatched_lamas_df.groupby(lamas_key_col)["LAMAS_name"].first().tolist()
         )
-        unmatched_lamas_count = unmatched_lamas_df["LAMAS_id"].nunique()
+        unmatched_lamas_count = unmatched_lamas_df[lamas_key_col].nunique()
         unmatched_lamas_percentage = (
             (unmatched_lamas_count / total_lamas_streets) * 100
             if total_lamas_streets > 0

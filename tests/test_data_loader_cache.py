@@ -27,9 +27,13 @@ class TestDataLoaderCaches(unittest.TestCase):
                 first = data_loader.load_or_fetch_LAMAS()
                 second = data_loader.load_or_fetch_LAMAS()
 
-            pd.testing.assert_frame_equal(first, frame)
-            pd.testing.assert_frame_equal(second, frame)
+            expected = data_loader._ensure_lamas_schema(frame)
+            pd.testing.assert_frame_equal(first, expected)
+            pd.testing.assert_frame_equal(second, expected)
             self.assertEqual(read.call_count, 1)
+            self.assertEqual(first.iloc[0]["LAMAS_key"], "חיפה:101")
+            self.assertEqual(first.iloc[0]["official_code"], "101")
+            self.assertTrue(first.iloc[0]["is_official"])
 
     def test_city_key_uses_shared_canonical_settlement_key(self):
         keys = data_loader.city_key(

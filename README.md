@@ -424,6 +424,38 @@ OSM data is fetched as a simplified street graph for the requested settlement.
 If an OSM refresh fails, a valid existing cache is used with a warning; without
 a usable cache, the fetch error is surfaced instead of silently returning empty data.
 
+### Which LAMAS street id is stored?
+
+The portal resource is the national street **synonyms** table. Its live CKAN
+schema is `_id, region_code, region_name, city_code, city_name, street_code,
+street_name, street_name_status, official_code` ([data dictionary][lamas-dict],
+[live API schema][lamas-schema]). `_id` is only a CKAN row number and
+`city_code` is the settlement code — neither is the street id.
+
+- `official_code` is the canonical `סמל רחוב` used by `LAMAS_id`. For an
+  official row it equals `street_code`; for a synonym row it points back to the
+  official street code. [Live example][lamas-example] from `city_code=52` (`לוזית`):
+  `street_code=101 / שקד` has `street_name_status=official` and
+  `official_code=101`, while `street_code=9521 / השקד` has
+  `street_name_status="synonym of 101"` and the same `official_code=101`.
+- `official_code` is **not globally unique**: the live API reports 1,503 rows
+  with `official_code=101` across different settlements. The unambiguous id is
+  therefore `LAMAS_key = city_code:official_code` (e.g. `52:101`). The pipeline
+  filters LAMAS rows by canonical settlement before matching, so `LAMAS_id`
+  remains the city-local official street code, while `final_LAMAS_key`,
+  `final_city_code`, `final_official_code`, `final_street_code` and
+  `final_street_name_status` are included in `diagnostic_report` for auditing.
+- `street_name_status` — not the number of digits — decides whether a row is an
+  official street. Four- and five-digit official codes are valid; the old
+  "3 characters = street" diagnostic heuristic was wrong and was removed.
+  Codes are stored as text, preserving leading zeroes; numeric `101.0` values
+  are cleaned to `101`. Legacy `data/LAMAS_data.pkl` and
+  `cache/lamas_data.csv` caches are upgraded to this schema on read.
+
+[lamas-dict]: https://haifa.datacity.org.il/dataset/7b1b9245-e292-4572-82d7-92d408280d7c/resource/e02acb9c-dcd6-4fa4-895e-03902278a87d
+[lamas-schema]: https://data.gov.il/api/3/action/datastore_search?resource_id=bf185c7f-1a4e-4662-88c5-fa118a244bda&limit=2
+[lamas-example]: https://data.gov.il/api/3/action/datastore_search?resource_id=bf185c7f-1a4e-4662-88c5-fa118a244bda&filters=%7B%22city_code%22%3A52%2C%22official_code%22%3A101%7D&limit=3
+
 ## License
 
 Apache-2.0 (see `LICENSE`).

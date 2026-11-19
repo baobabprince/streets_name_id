@@ -107,6 +107,66 @@ class TestPipelineApproval(unittest.TestCase):
         self.assertEqual(diagnostic.iloc[0]["mapping_status"], "AI_PROPOSED")
         self.assertTrue(pd.isna(diagnostic.iloc[0]["final_LAMAS_id"]))
 
+    def test_diagnostic_report_includes_globally_unique_lamas_key(self):
+        osm_gdf = gpd.GeoDataFrame(
+            {
+                "osm_id": ["osm-1"],
+                "osm_name": ["רחוב ארוך"],
+                "city": ["עיר בדיקה"],
+                "geometry": [LineString([(34.80, 32.00), (34.801, 32.00)])],
+            },
+            crs="EPSG:4326",
+        )
+        lamas_df = pd.DataFrame(
+            {
+                "LAMAS_id": ["1457"],
+                "LAMAS_name": ["רחוב ארוך"],
+                "city": ["עיר בדיקה"],
+                "city_code": ["3000"],
+                "official_code": ["1457"],
+                "street_code": ["1457"],
+                "street_name_status": ["official"],
+                "is_official": [True],
+                "LAMAS_key": ["3000:1457"],
+            }
+        )
+        candidates = pd.DataFrame(
+            {
+                "osm_id": ["osm-1"],
+                "status": ["CONFIDENT"],
+                "best_score": [100.0],
+                "best_LAMAS_id": ["1457"],
+                "best_LAMAS_name": ["רחוב ארוך"],
+                "all_candidates": ["ID: 1457"],
+                "candidate_details": [[]],
+                "geographic_validation": ["EXACT_NAME_ANCHOR"],
+                "geographic_distance_m": [0.0],
+            }
+        )
+        saved = {}
+        with (
+            patch.object(pipeline, "load_or_fetch_LAMAS", return_value=lamas_df),
+            patch.object(pipeline, "load_or_fetch_osm", return_value=osm_gdf),
+            patch.object(pipeline, "build_adjacency_map", return_value={}),
+            patch.object(pipeline, "find_fuzzy_candidates", return_value=candidates),
+            patch.object(
+                pipeline, "validate_candidate_geography", return_value=candidates
+            ),
+            patch.object(
+                pipeline, "save_intermediate_df",
+                side_effect=lambda df, name, place: saved.setdefault(name, df.copy()),
+            ),
+        ):
+            status = pipeline.run_pipeline(
+                "עיר בדיקה", use_ai=False, skip_html=True,
+            )
+        diagnostic = saved["diagnostic_report"]
+        self.assertEqual(status, PipelineStatus.SUCCESS)
+        self.assertEqual(diagnostic.iloc[0]["final_LAMAS_id"], "1457")
+        self.assertEqual(diagnostic.iloc[0]["final_LAMAS_key"], "3000:1457")
+        self.assertEqual(diagnostic.iloc[0]["final_city_code"], "3000")
+        self.assertEqual(diagnostic.iloc[0]["final_official_code"], "1457")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -576,6 +576,43 @@ def run_pipeline(
         final_mapping_df[["osm_id", "final_LAMAS_id"]], on="osm_id", how="left"
     )
 
+    # Attach the CBS metadata behind the matched id.  ``official_code`` is only
+    # unique inside a city, so ``final_LAMAS_key`` (city_code:official_code) is
+    # the unambiguous identifier; ``street_code``/status distinguish the
+    # official row from synonym rows.
+    metadata_columns = [
+        column for column in (
+            "LAMAS_key", "city_code", "official_code", "street_code",
+            "street_name_status", "is_official", "id_source",
+        )
+        if column in lamas_city_df.columns
+    ]
+    if "LAMAS_id" in lamas_city_df.columns and metadata_columns:
+        meta = lamas_city_df.drop_duplicates(subset=["LAMAS_id"])[
+            ["LAMAS_id", *metadata_columns]
+        ].copy()
+        meta["LAMAS_id"] = meta["LAMAS_id"].astype("string")
+        meta = meta.rename(columns={
+            "LAMAS_id": "final_LAMAS_id",
+            "LAMAS_key": "final_LAMAS_key",
+            "city_code": "final_city_code",
+            "official_code": "final_official_code",
+            "street_code": "final_street_code",
+            "street_name_status": "final_street_name_status",
+            "is_official": "final_is_official",
+            "id_source": "final_id_source",
+        })
+        diagnostic_df_full["final_LAMAS_id"] = (
+            diagnostic_df_full["final_LAMAS_id"].astype("string")
+        )
+        overlap = [
+            column for column in meta.columns
+            if column != "final_LAMAS_id" and column in diagnostic_df_full.columns
+        ]
+        diagnostic_df_full = diagnostic_df_full.drop(columns=overlap).merge(
+            meta, on="final_LAMAS_id", how="left"
+        )
+
     _save_step(diagnostic_df_full, "diagnostic_report", file_identifier, save_intermediates)
 
     logger.info("PIPELINE COMPLETED")

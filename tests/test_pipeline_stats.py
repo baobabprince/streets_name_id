@@ -52,7 +52,7 @@ class TestPipelineStats(unittest.TestCase):
         """
         # --- Mock LAMAS Data ---
         # A single unique LAMAS ID (123) has two different names.
-        # Using 3-digit codes since 4-digit codes are filtered out (non-streets)
+        # Legacy cache without status metadata: every unique id counts.
         lamas_data = {
             'LAMAS_name': ['רחוב הניצנים', 'סמ הניצנים', 'רחוב אחר'],
             'LAMAS_id': [123, 123, 567],
@@ -86,6 +86,37 @@ class TestPipelineStats(unittest.TestCase):
         self.assertNotIn('סמ הניצנים', diagnostics['unmatched_lamas_street_names'])
         self.assertIn('רחוב אחר', diagnostics['unmatched_lamas_street_names'])
         self.assertEqual(diagnostics['unmatched_lamas_count'], 1)
+
+    def test_status_metadata_counts_four_digit_official_ids_and_ignores_synonyms(self):
+        lamas_in_city_df = pd.DataFrame({
+            "LAMAS_id": ["1457", "1457", "9000"],
+            "LAMAS_key": ["3000:1457", "3000:1457", "3000:9000"],
+            "LAMAS_name": ["רחוב רשמי", "שם נרדף", "רחוב אחר"],
+            "city": ["עיר בדיקה"] * 3,
+            "street_name_status": [
+                "official", "synonym of 1457", "official",
+            ],
+            "is_official": [True, False, True],
+        })
+        diagnostic_df_full = pd.DataFrame({
+            "normalized_name": ["רשמי", "לא תואם"],
+            "final_LAMAS_id": ["1457", None],
+            "final_LAMAS_key": ["3000:1457", None],
+            "ai_suggested_LAMAS_id": [None, None],
+        })
+        osm_gdf = gpd.GeoDataFrame({
+            "normalized_name": ["רשמי", "לא תואם"],
+            "geometry": [Point(1, 1), Point(2, 2)],
+        })
+
+        diagnostics = calculate_diagnostics(
+            lamas_in_city_df, diagnostic_df_full, osm_gdf
+        )
+
+        self.assertEqual(diagnostics["total_lamas_streets"], 2)
+        self.assertEqual(diagnostics["unmatched_lamas_count"], 1)
+        self.assertNotIn("שם נרדף", diagnostics["unmatched_lamas_street_names"])
+        self.assertIn("רחוב אחר", diagnostics["unmatched_lamas_street_names"])
 
 if __name__ == '__main__':
     unittest.main()
