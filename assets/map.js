@@ -12,7 +12,7 @@
     partial: "#f6c453",
     ai: "#38bdf8",
     "geo-review": "#a78bfa",
-    unmatched: "#fb923c",
+    unmatched: "#f43f5e",
     unnamed: "#7c8aa3"
   };
   var LABELS = {
@@ -44,11 +44,26 @@
   var gmPanel = document.getElementById("govmap-panel");
   var gmFrame = document.getElementById("govmap-frame");
   var gmLoading = document.getElementById("govmap-loading");
+  var gmCityBtn = document.getElementById("govmap-city");
   var gmStreetBtn = document.getElementById("govmap-street");
   var gmExternalBtn = document.getElementById("govmap-external");
   var gmExpandBtn = document.getElementById("govmap-expand");
   var gmCloseBtn = document.getElementById("govmap-close");
   var gmCurrentUrl = "";
+  var gapsPanel = document.getElementById("gaps-panel");
+  var gapsLink = document.getElementById("gaps-link");
+  var gapsLinkCount = document.getElementById("gaps-link-count");
+  var gapsTotal = document.getElementById("gaps-total");
+  var gapsSearch = document.getElementById("gaps-search");
+  var gapOsmList = document.getElementById("gap-osm-list");
+  var gapLamasList = document.getElementById("gap-lamas-list");
+  var gapOsmCount = document.getElementById("gap-osm-count");
+  var gapLamasCount = document.getElementById("gap-lamas-count");
+  var gapOsmEmpty = document.getElementById("gap-osm-empty");
+  var gapLamasEmpty = document.getElementById("gap-lamas-empty");
+  var gapOsmFilter = document.getElementById("gap-osm-filter");
+  var mapReset = document.getElementById("map-reset");
+  var mapZoomLabel = document.getElementById("map-zoom-label");
 
   var meta = {};
   try {
@@ -420,16 +435,23 @@
     var place = String(cityName || "").replace(/,\s*Israel\s*$/i, "").trim();
     var hasStreet = !!street;
     var query = hasStreet ? street + ", " + place : place;
-    var url = "https://www.govmap.gov.il/?q=" + encodeURIComponent(query);
-    // GovMap's own levels: z=13 is street level (~1:500), z=6 ≈ 1:70,000.
+    var params = [];
+    // An explicit ITM centre (stored in #page-meta) is the only reliable way
+    // to open the right settlement; q alone can resolve to the national view.
+    var hasCenter = !!(meta.govmap && meta.govmap.x != null && meta.govmap.y != null);
+    if (hasCenter) {
+      params.push("c=" + meta.govmap.x + "," + meta.govmap.y);
+    }
+    // With a known centre, the city view uses c only (no ambiguous geocoding).
+    // A street query still needs q to find the street inside that city.
+    if (hasStreet || !hasCenter) {
+      params.push("q=" + encodeURIComponent(query));
+    }
+    // GovMap's own levels: z=12 ≈ 1:1,000 (street + context), z=6 ≈ 1:70,000.
     // For the city view, fit the settlement extent (SVG units are metres in
     // EPSG:3857) to the panel width instead of trusting GovMap's default zoom.
-    if (hasStreet) {
-      url += "&z=13";
-    } else {
-      url += "&z=" + cityZoom();
-    }
-    return url;
+    params.push("z=" + (hasStreet ? 12 : cityZoom()));
+    return "https://www.govmap.gov.il/?" + params.join("&");
   }
 
   function cityZoom() {
@@ -493,6 +515,9 @@
     gmFrame.addEventListener("load", function () {
       if (gmLoading) gmLoading.hidden = true;
     });
+  }
+  if (gmCityBtn) {
+    gmCityBtn.addEventListener("click", function () { gmNavigate(govmapUrl(null)); });
   }
   if (gmStreetBtn) {
     gmStreetBtn.addEventListener("click", function () {
@@ -652,6 +677,11 @@
   function setView(v) {
     view = v;
     svg.setAttribute("viewBox", v.x + " " + v.y + " " + v.w + " " + v.h);
+    if (mapReset) {
+      var zoom = base.w / view.w;
+      mapReset.hidden = zoom < 1.03;
+      if (mapZoomLabel) mapZoomLabel.textContent = "×" + (zoom < 10 ? zoom.toFixed(1) : Math.round(zoom));
+    }
     scheduleLabels();
   }
 
@@ -738,6 +768,7 @@
     if (state.active) zoomToRecord(state.active);
     else toastMsg("בחרו רחוב כדי להתמקד בו");
   });
+  if (mapReset) mapReset.addEventListener("click", function () { animateTo(base); });
 
   function recordBBox(rec) {
     var box = null;
@@ -760,11 +791,15 @@
   function zoomToRecord(rec) {
     var b = recordBBox(rec);
     if (!b) return;
-    var pad = Math.max(b.w, b.h) * 0.5 + 24;
-    var w = Math.min(MAX_W, Math.max(MIN_W, Math.max(b.w, b.h) + pad * 2));
+    // Keep a meaningful neighbourhood around the street instead of filling
+    // the canvas with one short segment. Never zoom in more than ~12x city.
+    var span = Math.max(b.w, b.h);
+    var minSpan = Math.max(base.w * 0.14, 420);
+    var maxSpan = base.w * 0.85;
+    var w = Math.min(maxSpan, Math.max(minSpan, span * 2.4));
     var cx = b.x + b.w / 2, cy = b.y + b.h / 2;
     var ratio = base.h / base.w;
-    animateTo({ x: cx - w / 2, y: cy - (w * ratio) / 2, w: w, h: w * ratio });
+    animateTo({ x: cx - w / 2, y: cy - (w * ratio) / 2, w: w, h: w * ratio }, 420);
   }
 
   /* ------------------------------------------------------------------ *
@@ -922,6 +957,129 @@
     });
   }
 
+
+  /* ------------------------------------------------------------------ *
+   * Gap finder — promote the two "unmatched" lists out of the insights tab
+   * ------------------------------------------------------------------ */
+
+  function buildGaps() {
+    if (!gapOsmList || !gapLamasList) return;
+    var diag = document.querySelector(".diagnostics");
+    var blocks = diag ? Array.prototype.slice.call(diag.querySelectorAll(".unmatched-list")) : [];
+    var osmBlock = null, lamasBlock = null;
+    blocks.forEach(function (block) {
+      var heading = block.querySelector("h3");
+      var text = heading ? heading.textContent : "";
+      if (/למ["״']?ס|LAMAS/i.test(text)) lamasBlock = block;
+      else if (/OSM/i.test(text)) osmBlock = block;
+    });
+
+    // Build OSM gaps from the full record table, not the (possibly capped)
+    // diagnostics list, so every chip is clickable and nothing is truncated.
+    var matchedNames = Object.create(null);
+    records.forEach(function (rec) {
+      if (rec.name && rec.status !== "unmatched") matchedNames[normalize(rec.name)] = true;
+    });
+    var osmNames = [], seenOsm = Object.create(null);
+    records.forEach(function (rec) {
+      if (rec.status !== "unmatched" || !rec.name) return;
+      var key = normalize(rec.name);
+      if (!key || seenOsm[key] || matchedNames[key]) return;
+      seenOsm[key] = true;
+      osmNames.push(rec.name);
+    });
+    if (osmBlock) osmBlock.remove();
+    osmNames.sort(function (a, b) { return a.localeCompare(b, "he"); });
+
+    gapOsmList.innerHTML = "";
+    osmNames.forEach(function (name) {
+      var li = document.createElement("li");
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = name;
+      btn.title = "התמקדות במפה: " + name;
+      btn.addEventListener("click", function () { focusGap(name); });
+      li.appendChild(btn);
+      gapOsmList.appendChild(li);
+    });
+
+    var lamasCount = 0;
+    gapLamasList.innerHTML = "";
+    if (lamasBlock) {
+      var lamasItems = Array.prototype.slice.call(lamasBlock.querySelectorAll("li"));
+      lamasItems.forEach(function (li) {
+        var link = li.querySelector("a");
+        if (link) {
+          var name = (link.textContent || "").trim();
+          link.href = govmapUrl({ name: name });
+          link.title = "פתיחת " + name + " בפאנל GovMap";
+          link.addEventListener("click", function (ev) {
+            if (!gmPanel) return;
+            ev.preventDefault();
+            gmOpen({ name: name });
+          });
+        }
+        gapLamasList.appendChild(li);
+        lamasCount += 1;
+      });
+      lamasBlock.remove();
+    }
+
+    if (gapOsmCount) gapOsmCount.textContent = osmNames.length.toLocaleString("he-IL");
+    if (gapLamasCount) gapLamasCount.textContent = lamasCount.toLocaleString("he-IL");
+    if (gapOsmEmpty) gapOsmEmpty.hidden = osmNames.length > 0;
+    if (gapLamasEmpty) gapLamasEmpty.hidden = lamasCount > 0;
+    var total = osmNames.length + lamasCount;
+    if (gapsLinkCount) gapsLinkCount.textContent = total.toLocaleString("he-IL");
+    if (gapsTotal) gapsTotal.textContent = total.toLocaleString("he-IL");
+    filterGaps();
+  }
+
+  function focusGap(name) {
+    var want = normalize(name);
+    var rec = records.find(function (r) { return r.status === "unmatched" && normalize(r.name) === want; }) ||
+      records.find(function (r) { return normalize(r.name) === want; });
+    if (!rec) { toastMsg("לא נמצאה גאומטריה לרחוב " + name); return; }
+    if (state.filter !== "unmatched") setFilter("unmatched");
+    select(rec, { zoom: true });
+    try { mapWrap.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) { /* jsdom */ }
+  }
+
+  function filterGaps() {
+    if (!gapsSearch) return;
+    var q = normalize(gapsSearch.value);
+    [[gapOsmList, gapOsmEmpty], [gapLamasList, gapLamasEmpty]].forEach(function (pair) {
+      var list = pair[0], empty = pair[1];
+      if (!list) return;
+      var shown = 0;
+      Array.prototype.forEach.call(list.children, function (li) {
+        var match = !q || normalize(li.textContent).indexOf(q) !== -1;
+        li.hidden = !match;
+        if (match) shown += 1;
+      });
+      if (empty && list.children.length) {
+        empty.textContent = q ? "לא נמצאו תוצאות בחיפוש." : "אין פערים לכיוון הזה.";
+        empty.hidden = shown > 0;
+      }
+    });
+  }
+
+  if (gapsSearch) gapsSearch.addEventListener("input", filterGaps);
+  if (gapsLink) {
+    gapsLink.addEventListener("click", function () {
+      if (!gapsPanel) return;
+      try { gapsPanel.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (e) { /* jsdom */ }
+    });
+  }
+  if (gapOsmFilter) {
+    gapOsmFilter.addEventListener("click", function () {
+      searchInput.value = "";
+      state.query = "";
+      setFilter("unmatched");
+      try { mapWrap.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) { /* jsdom */ }
+    });
+  }
+
   /* tabs */
   var tabStreets = document.getElementById("tab-streets");
   var tabInsights = document.getElementById("tab-insights");
@@ -1051,6 +1209,7 @@
   /* boot */
   renderList(true);
   renderInsights();
+  buildGaps();
   readHash();
   setTimeout(function () { drawLabels(); }, 60);
 })();

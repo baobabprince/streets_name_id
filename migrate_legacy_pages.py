@@ -28,15 +28,29 @@ from pathlib import Path
 from generate_html import (
     COLOR_AI,
     COLOR_GEO_REVIEW,
+    COLOR_PARTIAL,
     COLOR_PERFECT,
     COLOR_UNNAMED,
     COLOR_UNMATCHED,
     _build_diagnostics_html,
-    score_to_color,
 )
 
 ROOT = Path(__file__).resolve().parent
 TEMPLATE = ROOT / "map_template.html"
+CENTERS_PATH = ROOT / "config" / "settlement_centers.json"
+_CENTERS = None
+
+
+def govmap_center(place: str):
+    """Return the settlement's ITM centre from the bundled lookup, if known."""
+    global _CENTERS
+    if _CENTERS is None:
+        try:
+            payload = json.loads(CENTERS_PATH.read_text(encoding="utf-8"))
+            _CENTERS = payload.get("places") or {}
+        except (OSError, ValueError):
+            _CENTERS = {}
+    return _CENTERS.get(place)
 
 DEMO_PAGES = [
     "HTML/שדה_יעקב_roads.html",
@@ -151,6 +165,8 @@ def parse_diagnostics(raw: str) -> tuple[dict, str]:
     if start != -1:
         end = find_div_end(raw, start)
         block = raw[start:end]
+        # The legacy block hard-codes z=16 (an out-of-range GovMap level).
+        block = block.replace("&amp;z=16", "&amp;z=12").replace("&z=16", "&z=12")
     else:
         # Rebuild from the parsed numbers (no street lists available).
         block = _build_diagnostics_html(
@@ -210,6 +226,7 @@ def convert_page(page_path: Path) -> tuple[str, dict]:
     title = H1_RE.search(raw)
     name = re.sub(r"<[^>]+>", "", title.group(1)).strip() if title else page_path.stem
     name = re.sub(r"^\s*מפת\s+רחובות\s*[—–-]\s*", "", name).strip()
+    name = re.sub(r",\s*Israel\s*$", "", name, flags=re.I).strip()
 
     viewbox = VIEWBOX_RE.search(raw)
     width, height = (viewbox.group(1), viewbox.group(2)) if viewbox else ("1000", "1000")
@@ -258,7 +275,7 @@ def convert_page(page_path: Path) -> tuple[str, dict]:
         elif status == "perfect":
             color, stroke_width, dash = STATUS_STYLE["perfect"]
         elif status == "partial":
-            color = score_to_color(score if score is not None else 0)
+            color = COLOR_PARTIAL
             stroke_width, dash = 4.6, "none"
         else:
             color, stroke_width, dash = STATUS_STYLE[status]
@@ -308,6 +325,9 @@ def convert_page(page_path: Path) -> tuple[str, dict]:
         "counts": counts,
         "diagnostics": diag,
     }
+    center = govmap_center(name)
+    if center:
+        meta["govmap"] = {"x": int(center[0]), "y": int(center[1])}
     meta_json = json.dumps(meta, ensure_ascii=False).replace("<", "\\u003c")
     records_json = json.dumps(records, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
 

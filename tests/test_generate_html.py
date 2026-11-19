@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -14,11 +15,14 @@ class TestGenerateHtml(unittest.TestCase):
     def test_links_unmatched_lamas_streets_to_govmap(self):
         gdf = gpd.GeoDataFrame(
             {
-                "osm_name": ["רחוב יחיד"],
-                "final_LAMAS_id": [None],
-                "best_score": [None],
-                "status": ["NO_MATCH"],
-                "geometry": [LineString([(34.8, 32.0), (34.801, 32.001)])],
+                "osm_name": ["רחוב יחיד", "רחוב חלקי"],
+                "final_LAMAS_id": [None, 55],
+                "best_score": [None, 80.0],
+                "status": ["NO_MATCH", "CONFIDENT"],
+                "geometry": [
+                    LineString([(34.8, 32.0), (34.801, 32.001)]),
+                    LineString([(34.802, 32.0), (34.803, 32.001)]),
+                ],
             },
             crs="EPSG:4326",
         )
@@ -63,7 +67,20 @@ class TestGenerateHtml(unittest.TestCase):
         self.assertIn('id="govmap-frame"', html)
         self.assertIn('loading="lazy"', html)
         self.assertNotIn('src="https://www.govmap.gov.il', html)
+        self.assertIn('id="gaps-panel"', html)
+        self.assertIn('id="gap-osm-list"', html)
         self.assertNotIn("@@", html)
+        meta = json.loads(
+            html.split('<script id="page-meta" type="application/json">', 1)[1].split("</script>", 1)[0]
+        )
+        self.assertIn("govmap", meta)
+        self.assertIsInstance(meta["govmap"]["x"], int)
+        self.assertIsInstance(meta["govmap"]["y"], int)
+
+        # Partially approved and unmatched must be visually distinct: gold vs red.
+        self.assertIn('stroke="#f6c453"', html)
+        self.assertIn('stroke="#f43f5e"', html)
+        self.assertNotIn("#fb923c", html)
 
         parser = GovMapLinkParser()
         parser.feed(html)
@@ -74,7 +91,7 @@ class TestGenerateHtml(unittest.TestCase):
             parse_qs(urlparse(link["href"]).query)["q"][0],
             '"חדש" & ותיק, יישוב בדיקה',
         )
-        self.assertEqual(parse_qs(urlparse(link["href"]).query)["z"], ["13"])
+        self.assertEqual(parse_qs(urlparse(link["href"]).query)["z"], ["12"])
         self.assertEqual(link["target"], "_blank")
         self.assertIn("noopener", link["rel"].split())
 

@@ -8,7 +8,6 @@ The heavy UI (list, filters, labels, insights, export) lives in
 ``assets/map.js`` so that hundreds of settlement pages stay small.
 """
 
-import colorsys
 import hashlib
 import json
 import os
@@ -27,21 +26,16 @@ from data_loader import safe_place_name as _safe_place_name
 COLOR_PERFECT = "#35d0a1"
 COLOR_AI = "#38bdf8"
 COLOR_GEO_REVIEW = "#a78bfa"
-COLOR_UNMATCHED = "#fb923c"
+COLOR_PARTIAL = "#f6c453"
+COLOR_UNMATCHED = "#f43f5e"
 COLOR_UNNAMED = "#7c8aa3"
 
 MAX_LISTED_NAMES = 500
 
 
-def score_to_color(score):
-    """Amber → green gradient for approved, non-exact matches."""
-    if pd.isna(score):
-        score = 0
-    score = max(0, min(float(score), 99))
-    hue = (40 + (score / 99.0) * 118) / 360.0
-    lightness = 0.60 - (score / 99.0) * 0.06
-    r, g, b = colorsys.hls_to_rgb(hue, lightness, 0.70)
-    return f"#{int(r * 255):02x}{int(g * 255):02x}{int(b * 255):02x}"
+def display_place_name(value: str) -> str:
+    """Strip the Nominatim suffix that leaks into page titles."""
+    return re.sub(r",\s*Israel\s*$", "", _clean(value), flags=re.I).strip()
 
 
 def _clean(value):
@@ -84,7 +78,7 @@ def _street_visual(row):
         return "ai", COLOR_AI, 4.6, "none"
     if is_matched:
         if best_score is not None and best_score < 100:
-            return "partial", score_to_color(best_score), 4.6, "none"
+            return "partial", COLOR_PARTIAL, 4.6, "none"
         return "perfect", COLOR_PERFECT, 4.6, "none"
     return "unmatched", COLOR_UNMATCHED, 4.0, "none"
 
@@ -167,7 +161,7 @@ def _build_diagnostics_html(diagnostics: dict, place_name: str) -> str:
 
 def _govmap_link(street_name: str, place_name: str) -> str:
     query = quote(f"{street_name}, {place_name}", safe="")
-    href = escape(f"https://www.govmap.gov.il/?q={query}&z=13", quote=True)
+    href = escape(f"https://www.govmap.gov.il/?q={query}&z=12", quote=True)
     return (
         f'<li><a href="{href}" target="_blank" rel="noopener noreferrer">'
         f'{escape(str(street_name))}</a></li>'
@@ -182,6 +176,24 @@ def _geometry_lines(geom):
     if isinstance(geom, MultiLineString):
         return list(geom.geoms)
     return []
+
+
+def _govmap_center(gdf):
+    """Centre of the rendered extent in ITM (EPSG:2039) for GovMap links."""
+    try:
+        minx, miny, maxx, maxy = gdf.total_bounds
+        source_crs = gdf.crs or "EPSG:3857"
+        if getattr(source_crs, "is_geographic", False):
+            source_crs = "EPSG:4326"
+        from pyproj import Transformer
+
+        transformer = Transformer.from_crs(source_crs, "EPSG:2039", always_xy=True)
+        x, y = transformer.transform((minx + maxx) / 2, (miny + maxy) / 2)
+        if x != x or y != y:  # NaN
+            return None
+        return {"x": int(round(x)), "y": int(round(y))}
+    except Exception:
+        return None
 
 
 def _page_meta(gdf, place_name, diagnostics, counts, match_pct):
@@ -208,6 +220,9 @@ def _page_meta(gdf, place_name, diagnostics, counts, match_pct):
         "counts": counts,
         "diagnostics": diag,
     }
+    center = _govmap_center(gdf)
+    if center:
+        payload["govmap"] = center
     return json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
 
 
@@ -216,6 +231,7 @@ def _records_json(records) -> str:
 
 
 def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: dict = None):
+    place_name = display_place_name(place_name)
     if gdf.empty:
         print("Input GeoDataFrame is empty. No HTML will be generated.")
         return

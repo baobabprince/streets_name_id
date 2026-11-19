@@ -39,6 +39,9 @@ class TestMigrateLegacyPages(unittest.TestCase):
 
         self.assertIn('id="street-records"', html)
         self.assertIn("assets/map.js", html)
+        self.assertIn('id="gaps-panel"', html)
+        self.assertIn('id="govmap-panel"', html)
+        self.assertNotIn("@@", html)
         self.assertNotIn("const filterBtns", html)
         # coordinates are rounded to 0.1 m
         self.assertIn('M 12.1,35.0', html)
