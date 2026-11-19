@@ -191,6 +191,10 @@ What you get:
   geographic review (violet), no match (red), unnamed (grey). Partial approvals
   keep one stable gold tone instead of a gradient, so they never read as
   “unmatched”. AI proposals and geographic reviews are always *not approved*.
+- **OSM street-fabric underlay** — the full OSM network is mirrored as a
+  faint neutral layer beneath the status colours (toggle in the toolbar). It
+  keeps geographic context when a filter dims the non-matching streets and,
+  unlike raster tiles, needs no network and no extra download.
 - **Score-first recommendation lists** — filtering “מאושר חלקי” or “הצעת AI”
   orders the streets by score, highest first, and the list header says so. AI
   rows show their score instead of an internal candidate id, so the ranking is
