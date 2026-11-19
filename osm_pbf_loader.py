@@ -27,6 +27,8 @@ from rapidfuzz import fuzz, process
 
 from settlement_names import (
     MAX_SETTLEMENT_BBOX_SPAN_DEG,
+    MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+    MIN_SETTLEMENT_HALF_WIDTH_LON,
     NON_SETTLEMENT_ADMIN_LEVELS,
     admin_level,
     canonical_key,
@@ -715,14 +717,24 @@ def fetch_pbf_street_data(
                         float(bbox[2]),
                         float(bbox[3]),
                     )
-                    # Older caches / Nominatim place nodes can carry a
-                    # degenerate (zero-area) bbox; expand it into a usable
-                    # search area instead of returning no streets.
-                    if (max_lat - min_lat) <= 0.001 or (max_lon - min_lon) <= 0.001:
-                        center_lat = float(place.get("lat") or (min_lat + max_lat) / 2)
-                        center_lon = float(place.get("lon") or (min_lon + max_lon) / 2)
-                        min_lat, max_lat = center_lat - 0.015, center_lat + 0.015
-                        min_lon, max_lon = center_lon - 0.018, center_lon + 0.018
+                    # Older caches / Nominatim place nodes can carry a tiny or
+                    # zero-area bbox.  Always use at least the minimum settlement
+                    # search box, otherwise real roads just outside the feature
+                    # are missed and the run falls back to Overpass.
+                    center_lat = float(place.get("lat") or (min_lat + max_lat) / 2)
+                    center_lon = float(place.get("lon") or (min_lon + max_lon) / 2)
+                    half_lat = max(
+                        (max_lat - min_lat) / 2,
+                        MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+                    )
+                    half_lon = max(
+                        (max_lon - min_lon) / 2,
+                        MIN_SETTLEMENT_HALF_WIDTH_LON,
+                    )
+                    max_half = MAX_SETTLEMENT_BBOX_SPAN_DEG / 2
+                    half_lat, half_lon = min(half_lat, max_half), min(half_lon, max_half)
+                    min_lat, max_lat = center_lat - half_lat, center_lat + half_lat
+                    min_lon, max_lon = center_lon - half_lon, center_lon + half_lon
                     query_geom = box(min_lon, min_lat, max_lon, max_lat)
                 except (ValueError, TypeError):
                     pass

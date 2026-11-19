@@ -129,6 +129,31 @@ class TestOSMSettlementIndex(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["osm_id"].tolist(), ["s1"])
 
+    def test_tiny_bbox_is_expanded_before_street_extraction(self):
+        streets = gpd.GeoDataFrame(
+            {
+                "osm_id": ["s2"],
+                "osm_name": ["דרך עוקפת"],
+                "highway": ["residential"],
+                "geometry": [LineString([(34.815, 32.0), (34.816, 32.0)])],
+            },
+            crs="EPSG:4326",
+        )
+        place = {
+            "settlement_name": "יישוב קטן", "display_name": "יישוב קטן, Israel",
+            "osm_id": "43", "osm_type": "node",
+            "lat": 32.0, "lon": 34.8,
+            "boundingbox": (32.0, 32.0002, 34.8, 34.8002),
+        }
+        with (
+            patch.object(osm_pbf_loader, "load_national_streets", return_value=streets),
+            patch.object(osm_pbf_loader, "load_national_boundaries",
+                         side_effect=RuntimeError("no boundary cache")),
+        ):
+            result = osm_pbf_loader.fetch_pbf_street_data(place)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["osm_id"].tolist(), ["s2"])
+
     def test_place_point_creates_offline_search_area(self):
         places = gpd.GeoDataFrame(
             {

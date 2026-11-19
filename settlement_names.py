@@ -40,6 +40,10 @@ CITY_ADMIN_LEVEL = "8"
 # No Israeli settlement spans more than ~60 km; larger polygons are districts
 # or regional councils, not the settlement itself.
 MAX_SETTLEMENT_BBOX_SPAN_DEG = 0.6
+# Minimum half-size for a place-node / tiny-Nominatim-bbox street search area
+# (~3.6 km x 3.3 km at Israel's latitude).
+MIN_SETTLEMENT_HALF_WIDTH_LON = 0.018
+MIN_SETTLEMENT_HALF_HEIGHT_LAT = 0.015
 
 # Hyphens / maqaf / dashes are used interchangeably in Israeli place names.
 _HYPHENS = "\u05be\u2010\u2011\u2012\u2013\u2014\u2015-"

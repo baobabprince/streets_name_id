@@ -1,14 +1,29 @@
 import logging
+import math
+from typing import Any, Callable
 
 import osmnx as ox
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
+
+from settlement_names import (
+    MAX_SETTLEMENT_BBOX_SPAN_DEG,
+    MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+    MIN_SETTLEMENT_HALF_WIDTH_LON,
+)
 
 # ניתן להשתמש בשם יישוב או בתיבת גבולות (bounding box).
 # ברירת מחדל מצומצמת כדי להימנע משליפת רשת הדרכים של מדינה שלמה.
 place_name = "Tel Aviv-Yafo, Israel"
 logger = logging.getLogger(__name__)
+
+# A Nominatim/PBF place node can have a tiny or zero-area bbox.  Use a usable
+# search box for the Overpass fallback instead of geocoding its display name
+# again (which often fails for small/unrecognised settlements).
+MIN_FALLBACK_HALF_LAT = MIN_SETTLEMENT_HALF_HEIGHT_LAT
+MIN_FALLBACK_HALF_LON = MIN_SETTLEMENT_HALF_WIDTH_LON
+FALLBACK_EXPANSION_FACTOR = 1.6
 
 def is_hebrew(text):
     """
@@ -20,6 +35,134 @@ def is_hebrew(text):
     text = str(text)
     # טווח תווים עבריים ב-Unicode: U+0590 to U+05FF
     return any('\u0590' <= char <= '\u05FF' for char in text)
+
+def _bbox_bounds(place: dict, expansion: float = 1.0):
+    """Return a usable ``(min_lon, min_lat, max_lon, max_lat)`` box.
+
+    ``boundingbox`` from Nominatim is ``(min_lat, max_lat, min_lon, max_lon)``.
+    Tiny/degenerate boxes are expanded, and huge ones are capped so a fallback
+    Overpass query cannot accidentally request a whole district.
+    """
+    bbox = place.get("boundingbox")
+    if not bbox or len(bbox) != 4:
+        return None
+    try:
+        min_lat, max_lat, min_lon, max_lon = (float(value) for value in bbox)
+    except (TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) for value in (min_lat, max_lat, min_lon, max_lon)):
+        return None
+    if min_lat > max_lat:
+        min_lat, max_lat = max_lat, min_lat
+    if min_lon > max_lon:
+        min_lon, max_lon = max_lon, min_lon
+    center_lat = (min_lat + max_lat) / 2
+    center_lon = (min_lon + max_lon) / 2
+    half_lat = max((max_lat - min_lat) / 2, MIN_FALLBACK_HALF_LAT) * expansion
+    half_lon = max((max_lon - min_lon) / 2, MIN_FALLBACK_HALF_LON) * expansion
+    max_half = MAX_SETTLEMENT_BBOX_SPAN_DEG / 2
+    half_lat, half_lon = min(half_lat, max_half), min(half_lon, max_half)
+    return (center_lon - half_lon, center_lat - half_lat, center_lon + half_lon, center_lat + half_lat)
+
+
+def _bbox_polygon(place: dict, expansion: float = 1.0):
+    bounds = _bbox_bounds(place, expansion)
+    return box(*bounds) if bounds else None
+
+
+def _graph_has_edges(G) -> bool:
+    try:
+        return len(G.edges) > 0
+    except Exception:
+        return True  # unknown graph object; let the caller inspect it
+
+
+def _graph_by_osm_id(place: dict):
+    """Fetch a graph from an exact OSM element id (no free-text geocoding)."""
+    osm_prefix = {"node": "N", "way": "W", "relation": "R"}.get(
+        str(place["osm_type"]).lower()
+    )
+    if not osm_prefix:
+        raise ValueError(f"Unsupported OSM element type: {place['osm_type']}")
+    place_gdf = ox.geocode_to_gdf(f"{osm_prefix}{place['osm_id']}", by_osmid=True)
+    polygons = place_gdf.loc[
+        place_gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"]), "geometry"
+    ]
+    if not polygons.empty:
+        return ox.graph_from_polygon(polygons.iloc[0], network_type="all", simplify=True)
+    return ox.graph_from_point(
+        center_point=(float(place["lat"]), float(place["lon"])),
+        dist=2500,
+        network_type="all",
+        simplify=True,
+    )
+
+
+def _graph_from_place_dict(place: dict):
+    """Overpass fallback that never geocodes a whole place dict by mistake.
+
+    ``ox.graph_from_place`` expects a string or an address-query dict.  Passing
+    our settlement match dict makes OSMnx issue Nominatim queries for the dict
+    keys, which is why small settlements used to fail with
+    ``Nominatim API did not return a list of results``.  Use the already-known
+    bbox/OSM id/coordinates instead.
+    """
+    strategies: list[tuple[str, Callable[[], Any]]] = []
+
+    exact = _bbox_polygon(place)
+    if exact is not None:
+        strategies.append((
+            "bbox",
+            lambda polygon=exact: ox.graph_from_polygon(
+                polygon, network_type="all", simplify=True
+            ),
+        ))
+
+    expanded = _bbox_polygon(place, FALLBACK_EXPANSION_FACTOR)
+    if expanded is not None and (exact is None or not expanded.equals(exact)):
+        strategies.append((
+            "expanded bbox",
+            lambda polygon=expanded: ox.graph_from_polygon(
+                polygon, network_type="all", simplify=True
+            ),
+        ))
+
+    if place.get("osm_id") and place.get("osm_type"):
+        strategies.append(("OSM id", lambda: _graph_by_osm_id(place)))
+
+    if place.get("lat") is not None and place.get("lon") is not None:
+        strategies.append((
+            "point",
+            lambda: ox.graph_from_point(
+                center_point=(float(place["lat"]), float(place["lon"])),
+                dist=2500,
+                network_type="all",
+                simplify=True,
+            ),
+        ))
+
+    display_name = place.get("display_name")
+    if display_name:
+        strategies.append((
+            "display name",
+            lambda query=display_name: ox.graph_from_place(
+                query, network_type="all", simplify=True
+            ),
+        ))
+
+    errors = []
+    for label, strategy in strategies:
+        try:
+            G = strategy()
+            if G is not None and _graph_has_edges(G):
+                logger.info("Overpass fallback succeeded via %s", label)
+                return G
+            errors.append(f"{label}: empty graph")
+        except Exception as exc:
+            errors.append(f"{label}: {exc}")
+            logger.debug("Overpass fallback %s failed: %s", label, exc)
+    raise RuntimeError("; ".join(errors) or "No usable fallback strategy")
+
 
 def fetch_osm_street_data(place, use_pbf: bool = True):
     """
@@ -51,32 +194,8 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
 
     # 1. Download and simplify the full street network for the requested place.
     try:
-        if isinstance(place, dict) and place.get("osm_id") and place.get("osm_type"):
-            osm_prefix = {"node": "N", "way": "W", "relation": "R"}.get(
-                str(place["osm_type"]).lower()
-            )
-            if not osm_prefix:
-                raise ValueError(f"Unsupported OSM element type: {place['osm_type']}")
-            place_gdf = ox.geocode_to_gdf(
-                f"{osm_prefix}{place['osm_id']}", by_osmid=True
-            )
-            polygon_geometries = place_gdf.loc[
-                place_gdf.geometry.geom_type.isin(["Polygon", "MultiPolygon"]),
-                "geometry",
-            ]
-            if not polygon_geometries.empty:
-                G = ox.graph_from_polygon(
-                    polygon_geometries.iloc[0],
-                    network_type="all",
-                    simplify=True,
-                )
-            else:
-                G = ox.graph_from_point(
-                    center_point=(float(place["lat"]), float(place["lon"])),
-                    dist=1500,
-                    network_type="all",
-                    simplify=True,
-                )
+        if isinstance(place, dict):
+            G = _graph_from_place_dict(place)
         else:
             G = ox.graph_from_place(place, network_type="all", simplify=True)
     except Exception as e:

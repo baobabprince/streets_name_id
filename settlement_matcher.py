@@ -42,14 +42,22 @@ VALID_PLACE_TYPES = {
     'hamlet', 'locality'
 }
 VALID_COUNTRY_CODES = {'il', 'ps'}
+# Nominatim address fields that name an enclosing *settlement*.  A result whose
+# address says it is inside a different city/town is a neighbourhood, not an
+# independent LAMAS settlement.
+ADDRESS_SETTLEMENT_KEYS = ('city', 'town', 'village', 'municipality')
+ADDRESS_SUBDIVISION_KEYS = (
+    'suburb', 'neighbourhood', 'neighborhood', 'quarter', 'city_district',
+    'district', 'borough',
+)
 VALID_PLACE_CLASSES = {'place', 'boundary'}
 SETTLEMENT_ALIASES = {
     'אבטין': ('איבטין', 'Ibtin'),
     'אביה': ('חוות אביה',),
     'אבורובייעה': ('أبو ربيعة', 'أبو ربية'),
 }
-# v4: suburb/neighbourhood results are no longer valid; invalidate v3 caches.
-MATCH_CACHE_VERSION = 'v4'
+# v5: address-hierarchy guard; invalidate matches accepted inside another city.
+MATCH_CACHE_VERSION = 'v5'
 MIN_NAME_MATCH_SCORE = 92
 # Negative results are cached too, but for a shorter period: OSM is updated often.
 UNRESOLVED_CACHE_TTL_DAYS = 7
@@ -312,6 +320,49 @@ class SettlementMatcher:
         )
 
     @classmethod
+    def _other_settlement_in_address(
+        cls, result: Dict[str, Any], query_names: list[str]
+    ) -> Optional[Tuple[str, str]]:
+        """Detect a feature nested inside a differently named settlement.
+
+        Returns the offending ``(address key, value)``.  Fuzzy comparison is
+        used so legitimate spelling variants (כאוכב/כווכב) are not rejected.
+        """
+        address = result.get('address', {})
+        if not isinstance(address, dict):
+            return None
+        query_keys = {
+            key for name in query_names if name and (key := canonical_key(name))
+        }
+        # A city's own address may use an English/alt name; those are still the
+        # same settlement, not an enclosing different one.
+        query_keys.update(
+            key
+            for name in cls._candidate_names(result)
+            if name and (key := canonical_key(name))
+        )
+        if not query_keys:
+            return None
+        for key in ADDRESS_SETTLEMENT_KEYS:
+            value = address.get(key)
+            if not value:
+                continue
+            parent_key = canonical_key(value)
+            if not parent_key or parent_key in query_keys:
+                continue
+            if max(ratio(parent_key, q) for q in query_keys) >= MIN_NAME_MATCH_SCORE:
+                continue
+            return key, str(value)
+        result_name = str(result.get('name') or '').strip()
+        if result_name:
+            result_key = canonical_key(result_name)
+            for key in ADDRESS_SUBDIVISION_KEYS:
+                value = address.get(key)
+                if value and canonical_key(value) == result_key:
+                    return key, str(value)
+        return None
+
+    @classmethod
     def _candidate_names(cls, result: Dict[str, Any]) -> list[str]:
         names = []
         if result.get('name'):
@@ -402,6 +453,13 @@ class SettlementMatcher:
                 )
 
             query_names = accepted_names or [original_name]
+            if not pinned:
+                parent = self._other_settlement_in_address(result, query_names)
+                if parent:
+                    return False, (
+                        f"Feature is inside another settlement "
+                        f"(address {parent[0]}={parent[1]}): {display_name}"
+                    )
             name_score = self._name_match_score(result, query_names)
             if name_score < MIN_NAME_MATCH_SCORE:
                 return False, f"OSM name does not match '{original_name}' (score {name_score:.1f})"

@@ -144,6 +144,51 @@ class TestSettlementMatcher(unittest.TestCase):
             self.assertFalse(valid)
             self.assertIn("Non-settlement", reason)
 
+    def test_rejects_feature_inside_another_city_from_address_hierarchy(self):
+        result = place_result("הוזייל")
+        result["address"] = {
+            "country_code": "il", "city": "רהט", "suburb": "הוזייל",
+        }
+        valid, reason = self.matcher._validate_result(result, "הוזייל")
+        self.assertFalse(valid)
+        self.assertIn("inside another settlement", reason)
+        self.assertIn("city=רהט", reason)
+
+    def test_rejects_address_subdivision_that_names_the_feature_itself(self):
+        result = place_result("אבו כביר")
+        result["address"] = {
+            "country_code": "il", "suburb": "אבו כביר",
+        }
+        valid, reason = self.matcher._validate_result(result, "אבו כביר")
+        self.assertFalse(valid)
+        self.assertIn("address suburb=אבו כביר", reason)
+
+    def test_allows_city_address_that_matches_the_requested_settlement(self):
+        result = place_result("חיפה")
+        result["address"] = {"country_code": "il", "city": "חיפה"}
+        valid, _ = self.matcher._validate_result(result, "חיפה")
+        self.assertTrue(valid)
+
+    def test_english_city_address_matching_an_alias_is_allowed(self):
+        result = place_result("תל אביב־יפו")
+        result["address"] = {"country_code": "il", "city": "Tel Aviv-Yafo"}
+        valid, _ = self.matcher._validate_result(
+            result, "תל אביב - יפו",
+            ["תל אביב - יפו", "Tel Aviv-Yafo"],
+        )
+        self.assertTrue(valid)
+
+    def test_pinned_override_allows_feature_with_parent_city_address(self):
+        result = place_result("יישוב חריג", place_type="suburb")
+        result["address"] = {"country_code": "il", "city": "עיר אחרת"}
+        with patch(
+            "settlement_matcher.load_osm_id_overrides",
+            return_value={canonical_key("יישוב חריג"): "w123"},
+        ):
+            valid, reason = self.matcher._validate_result(result, "יישוב חריג")
+        self.assertTrue(valid)
+        self.assertIn("Pinned OSM id override", reason)
+
     def test_search_does_not_fall_back_to_individual_words(self):
         response = Mock(status_code=200)
         response.json.return_value = []

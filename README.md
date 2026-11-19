@@ -9,7 +9,8 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 - **Automated data fetching** from local OSM PBF extracts (or live Overpass fallback via osmnx) and data.gov.il (LAMAS)
 - **High-speed offline OSM extraction** — automatically downloads Geofabrik's Israel PBF extract, parses and indexes all road segments, municipal boundaries and `place=*` features locally, eliminating Overpass API rate limits and timeouts.
 - **Offline-first settlement matching** — one national index of OSM boundary/place names is built once per run and matched against the whole LAMAS settlement list with canonical Hebrew/Arabic normalization, curated aliases and geographic validation against LAMAS settlement centres; Nominatim is called only for names the local index cannot explain
-- **Neighbourhood guard** — `place=suburb` / `neighbourhood` / `quarter`, `admin_level` 9+ and district-scale polygons can never win a LAMAS settlement match (offline index *and* Nominatim fallback). Features inside a differently named city boundary are flagged, discarded candidates are listed in the match note, and rejections carry an explicit reason in the audit CSV
+- **Neighbourhood guard** — `place=suburb` / `neighbourhood` / `quarter`, `admin_level` 9+ and district-scale polygons can never win a LAMAS settlement match (offline index *and* Nominatim fallback). Features inside a differently named city boundary or Nominatim `address.city/town/village` are flagged, discarded candidates are listed in the match note, and rejections carry an explicit reason in the audit CSV
+- **BBox-based Overpass fallback** — when the local PBF has no streets, the street fetch uses the already-resolved bbox/OSM id/coordinates with `graph_from_polygon`, instead of re-geocoding the whole settlement match dict through `ox.graph_from_place` (which caused `Nominatim API did not return a list of results` for small settlements)
 - **One consolidated match store** — positive *and* negative settlement resolutions are kept in `data/settlement_matches.json` (one atomic write per run), with a CSV audit trail in `batch_reports/settlement_match_report.csv`
 - **One command for everything** — `python run_all.py` fetches, matches, processes, reports and rebuilds the dashboard in a single run
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
@@ -226,8 +227,9 @@ renamed after `config/settlement_centers.json` was generated (e.g. נוף הגל
 ההגנה, וההתאמה נרשמת בדוח עם `source=pinned`. הדחיות מופיעות בדוח עם סיבה
 (`Only non-settlement OSM features matched (suburb…)` או סיבת הדחייה מ־Nominatim)
 וב־`validation_message` של ההתאמה שנבחרה (כמה מועמדים שכונתיים נדחו). גרסאות
-ה־cache קודמות (`STORE_VERSION=1`, `MATCH_CACHE_VERSION=v3`) לא נטענות אחרי
-השינוי, כדי לא להחזיר שכונה שנשמרה בעבר כעיר.
+ה־cache קודמות (`STORE_VERSION<3`, `MATCH_CACHE_VERSION<v5`) לא נטענות אחרי
+השינוי, כדי לא להחזיר שכונה שנשמרה בעבר כעיר או תוצאת Nominatim שנמצאת בתוך
+עיר אחרת לפי שדה `address.city/town/village`.
 
 Each run writes `batch_reports/settlement_match_report.csv` with one row per
 settlement: status, source (`pbf` / `nominatim`), name score, distance from the

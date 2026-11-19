@@ -54,9 +54,9 @@ CENTERS_FILE = os.path.join(ROOT, "config", "settlement_centers.json")
 STORE_PATH = os.path.join(DATA_DIR, "settlement_matches.json")
 REPORT_PATH = os.path.join(ROOT, "batch_reports", "settlement_match_report.csv")
 
-# v2: neighbourhood/suburb guard added — cached matches from v1 must be
-# re-validated, since some of them may have been quarters inside a city.
-STORE_VERSION = 2
+# v3: Nominatim address-hierarchy guard added — v2 matches may include a
+# neighbourhood nested inside a differently named city.
+STORE_VERSION = 3
 MATCHED_TTL_DAYS = 90
 UNRESOLVED_TTL_DAYS = 7
 SCORE_CUTOFF = 88.0
@@ -134,12 +134,27 @@ def load_settlement_centers(path: str = CENTERS_FILE) -> Dict[str, Tuple[float, 
         return {}
 
 
+OSM_TYPE_PREFIXES = {"n": "node", "w": "way", "r": "relation"}
+
+
 def _split_osm_id(raw: Any) -> Tuple[str, str]:
     value = str(raw or "").strip()
     prefix = value[:1].lower()
-    if prefix in {"n", "w", "r"} and value[1:].isdigit():
-        return value[1:], {"n": "node", "w": "way", "r": "relation"}[prefix]
+    if prefix in OSM_TYPE_PREFIXES and value[1:].isdigit():
+        return value[1:], OSM_TYPE_PREFIXES[prefix]
     return value, ""
+
+
+def _infer_osm_type(row: Any) -> str:
+    """Recover node/way/relation when osmium exported a bare numeric id."""
+    for column in ("osm_type", "@type", "element_type"):
+        value = row.get(column) if hasattr(row, "get") else None
+        normalized = str(value or "").strip().lower()
+        if normalized in {"node", "way", "relation"}:
+            return normalized
+        if normalized in OSM_TYPE_PREFIXES:
+            return OSM_TYPE_PREFIXES[normalized]
+    return ""
 
 
 def _row_names(row: Any) -> List[str]:
@@ -248,6 +263,8 @@ def build_osm_places(
             osm_id, osm_type = _split_osm_id(
                 row.get("osm_id") or row.get("@id") or row.get("id")
             )
+            if not osm_type:
+                osm_type = _infer_osm_type(row)
             if not osm_id:
                 continue
             key = f"{osm_type}:{osm_id}"

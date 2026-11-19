@@ -306,6 +306,21 @@ class TestSettlementIndex(unittest.TestCase):
         )
         self.assertIn("only non-settlement", rejections["יישוב בדיקה"].lower())
 
+    def test_bare_numeric_place_id_gets_type_from_export_column(self):
+        places = boundaries_frame([{
+            "osm_id": "77", "osm_type": "n", "name:he": "יישוב בדיקה",
+            "place": "village", "geometry": Point(34.80, 32.00),
+        }])
+        records = build_osm_places(places=places)
+        self.assertEqual(records[0].osm_id, "77")
+        self.assertEqual(records[0].osm_type, "node")
+        index = SettlementNameIndex(records)
+        matches = match_settlements_offline(
+            ["יישוב בדיקה"], index, centers={}, aliases={}, pinned={}
+        )
+        self.assertEqual(matches["יישוב בדיקה"].osm_type, "node")
+        self.assertEqual(matches["יישוב בדיקה"].osm_id, "77")
+
     def test_typed_pin_must_match_the_exact_osm_object(self):
         places = boundaries_frame([{
             "osm_id": "n77", "name:he": "יישוב חריג", "place": "suburb",
