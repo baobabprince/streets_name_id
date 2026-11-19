@@ -190,6 +190,13 @@ What you get:
 - **Match-status palette** — exact (green), partial (amber), AI proposal (sky),
   geographic review (violet), no match (orange), unnamed (grey). AI proposals
   and geographic reviews are always labelled as *not approved*.
+- **GovMap reference panel** — an optional, lazy-loaded `iframe` of the official
+  government map, opened from the toolbar; it centres on the settlement and can
+  focus the selected street (`z=13`, roughly 1:500). No API key or registration
+  is needed for this URL/embed mode, and nothing is requested until the panel is
+  opened. The panel is reference only: our match colours and overlays stay on
+  the SVG map. Environments that block third-party frames show a fallback link
+  to open GovMap in a new tab.
 
 #### Migrating existing pages
 

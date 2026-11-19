@@ -57,6 +57,14 @@ class TestGenerateHtml(unittest.TestCase):
                     self.links.append(self.current_link)
                     self.current_link = None
 
+        # GovMap is offered as a lazy reference panel, never loaded on page open.
+        self.assertIn('id="govmap-panel"', html)
+        self.assertIn('id="govmap-toggle"', html)
+        self.assertIn('id="govmap-frame"', html)
+        self.assertIn('loading="lazy"', html)
+        self.assertNotIn('src="https://www.govmap.gov.il', html)
+        self.assertNotIn("@@", html)
+
         parser = GovMapLinkParser()
         parser.feed(html)
         self.assertEqual(len(parser.links), 1)
@@ -66,7 +74,7 @@ class TestGenerateHtml(unittest.TestCase):
             parse_qs(urlparse(link["href"]).query)["q"][0],
             '"חדש" & ותיק, יישוב בדיקה',
         )
-        self.assertEqual(parse_qs(urlparse(link["href"]).query)["z"], ["16"])
+        self.assertEqual(parse_qs(urlparse(link["href"]).query)["z"], ["13"])
         self.assertEqual(link["target"], "_blank")
         self.assertIn("noopener", link["rel"].split())
 

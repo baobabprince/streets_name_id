@@ -40,6 +40,15 @@
   var filterBtns = Array.prototype.slice.call(document.querySelectorAll("[data-filter]"));
   var card = document.getElementById("selection-card");
   var toast = document.getElementById("toast");
+  var gmToggle = document.getElementById("govmap-toggle");
+  var gmPanel = document.getElementById("govmap-panel");
+  var gmFrame = document.getElementById("govmap-frame");
+  var gmLoading = document.getElementById("govmap-loading");
+  var gmStreetBtn = document.getElementById("govmap-street");
+  var gmExternalBtn = document.getElementById("govmap-external");
+  var gmExpandBtn = document.getElementById("govmap-expand");
+  var gmCloseBtn = document.getElementById("govmap-close");
+  var gmCurrentUrl = "";
 
   var meta = {};
   try {
@@ -311,6 +320,7 @@
       state.active = null;
       card.hidden = true;
       markActiveRow("");
+      gmSync();
       updateHash();
       return;
     }
@@ -319,6 +329,7 @@
     showCard(rec);
     markActiveRow(rec.key);
     updateHash();
+    gmSync();
     if (opts.zoom) zoomToRecord(rec);
     if (!opts.fromList) {
       var row = listEl.querySelector('.street-row[data-key="' + cssEscape(rec.key) + '"]');
@@ -397,9 +408,115 @@
   });
   document.getElementById("sc-govmap").addEventListener("click", function () {
     if (!state.active || !state.active.name) return;
-    var q = state.active.name + ", " + cityName;
-    window.open("https://www.govmap.gov.il/?q=" + encodeURIComponent(q) + "&z=16", "_blank", "noopener");
+    window.open(govmapUrl(state.active), "_blank", "noopener");
   });
+
+  /* ------------------------------------------------------------------ *
+   * GovMap reference panel (lazy iframe — no external request until open)
+   * ------------------------------------------------------------------ */
+
+  function govmapUrl(rec) {
+    var street = rec && rec.name ? rec.name.replace(/^[\s"'׳״]+/, "") : "";
+    var place = String(cityName || "").replace(/,\s*Israel\s*$/i, "").trim();
+    var hasStreet = !!street;
+    var query = hasStreet ? street + ", " + place : place;
+    var url = "https://www.govmap.gov.il/?q=" + encodeURIComponent(query);
+    // GovMap's own levels: z=13 is street level (~1:500), z=6 ≈ 1:70,000.
+    // For the city view, fit the settlement extent (SVG units are metres in
+    // EPSG:3857) to the panel width instead of trusting GovMap's default zoom.
+    if (hasStreet) {
+      url += "&z=13";
+    } else {
+      url += "&z=" + cityZoom();
+    }
+    return url;
+  }
+
+  function cityZoom() {
+    var px = (gmFrame && gmFrame.clientWidth) || (mapWrap && mapWrap.clientWidth) || 1000;
+    var vb = null;
+    try { vb = svg.viewBox && svg.viewBox.baseVal; } catch (e) { vb = null; }
+    var widthM = vb && vb.width ? vb.width * 0.85 : 0; // Israel ≈ 31.5°N
+    if (!widthM || !px) return 7;
+    var requiredScale = widthM / (px * 0.0002646); // 96 dpi → metres per pixel
+    var level = 6 + Math.log(70000 / requiredScale) / Math.LN2;
+    return Math.max(3, Math.min(10, Math.floor(level + 0.25)));
+  }
+
+  function gmNavigate(url) {
+    if (!gmFrame || !url) return;
+    gmCurrentUrl = url;
+    if (gmLoading) gmLoading.hidden = false;
+    if (gmExternalBtn) gmExternalBtn.disabled = false;
+    gmFrame.src = url;
+  }
+
+  function gmSync() {
+    if (!gmStreetBtn) return;
+    var ready = !!(state.active && state.active.name);
+    gmStreetBtn.disabled = !ready;
+    gmStreetBtn.title = ready ? "מיקוד GovMap ברחוב " + state.active.name : "בחרו רחוב כדי להתמקד בו";
+  }
+
+  function gmOpen(rec) {
+    if (!gmPanel || !gmToggle) return;
+    gmPanel.hidden = false;
+    gmToggle.setAttribute("aria-pressed", "true");
+    gmSync();
+    gmNavigate(govmapUrl(rec || state.active));
+    try { gmPanel.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch (e) { /* jsdom */ }
+  }
+
+  function gmClose() {
+    if (!gmPanel || !gmToggle) return;
+    gmPanel.hidden = true;
+    gmPanel.classList.remove("is-expanded");
+    gmToggle.setAttribute("aria-pressed", "false");
+    if (gmExpandBtn) gmExpandBtn.setAttribute("aria-pressed", "false");
+    document.body.classList.remove("govmap-expanded");
+  }
+
+  function gmToggleExpand() {
+    if (!gmPanel || !gmExpandBtn) return;
+    var expanded = gmPanel.classList.toggle("is-expanded");
+    gmExpandBtn.setAttribute("aria-pressed", expanded ? "true" : "false");
+    document.body.classList.toggle("govmap-expanded", expanded);
+  }
+
+  if (gmToggle) {
+    gmToggle.addEventListener("click", function () {
+      if (gmPanel.hidden) gmOpen();
+      else gmClose();
+    });
+  }
+  if (gmFrame) {
+    gmFrame.addEventListener("load", function () {
+      if (gmLoading) gmLoading.hidden = true;
+    });
+  }
+  if (gmStreetBtn) {
+    gmStreetBtn.addEventListener("click", function () {
+      if (state.active) gmNavigate(govmapUrl(state.active));
+    });
+  }
+  if (gmExternalBtn) {
+    gmExternalBtn.addEventListener("click", function () {
+      var url = gmCurrentUrl || govmapUrl(state.active);
+      if (url) window.open(url, "_blank", "noopener");
+    });
+  }
+  if (gmExpandBtn) gmExpandBtn.addEventListener("click", gmToggleExpand);
+  if (gmCloseBtn) gmCloseBtn.addEventListener("click", gmClose);
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Escape" || !gmPanel || gmPanel.hidden) return;
+    var tag = (document.activeElement && document.activeElement.tagName) || "";
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag)) return;
+    if (gmPanel.classList.contains("is-expanded")) { gmToggleExpand(); return; }
+    gmClose();
+  });
+
+  gmSync();
 
   /* tooltip */
   var isTouch = window.matchMedia("(hover: none)").matches;

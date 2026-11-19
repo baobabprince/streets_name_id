@@ -167,7 +167,7 @@ def _build_diagnostics_html(diagnostics: dict, place_name: str) -> str:
 
 def _govmap_link(street_name: str, place_name: str) -> str:
     query = quote(f"{street_name}, {place_name}", safe="")
-    href = escape(f"https://www.govmap.gov.il/?q={query}&z=16", quote=True)
+    href = escape(f"https://www.govmap.gov.il/?q={query}&z=13", quote=True)
     return (
         f'<li><a href="{href}" target="_blank" rel="noopener noreferrer">'
         f'{escape(str(street_name))}</a></li>'
