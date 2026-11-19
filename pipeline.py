@@ -323,8 +323,8 @@ def run_pipeline(
     if "name:he" in osm_gdf.columns:
         osm_gdf["normalized_name:he"] = osm_gdf["name:he"].apply(normalize_street_name)
 
-    LAMAS_df.dropna(subset=["normalized_name"], inplace=True)
-    osm_gdf.dropna(subset=["normalized_name"], inplace=True)
+    LAMAS_df = LAMAS_df.dropna(subset=["normalized_name"]).copy()
+    osm_gdf = osm_gdf.dropna(subset=["normalized_name"]).copy()
 
     _save_step(LAMAS_df, "step2_lamas_normalized", file_identifier, save_intermediates)
     _save_step(osm_gdf, "step2_osm_normalized", file_identifier, save_intermediates)
