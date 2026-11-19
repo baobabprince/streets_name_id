@@ -2,6 +2,8 @@
 Tests for OSM PBF loader and offline extractor.
 """
 
+import os
+import shutil
 import unittest
 import geopandas as gpd
 from shapely.geometry import box
@@ -13,6 +15,10 @@ from osm_pbf_loader import (
     is_hebrew,
     load_national_streets,
 )
+
+# These three tests exercise a real national PBF extract (downloaded by
+# osmium-tool); the rest of the suite uses synthetic data and always runs.
+HAS_OSMIUM = bool(shutil.which(os.environ.get("OSMIUM_BIN", "osmium")))
 
 
 class TestPBFLoader(unittest.TestCase):
@@ -29,6 +35,7 @@ class TestPBFLoader(unittest.TestCase):
         self.assertEqual(clean_place_name("חיפה, ישראל"), "חיפה")
         self.assertEqual(clean_place_name("עיריית ירושלים, ישראל"), "ירושלים")
 
+    @unittest.skipUnless(HAS_OSMIUM, "requires osmium-tool and a local OSM PBF extract")
     def test_load_national_streets(self):
         gdf = load_national_streets()
         self.assertIsInstance(gdf, gpd.GeoDataFrame)
@@ -36,6 +43,7 @@ class TestPBFLoader(unittest.TestCase):
         for col in ("osm_id", "osm_name", "geometry", "highway"):
             self.assertIn(col, gdf.columns)
 
+    @unittest.skipUnless(HAS_OSMIUM, "requires osmium-tool and a local OSM PBF extract")
     def test_fetch_pbf_street_data_by_bbox(self):
         # Tel Aviv bounding box
         place_dict = {
@@ -48,6 +56,7 @@ class TestPBFLoader(unittest.TestCase):
         self.assertIn("osm_name", gdf.columns)
         self.assertIn("geometry", gdf.columns)
 
+    @unittest.skipUnless(HAS_OSMIUM, "requires osmium-tool and a local OSM PBF extract")
     def test_fetch_pbf_street_data_by_place_name(self):
         gdf = fetch_pbf_street_data("אבו גוש")
         self.assertIsNotNone(gdf)

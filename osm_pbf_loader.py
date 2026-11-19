@@ -23,7 +23,16 @@ import pandas as pd
 from shapely.geometry import LineString, box, shape
 from shapely.geometry.base import BaseGeometry
 
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
+
+from settlement_names import (
+    MAX_SETTLEMENT_BBOX_SPAN_DEG,
+    NON_SETTLEMENT_ADMIN_LEVELS,
+    admin_level,
+    canonical_key,
+    load_osm_id_overrides,
+    place_is_settlement,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +45,13 @@ GEOFABRIK_URL = (
 DEFAULT_PBF_PATH = os.path.join(DATA_DIR, "israel-and-palestine-latest.osm.pbf")
 DEFAULT_STREETS_PKL = os.path.join(DATA_DIR, "israel_named_streets.pkl")
 DEFAULT_BOUNDARIES_PKL = os.path.join(DATA_DIR, "israel_boundaries.pkl")
+DEFAULT_PLACES_PKL = os.path.join(DATA_DIR, "israel_places.pkl")
 
 # Cached in-memory datasets for instant repeated access in the same process
 _CACHED_STREETS_GDF: Optional[gpd.GeoDataFrame] = None
 _CACHED_BOUNDARIES_GDF: Optional[gpd.GeoDataFrame] = None
+_CACHED_PLACES_GDF: Optional[gpd.GeoDataFrame] = None
+_BOUNDARY_INDEX_CACHE: Dict[tuple, tuple] = {}
 
 
 def is_hebrew(text: Any) -> bool:
@@ -319,6 +331,9 @@ def extract_pbf_to_cache(
                     "name:he": props.get("name:he"),
                     "name:en": props.get("name:en"),
                     "name:ar": props.get("name:ar"),
+                    "alt_name": props.get("alt_name"),
+                    "official_name": props.get("official_name"),
+                    "old_name": props.get("old_name"),
                     "geometry": geom,
                 })
 
@@ -364,60 +379,290 @@ def load_national_boundaries(pbf_path: str = DEFAULT_PBF_PATH) -> gpd.GeoDataFra
     return _CACHED_BOUNDARIES_GDF
 
 
+NAME_COLUMNS = (
+    "name:he", "name", "name:en", "name:ar", "alt_name",
+    "official_name", "old_name", "short_name",
+)
+
+
+def extract_places_to_cache(
+    pbf_path: str = DEFAULT_PBF_PATH,
+    places_pkl: str = DEFAULT_PLACES_PKL,
+    force: bool = False,
+) -> str:
+    """Extract ``place=*`` features (villages/towns/neighbourhoods) from the PBF.
+
+    Administrative boundaries alone miss many Israeli settlements that are
+    mapped as a single ``place`` node.  This third national cache lets the
+    settlement resolver match LAMAS names completely offline.
+    """
+    if os.path.exists(places_pkl) and not force:
+        return places_pkl
+
+    osmium_executable = _find_osmium_executable()
+    if not osmium_executable:
+        raise RuntimeError(
+            "The osmium executable is required to build the local place cache. "
+            f"Install it with: {_osmium_install_instructions()}."
+        )
+    if not os.path.exists(pbf_path):
+        download_osm_pbf(target_path=pbf_path)
+
+    places_pbf = os.path.join(DATA_DIR, "israel_places.osm.pbf")
+    places_seq = os.path.join(DATA_DIR, "israel_places.geojsonseq")
+    try:
+        logger.info("Filtering place features from PBF using osmium...")
+        _run_osmium_with_pbf_retry(
+            [
+                osmium_executable,
+                "tags-filter",
+                pbf_path,
+                "n/place",
+                "w/place",
+                "r/place",
+                "-o",
+                places_pbf,
+                "--overwrite",
+            ],
+            pbf_path,
+        )
+        subprocess.run(
+            [
+                osmium_executable,
+                "export",
+                places_pbf,
+                "--geometry-types",
+                "point,polygon,linestring",
+                "-u",
+                "type_id",
+                "-a",
+                "id",
+                "-o",
+                places_seq,
+                "--overwrite",
+            ],
+            check=True,
+        )
+
+        records = []
+        with open(places_seq, "r", encoding="utf-8") as handle:
+            for line in handle:
+                clean_line = line.strip().lstrip("\x1e")
+                if not clean_line:
+                    continue
+                try:
+                    data = json.loads(clean_line)
+                except ValueError:
+                    continue
+                props = data.get("properties", {})
+                geom_dict = data.get("geometry")
+                if not geom_dict or not any(props.get(col) for col in NAME_COLUMNS if col in props):
+                    continue
+                try:
+                    geom = shape(geom_dict)
+                    if not geom.is_valid:
+                        geom = geom.buffer(0)
+                    if geom.is_empty:
+                        continue
+                except Exception:
+                    continue
+                raw_id = str(props.get("@id") or data.get("id") or "")
+                records.append({
+                    "osm_id": raw_id,
+                    "osm_type": raw_id[0] if raw_id[:1] in {"n", "w", "r"} else "",
+                    **{col: props.get(col) for col in NAME_COLUMNS},
+                    "place": props.get("place"),
+                    "admin_level": props.get("admin_level"),
+                    "geometry": geom,
+                })
+
+        places_gdf = gpd.GeoDataFrame(records, crs="EPSG:4326")
+        places_gdf.to_pickle(places_pkl)
+        logger.info("Saved %d OSM place features to %s", len(places_gdf), places_pkl)
+    finally:
+        for tmp in (places_pbf, places_seq):
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+    return places_pkl
+
+
+def load_national_places(pbf_path: str = DEFAULT_PBF_PATH) -> gpd.GeoDataFrame:
+    """Load the national ``place=*`` index (cached in-memory)."""
+    global _CACHED_PLACES_GDF
+    if _CACHED_PLACES_GDF is not None:
+        return _CACHED_PLACES_GDF
+    if not os.path.exists(DEFAULT_PLACES_PKL):
+        extract_places_to_cache(pbf_path=pbf_path)
+    logger.info("Loading national places from %s...", DEFAULT_PLACES_PKL)
+    _CACHED_PLACES_GDF = pd.read_pickle(DEFAULT_PLACES_PKL)
+    return _CACHED_PLACES_GDF
+
+
+def prepare_national_caches(
+    pbf_path: str = DEFAULT_PBF_PATH, force: bool = False, include_places: bool = True
+) -> Dict[str, str]:
+    """Build all national OSM caches once, before any settlement is processed."""
+    streets_pkl, boundaries_pkl = extract_pbf_to_cache(pbf_path=pbf_path, force=force)
+    caches = {"streets": streets_pkl, "boundaries": boundaries_pkl}
+    if include_places:
+        caches["places"] = extract_places_to_cache(pbf_path=pbf_path, force=force)
+    return caches
+
+
+def _boundary_name_index(boundaries_gdf: gpd.GeoDataFrame):
+    """Build a canonical-key -> rows index once per GeoDataFrame."""
+    cache_key = (id(boundaries_gdf), len(boundaries_gdf))
+    cached = _BOUNDARY_INDEX_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    index: Dict[str, list] = {}
+    for row_index, row in boundaries_gdf.iterrows():
+        geometry = row.get("geometry")
+        if geometry is None or getattr(geometry, "is_empty", True):
+            continue
+        level = admin_level(row.get("admin_level"))
+        if level in NON_SETTLEMENT_ADMIN_LEVELS:
+            continue  # neighbourhood / statistical subdivision of a city
+        try:
+            minx, miny, maxx, maxy = geometry.bounds
+            if max(maxy - miny, maxx - minx) > MAX_SETTLEMENT_BBOX_SPAN_DEG:
+                continue  # district / regional council, not a settlement
+        except Exception:
+            pass
+        for col in NAME_COLUMNS:
+            value = row.get(col)
+            if pd.isna(value):
+                continue
+            for part in str(value).split(";"):
+                key = canonical_key(part)
+                if key:
+                    index.setdefault(key, []).append((row_index, col))
+    _BOUNDARY_INDEX_CACHE.clear()
+    _BOUNDARY_INDEX_CACHE[cache_key] = (index, boundaries_gdf)
+    return index, boundaries_gdf
+
+
+def _preferred_row(boundaries_gdf: gpd.GeoDataFrame, rows: list):
+    """Prefer Hebrew name and municipal-level boundaries (admin_level 8/7/6)."""
+    def rank(item):
+        row_index, col = item
+        level = str(boundaries_gdf.at[row_index, "admin_level"]) if "admin_level" in boundaries_gdf else ""
+        return (
+            0 if col == "name:he" else 1 if col == "name" else 2,
+            {"8": 0, "7": 1, "6": 2}.get(level, 3),
+            str(row_index),
+        )
+    return sorted(rows, key=rank)[0][0]
+
+
 def find_settlement_boundary(
     place_name: str,
     boundaries_gdf: Optional[gpd.GeoDataFrame] = None,
+    expected_center: Optional[Tuple[float, float]] = None,
+    max_distance_m: float = 25000.0,
 ) -> Optional[BaseGeometry]:
-    """Find the polygon boundary for a settlement name."""
+    """Find a settlement boundary by canonical name, then a bounded fuzzy lookup.
+
+    ``expected_center`` is ``(lon, lat)`` from the LAMAS settlement centres;
+    when supplied, candidates that are geographically implausible are rejected.
+    """
     if boundaries_gdf is None:
         boundaries_gdf = load_national_boundaries()
-
-    if boundaries_gdf.empty:
+    if boundaries_gdf is None or boundaries_gdf.empty:
         return None
 
-    clean_name = clean_place_name(place_name)
+    query_key = canonical_key(clean_place_name(place_name))
+    if not query_key:
+        return None
+    index, gdf = _boundary_name_index(boundaries_gdf)
 
-    # 1. Exact match on Hebrew or primary name
-    for col in ("name:he", "name", "name:en", "name:ar"):
-        if col in boundaries_gdf.columns:
-            matches = boundaries_gdf[boundaries_gdf[col].astype(str).str.strip() == clean_name]
-            if not matches.empty:
-                # Prefer municipal / city level admin_level (8 or 7 or 6)
-                if "admin_level" in matches.columns:
-                    for lvl in ("8", "7", "6"):
-                        sub = matches[matches["admin_level"] == lvl]
-                        if not sub.empty:
-                            return sub.iloc[0].geometry
-                return matches.iloc[0].geometry
+    def geometry_is_close(row_index) -> bool:
+        if expected_center is None:
+            return True
+        geom = gdf.at[row_index, "geometry"]
+        point = geom.representative_point()
+        # Approximate metres per degree at Israel's latitude (~32°N).
+        dx = (point.x - expected_center[0]) * 94_000
+        dy = (point.y - expected_center[1]) * 111_000
+        return (dx * dx + dy * dy) ** 0.5 <= max_distance_m
 
-    # 2. Case-insensitive / substring match
-    for col in ("name:he", "name", "name:en", "name:ar"):
-        if col in boundaries_gdf.columns:
-            matches = boundaries_gdf[
-                boundaries_gdf[col].astype(str).str.contains(clean_name, case=False, na=False)
-            ]
-            if not matches.empty:
-                return matches.iloc[0].geometry
+    exact_rows = index.get(query_key, [])
+    if exact_rows:
+        candidates = [row for row in exact_rows if geometry_is_close(row[0])]
+        if candidates:
+            return gdf.at[_preferred_row(gdf, candidates), "geometry"]
 
-    # 3. Fuzzy match across boundary names
-    best_match_geom = None
-    best_score = 0.0
-    clean_lower = clean_name.lower()
-    for col in ("name:he", "name", "name:en"):
-        if col in boundaries_gdf.columns:
-            for _, row in boundaries_gdf.iterrows():
-                val = str(row[col]) if pd.notna(row[col]) else ""
-                if not val:
-                    continue
-                score = fuzz.ratio(clean_lower, val.lower())
-                if score > best_score:
-                    best_score = score
-                    best_match_geom = row.geometry
+    # Bounded fuzzy lookup: one C-accelerated query over canonical keys.
+    best = process.extract(
+        query_key,
+        list(index),
+        scorer=fuzz.ratio,
+        score_cutoff=88,
+        limit=5,
+    )
+    for key, score, _ in best:
+        rows = [row for row in index[key] if geometry_is_close(row[0])]
+        if rows:
+            logger.info(
+                "Fuzzy matched '%s' with boundary '%s' (score %.1f)",
+                place_name,
+                key,
+                score,
+            )
+            return gdf.at[_preferred_row(gdf, rows), "geometry"]
+    return None
 
-    if best_match_geom is not None and best_score >= 80:
-        logger.info("Fuzzy matched '%s' with boundary score %.1f%%", clean_name, best_score)
-        return best_match_geom
 
+def find_settlement_place_area(
+    place_name: str,
+    places_gdf: Optional[gpd.GeoDataFrame] = None,
+    expected_center: Optional[Tuple[float, float]] = None,
+    max_distance_m: float = 25000.0,
+    allow_non_settlement: bool = False,
+) -> Optional[BaseGeometry]:
+    """Small search area around a ``place=*`` node/way with a matching name.
+
+    Many Israeli settlements have no administrative boundary relation at all;
+    the national place index still knows their name and location.  Suburbs and
+    neighbourhoods are skipped unless explicitly pinned via config, so a
+    quarter inside a city cannot be used as that city's search area.
+    """
+    if places_gdf is None:
+        try:
+            places_gdf = load_national_places()
+        except Exception as exc:
+            logger.debug("Place cache unavailable: %s", exc)
+            return None
+    if places_gdf is None or places_gdf.empty:
+        return None
+    query_key = canonical_key(clean_place_name(place_name))
+    if not query_key:
+        return None
+    for _, row in places_gdf.iterrows():
+        if not allow_non_settlement and not place_is_settlement(
+            row.get("place"), row.get("admin_level"), "place"
+        ):
+            continue
+        names = []
+        for col in NAME_COLUMNS:
+            value = row.get(col)
+            if value is not None and str(value).strip().lower() not in {"nan", "none", ""}:
+                names.extend(str(value).split(";"))
+        if not any(canonical_key(name) == query_key for name in names):
+            continue
+        geometry = row.get("geometry")
+        if geometry is None or getattr(geometry, "is_empty", True):
+            continue
+        point = geometry.representative_point()
+        if expected_center:
+            dx = (point.x - expected_center[0]) * 94_000
+            dy = (point.y - expected_center[1]) * 111_000
+            if (dx * dx + dy * dy) ** 0.5 > max_distance_m:
+                continue
+        return box(point.x - 0.018, point.y - 0.015, point.x + 0.018, point.y + 0.015)
     return None
 
 
@@ -450,7 +695,9 @@ def fetch_pbf_street_data(
             osm_id_str = str(place["osm_id"]).lstrip("RNW")
             try:
                 boundaries_gdf = load_national_boundaries()
-                match = boundaries_gdf[boundaries_gdf["osm_id"] == osm_id_str]
+                # Boundary ids may be stored as "r1392848" or "1392848".
+                ids = boundaries_gdf["osm_id"].astype(str).str.lstrip("rnwRNW")
+                match = boundaries_gdf[ids == osm_id_str]
                 if not match.empty:
                     query_geom = match.iloc[0].geometry
             except Exception:
@@ -468,6 +715,14 @@ def fetch_pbf_street_data(
                         float(bbox[2]),
                         float(bbox[3]),
                     )
+                    # Older caches / Nominatim place nodes can carry a
+                    # degenerate (zero-area) bbox; expand it into a usable
+                    # search area instead of returning no streets.
+                    if (max_lat - min_lat) <= 0.001 or (max_lon - min_lon) <= 0.001:
+                        center_lat = float(place.get("lat") or (min_lat + max_lat) / 2)
+                        center_lon = float(place.get("lon") or (min_lon + max_lon) / 2)
+                        min_lat, max_lat = center_lat - 0.015, center_lat + 0.015
+                        min_lon, max_lon = center_lon - 0.018, center_lon + 0.018
                     query_geom = box(min_lon, min_lat, max_lon, max_lat)
                 except (ValueError, TypeError):
                     pass
@@ -491,11 +746,33 @@ def fetch_pbf_street_data(
     # Case B: place is a string
     elif isinstance(place, str):
         city_name = clean_place_name(place)
-        # Try finding polygon boundary from boundaries cache
+        # Try finding polygon boundary from boundaries cache.  LAMAS settlement
+        # centres keep fuzzy/ambiguous names from resolving to a same-sounding
+        # place on the other side of the country.
+        expected_center = None
         try:
-            query_geom = find_settlement_boundary(city_name)
+            from settlement_index import load_settlement_centers
+
+            expected_center = load_settlement_centers().get(canonical_key(city_name))
+        except Exception as e:
+            logger.debug("Settlement centres unavailable for %s: %s", city_name, e)
+        try:
+            query_geom = find_settlement_boundary(
+                city_name, expected_center=expected_center
+            )
         except Exception as e:
             logger.warning("Failed finding boundary for %s: %s", city_name, e)
+
+        if query_geom is None:
+            try:
+                pinned = canonical_key(city_name) in load_osm_id_overrides()
+                query_geom = find_settlement_place_area(
+                    city_name,
+                    expected_center=expected_center,
+                    allow_non_settlement=pinned,
+                )
+            except Exception as exc:
+                logger.debug("Place-area lookup failed for %s: %s", city_name, exc)
 
         if query_geom is None:
             from settlement_matcher import SettlementMatcher

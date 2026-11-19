@@ -8,6 +8,7 @@ import datetime
 import logging
 import os
 import re
+from collections import OrderedDict
 
 import pandas as pd
 import requests
@@ -15,6 +16,7 @@ import requests
 from lamas_streets import CACHE_MAX_AGE_DAYS as LAMAS_CACHE_MAX_AGE_DAYS
 from lamas_streets import fetch_all_LAMAS_data
 from OSM_streets import fetch_osm_street_data
+from settlement_names import canonical_key
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,25 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 LAMAS_CACHE = os.path.join(CACHE_DIR, "LAMAS_data.pkl")
 OSM_CACHE_TEMPLATE = os.path.join(CACHE_DIR, "osm_data_{place}.pkl")
 SIX_MONTHS_DAYS = 182
+
+# A batch worker handles many settlements; avoid re-reading the same pickle
+# from disk for every one of them.  Keys include the file mtime so a refresh
+# invalidates the in-memory copy automatically.
+_LAMAS_MEMORY_CACHE: dict[tuple[str, float], pd.DataFrame] = {}
+_OSM_MEMORY_CACHE: "OrderedDict[tuple[str, float], pd.DataFrame]" = OrderedDict()
+_OSM_MEMORY_CACHE_MAX = 2
+
+
+def _file_signature(path: str) -> tuple[str, float]:
+    try:
+        return (path, os.path.getmtime(path))
+    except OSError:
+        return (path, -1.0)
+
+
+def city_key(series: pd.Series) -> pd.Series:
+    """Canonical settlement key for joining LAMAS city names with OSM labels."""
+    return series.map(canonical_key)
 
 
 def is_fresh(path: str, max_age_days: int = SIX_MONTHS_DAYS) -> bool:
@@ -81,12 +102,19 @@ def load_or_fetch_LAMAS(
 ) -> pd.DataFrame:
     """Load LAMAS data from cache if fresh, otherwise fetch and cache it."""
     if not force_refresh and is_fresh(LAMAS_CACHE, max_age_days):
+        signature = _file_signature(LAMAS_CACHE)
+        memory_cached = _LAMAS_MEMORY_CACHE.get(signature)
+        if memory_cached is not None and _is_valid_lamas_data(memory_cached):
+            logger.debug("Loading LAMAS data from in-memory cache")
+            return memory_cached.copy()
         try:
             logger.info("Loading LAMAS data from cache: %s", LAMAS_CACHE)
             cached_df = pd.read_pickle(LAMAS_CACHE)
             if not _is_valid_lamas_data(cached_df):
                 raise ValueError("LAMAS cache is empty or missing required columns")
-            return cached_df
+            _LAMAS_MEMORY_CACHE.clear()
+            _LAMAS_MEMORY_CACHE[signature] = cached_df
+            return cached_df.copy()
         except Exception as e:
             logger.warning("Failed to read LAMAS cache, will re-fetch: %s", e)
 
@@ -109,7 +137,9 @@ def load_or_fetch_LAMAS(
                     fetch_error,
                     LAMAS_CACHE,
                 )
-                return cached_df
+                _LAMAS_MEMORY_CACHE.clear()
+                _LAMAS_MEMORY_CACHE[_file_signature(LAMAS_CACHE)] = cached_df
+                return cached_df.copy()
         raise
 
     try:
@@ -117,6 +147,8 @@ def load_or_fetch_LAMAS(
         logger.info("Cached LAMAS data to %s", LAMAS_CACHE)
     except Exception as e:
         logger.warning("Failed to write LAMAS cache: %s", e)
+    _LAMAS_MEMORY_CACHE.clear()
+    _LAMAS_MEMORY_CACHE[_file_signature(LAMAS_CACHE)] = df.copy()
     return df
 
 
@@ -145,12 +177,19 @@ def load_or_fetch_osm(
     cache_path = OSM_CACHE_TEMPLATE.format(place=safe)
 
     if not force_refresh and is_fresh(cache_path, max_age_days):
+        signature = _file_signature(cache_path)
+        memory_cached = _OSM_MEMORY_CACHE.get(signature)
+        if memory_cached is not None and _is_valid_osm_data(memory_cached):
+            logger.debug("Loading OSM data from in-memory cache: %s", cache_path)
+            _OSM_MEMORY_CACHE.move_to_end(signature)
+            return memory_cached.copy()
         try:
             logger.info("Loading OSM data from cache: %s", cache_path)
             cached_gdf = pd.read_pickle(cache_path)
             if not _is_valid_osm_data(cached_gdf):
                 raise ValueError("OSM cache is empty or missing required columns")
-            return cached_gdf
+            _remember_osm(signature, cached_gdf)
+            return cached_gdf.copy()
         except Exception as e:
             logger.warning("Failed to read OSM cache, will re-fetch: %s", e)
 
@@ -173,7 +212,8 @@ def load_or_fetch_osm(
                     fetch_error,
                     cache_path,
                 )
-                return cached_gdf
+                _remember_osm(_file_signature(cache_path), cached_gdf)
+                return cached_gdf.copy()
         raise
 
     try:
@@ -181,7 +221,16 @@ def load_or_fetch_osm(
         logger.info("Cached OSM data to %s", cache_path)
     except Exception as e:
         logger.warning("Failed to write OSM cache: %s", e)
+    _remember_osm(_file_signature(cache_path), gdf)
     return gdf
+
+
+def _remember_osm(signature: tuple[str, float], gdf: pd.DataFrame) -> None:
+    """Keep a small bounded in-memory OSM cache (GeoDataFrames can be big)."""
+    _OSM_MEMORY_CACHE[signature] = gdf.copy()
+    _OSM_MEMORY_CACHE.move_to_end(signature)
+    while len(_OSM_MEMORY_CACHE) > _OSM_MEMORY_CACHE_MAX:
+        _OSM_MEMORY_CACHE.popitem(last=False)
 
 
 def _is_valid_osm_data(gdf: pd.DataFrame | None) -> bool:

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from settlement_matcher import NominatimCache, SettlementMatcher
+from settlement_names import canonical_key
 
 
 def place_result(
@@ -110,6 +111,38 @@ class TestSettlementMatcher(unittest.TestCase):
 
         self.assertFalse(valid)
         self.assertIn("does not match", reason)
+
+    def test_rejects_a_neighbourhood_that_shares_the_settlement_name(self):
+        for place_type in ("suburb", "neighbourhood", "quarter", "borough"):
+            with self.subTest(place_type=place_type):
+                result = place_result("חיפה", place_type=place_type)
+                valid, reason = self.matcher._validate_result(result, "חיפה")
+                self.assertFalse(valid)
+                self.assertIn("Non-settlement OSM feature", reason)
+
+    def test_rejects_neighbourhood_level_administrative_boundary(self):
+        result = place_result("חיפה", place_type="administrative")
+        result["extratags"] = {"admin_level": "9"}
+        valid, reason = self.matcher._validate_result(result, "חיפה")
+        self.assertFalse(valid)
+        self.assertIn("admin_level=9", reason)
+
+    def test_only_an_exact_verified_pin_can_override_the_suburb_guard(self):
+        result = place_result("יישוב חריג", place_type="suburb")
+        with patch(
+            "settlement_matcher.load_osm_id_overrides",
+            return_value={canonical_key("יישוב חריג"): "w123"},
+        ):
+            valid, reason = self.matcher._validate_result(result, "יישוב חריג")
+            self.assertTrue(valid)
+            self.assertIn("Pinned OSM id override", reason)
+        with patch(
+            "settlement_matcher.load_osm_id_overrides",
+            return_value={canonical_key("יישוב חריג"): "r123"},
+        ):
+            valid, reason = self.matcher._validate_result(result, "יישוב חריג")
+            self.assertFalse(valid)
+            self.assertIn("Non-settlement", reason)
 
     def test_search_does_not_fall_back_to_individual_words(self):
         response = Mock(status_code=200)

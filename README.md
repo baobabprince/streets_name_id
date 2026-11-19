@@ -7,9 +7,11 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 ## Features
 
 - **Automated data fetching** from local OSM PBF extracts (or live Overpass fallback via osmnx) and data.gov.il (LAMAS)
-- **High-speed offline OSM extraction** — automatically downloads Geofabrik's Israel PBF extract, parses and indexes all road segments and municipal boundaries locally, eliminating Overpass API rate limits and timeouts.
-- **Settlement resolution** uses exact OSM place names/known aliases and
-  country filtering, then passes the matched OSM element ID directly to road extraction
+- **High-speed offline OSM extraction** — automatically downloads Geofabrik's Israel PBF extract, parses and indexes all road segments, municipal boundaries and `place=*` features locally, eliminating Overpass API rate limits and timeouts.
+- **Offline-first settlement matching** — one national index of OSM boundary/place names is built once per run and matched against the whole LAMAS settlement list with canonical Hebrew/Arabic normalization, curated aliases and geographic validation against LAMAS settlement centres; Nominatim is called only for names the local index cannot explain
+- **Neighbourhood guard** — `place=suburb` / `neighbourhood` / `quarter`, `admin_level` 9+ and district-scale polygons can never win a LAMAS settlement match (offline index *and* Nominatim fallback). Features inside a differently named city boundary are flagged, discarded candidates are listed in the match note, and rejections carry an explicit reason in the audit CSV
+- **One consolidated match store** — positive *and* negative settlement resolutions are kept in `data/settlement_matches.json` (one atomic write per run), with a CSV audit trail in `batch_reports/settlement_match_report.csv`
+- **One command for everything** — `python run_all.py` fetches, matches, processes, reports and rebuilds the dashboard in a single run
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
 - **Fuzzy matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz) (weighted ratio / token_sort / token_set)
 - **Topological context** — adjacency graph of connected OSM streets for AI prompts
@@ -27,14 +29,19 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 
 | Module | Role |
 |--------|------|
+| `run_all.py` | **Single-run orchestrator** (fetch → match → process → report → dashboard) |
+| `settlement_index.py` | Offline OSM name index, geo validation, consolidated match store + resolver |
+| `settlement_names.py` | Shared canonical settlement-name normalization (LAMAS ↔ OSM) |
+| `settlement_matcher.py` | Nominatim fallback, bounded batch cache with negative results |
+| `config/settlement_aliases.json` | Curated settlement aliases + renamed-city centre overrides |
 | `pipeline.py` | Orchestrator (run one settlement end-to-end) |
-| `data_loader.py` | Cache + fetch LAMAS / OSM |
-| `normalization.py` | Name normalize + fuzzy candidates |
+| `data_loader.py` | Cache + fetch LAMAS / OSM (in-memory + pickle caches) |
+| `normalization.py` | Street-name normalize + fuzzy candidates |
 | `diagnostics.py` | Match / coverage statistics |
 | `gemini_client.py` | Gemini API client |
 | `local_ai_resolver.py` | Optional local Qwen-based resolver |
 | `laya_ai_resolver.py` | Optional local Laya decision-model resolver |
-| `batch_process_settlements.py` | Multi-settlement runner |
+| `batch_process_settlements.py` | Batch runner / shared orchestration implementation |
 | `generate_html.py` / `map_template.html` | Per-city interactive street map |
 | `generate_index.py` | National dashboard (`index.html`) |
 | `migrate_legacy_pages.py` | Upgrade old self-contained map pages |
@@ -80,6 +87,8 @@ conda install -c conda-forge osmium-tool
 
 The program looks for `osmium` on `PATH`. If it is installed elsewhere, set
 `OSMIUM_BIN` to the executable path (for example, `osmium.exe` on Windows).
+`run_all.py` builds all three national caches (named streets, administrative
+boundaries and `place=*` features) once, before any settlement is processed.
 If the tool is not installed, local PBF extraction stops before downloading the
 large regional extract; use `--no-pbf` to fall back to live Overpass data.
 If Osmium detects a PBF decompression/format error, the pipeline downloads a
@@ -102,6 +111,50 @@ the full city lexicon. AI output is a suggestion for review, not an approved
 match; the map and coverage statistics keep suggestions separate.
 
 ## Usage
+
+### One-shot run (recommended)
+
+```bash
+python run_all.py                          # every LAMAS settlement, start to finish
+python run_all.py --cities --workers 4      # only the 83 configured cities
+python run_all.py --refresh-all             # refresh LAMAS + OSM + matches, reprocess all
+python run_all.py --fast                    # data + matching only, no AI/HTML/dashboard
+python run_all.py --match-only              # rebuild the settlement match map
+python run_all.py --dashboard-only          # just rebuild index.html
+python run_all.py --dry-run --limit 10      # preview
+```
+
+The single pass does **five** things, each once:
+
+1. loads LAMAS (network only on the first run / after `--refresh`) and builds the
+   national OSM PBF caches (streets, boundaries, `place=*` features);
+2. resolves all settlements **once** against the local OSM index, using
+   `config/settlement_aliases.json` and `config/settlement_centers.json` for
+   renamed/variant names and geographic sanity checks; only the leftovers are
+   sent to Nominatim;
+3. runs the per-settlement pipelines (skipping already processed ones) with the
+   resolved OSM element/bbox and the authoritative LAMAS city name for street
+   filtering;
+4. writes one batch summary, one settlement-match CSV and the consolidated
+   `data/settlement_matches.json`;
+5. refreshes `index.html`.
+
+`run_all.py` exits non-zero if any settlement pipeline fails, so CI can rely on
+it. `batch_process_settlements.py` remains a compatible alias with the same
+flags (without the strict exit code / presets).
+
+| Flag | Meaning |
+|------|---------|
+| `--refresh` | Refresh LAMAS, national OSM caches and settlement matches |
+| `--refresh-matches` | Ignore the settlement store and re-resolve every name |
+| `--force` | Reprocess settlements even if already processed |
+| `--no-nominatim` | Never call Nominatim; local OSM index only |
+| `--no-intermediates` | Skip bulky step-1..5 pickles (CSV audit reports are kept) |
+| `--match-only` / `--dashboard-only` | Run only that phase |
+| `--only "חיפה,אילת"` | Process just these settlements |
+| `--fast` / `--refresh-all` | Presets (see above) |
+| `--skip-dashboard` | Keep `index.html` untouched |
+| `--cities`, `--limit`, `--workers`, `--use-ai`, `--no-pbf`, `--skip-html`, … | Same as the batch flags below |
 
 ### Single settlement
 
@@ -130,7 +183,7 @@ diagnostic reports and maps in `data/` and `HTML/`. This compares model
 decisions, not accuracy; measuring accuracy requires a set of manually
 verified street-to-LAMAS matches.
 
-### Batch
+### Batch (same CLI, without the presets)
 
 ```bash
 python batch_process_settlements.py --workers 4 --use-ai
@@ -140,22 +193,59 @@ python batch_process_settlements.py --dry-run
 
 | Flag | Meaning |
 |------|---------|
-| `--workers N` | Parallel processes (default 1) |
+| `--workers N` | Parallel processes (default 1); `1` also reuses the LAMAS table in-process |
 | `--use-ai` | Enable AI (off by default in batch) |
 | `--limit N` | First N settlements only |
 | `--skip-html` | Skip HTML map generation |
 | `--force` | Reprocess even if already done |
+| `--refresh` / `--refresh-matches` | Refresh sources / re-resolve settlements |
+| `--no-nominatim` | Offline settlement matching only |
+| `--no-intermediates` | Skip bulky intermediate pickles |
+| `--match-only` / `--dashboard-only` | Run only that phase |
+| `--only NAMES` | Comma-separated settlement names |
 | `--cities` | Process exactly the 83 cities listed in `config/israel_83_cities_lamas.json` |
 | `--local-ai-model laya` | Use Laya for local AI decisions |
 | `--no-gemini` | Keep all unresolved decisions local |
+
+### Tuning settlement matching
+
+`config/settlement_aliases.json` is the place to fix a settlement that keeps
+failing to match. Add the LAMAS name as a key and any OSM/Hebrew/Arabic/English
+spelling as aliases; keys are compared after canonicalization, so
+`תל אביב - יפו`, `תל אביב־יפו` and `תל אביב יפו` are already equivalent.
+`center_overrides` in the same file supplies ITM coordinates for settlements
+renamed after `config/settlement_centers.json` was generated (e.g. נוף הגליל).
+
+**שכונות שלא אמורות להיות יישוב:** רכיבי OSM מסוג `suburb`, `neighbourhood`,
+`quarter`, `borough`, `isolated_dwelling`, גבולות ב־`admin_level` 9+, ופוליגונים
+ברוחב מעל 0.6° (מחוזות/מועצות אזוריות) מסומנים כ־`is_settlement=False` ונדחים
+גם אם שמם זהה לשם היישוב בלמ"ס וגם אם הם קרובים יותר למרכז היישוב. שכונה
+שנמצאת בתוך גבול עיר אחרת (`admin_level=8`) מסומנת ב־`inside_city`. אם בכל זאת
+קיים יישוב אמיתי ש־OSM מיפה אותו רק כשכונה, מוסיפים אותו ל־`osm_id_overrides`
+עם ה־OSM id המדויק (`"n123456"` / `"r1392848"`) — זהו המנגנון היחיד שעוקף את
+ההגנה, וההתאמה נרשמת בדוח עם `source=pinned`. הדחיות מופיעות בדוח עם סיבה
+(`Only non-settlement OSM features matched (suburb…)` או סיבת הדחייה מ־Nominatim)
+וב־`validation_message` של ההתאמה שנבחרה (כמה מועמדים שכונתיים נדחו). גרסאות
+ה־cache קודמות (`STORE_VERSION=1`, `MATCH_CACHE_VERSION=v3`) לא נטענות אחרי
+השינוי, כדי לא להחזיר שכונה שנשמרה בעבר כעיר.
+
+Each run writes `batch_reports/settlement_match_report.csv` with one row per
+settlement: status, source (`pbf` / `nominatim`), name score, distance from the
+LAMAS centre, OSM id and the failure reason. Unresolved names are cached for
+seven days so a rerun does not repeat failing Nominatim requests; use
+`--refresh-matches` to retry them immediately. Duplicate assignments (two LAMAS
+names pointing at the same OSM feature) are detected and the farther one is
+flagged as unresolved instead of being silently mis-matched.
 
 ### GitHub Actions: all 83 cities
 
 Run **Actions → Run Laya for 83 Israeli cities → Run workflow** to process
 the configured cities with the local Laya model on a GitHub-hosted runner.
-The workflow requires no Gemini key. It uses the national OSM PBF and
-`osmium-tool`, and fails if the LAMAS dataset does not contain all 83 cities
-or if any city pipeline fails.
+The workflow invokes `python run_all.py --cities … --force --no-intermediates`,
+which resolves all 83 settlements once from the national OSM PBF and fails if
+the LAMAS dataset does not contain all 83 cities or if any city pipeline fails
+(`run_all.py` returns a non-zero exit code in that case). No Gemini key is
+required.
 
 The workflow uploads batch summaries, per-city diagnostic and candidate-score
 CSV files, and HTML maps as the `israel-cities-results` artifact, retained for
@@ -233,17 +323,23 @@ generated by the pipeline compute the centre directly from their geometry.
 
 ## Methodology (short)
 
-1. **Acquire** — LAMAS street codes + simplified OSM street geometries for one
-   settlement at a time (cached under `data/`; stale OSM cache is used if a
-   refresh fails)
-2. **Normalize** — abbreviations, punctuation, Hebrew preference (`name:he`)
-3. **Topology** — adjacency map of OSM segments
-4. **Match** — confident / needs-AI / missing by fuzzy score thresholds; exact
+1. **Acquire once** — the full LAMAS street table and one national OSM cache
+   (streets, boundaries and `place=*` features) are loaded before any
+   settlement is processed; per-settlement street extracts come from that cache
+   (stale caches are used as fallback if a refresh fails)
+2. **Match settlements once** — canonical names + curated aliases + fuzzy
+   fallback + LAMAS-centre distance checks, with a Nominatim fallback only for
+   unresolved names, all persisted in one store
+3. **Normalize streets** — abbreviations, punctuation, Hebrew preference
+   (`name:he`); LAMAS rows are joined by canonical city key, not by a fragile
+   free-text city label
+4. **Topology** — adjacency map of OSM segments
+5. **Match** — confident / needs-AI / missing by fuzzy score thresholds; exact
    name matches provide OSM-only geographic anchors for checking proximity and
    direct topology connections
-5. **AI (optional)** — local model, then Gemini, with a bounded candidate list
+6. **AI (optional)** — local model, then Gemini, with a bounded candidate list
    and neighbor context; suggestions never become approved mappings
-6. **Report** — diagnostic CSV, candidate-score CSV, and interactive HTML map
+7. **Report** — diagnostic CSV, candidate-score CSV, and interactive HTML map
 
 LAMAS street records do not include geometry. Geographic checks therefore use
 exact-name OSM matches as reference lines; candidate segments directly connected
@@ -255,10 +351,14 @@ Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
 
 ## Outputs
 
-- `data/` — pickle caches, intermediate steps, `diagnostic_report_*.csv`, and
-  `step4_candidate_scores_*.csv` (all fuzzy candidates above the score threshold)
+- `data/` — pickle caches (national OSM extracts, LAMAS, per-settlement OSM),
+  `data/settlement_matches.json` (consolidated settlement resolutions),
+  `diagnostic_report_*.csv` and `step4_candidate_scores_*.csv` (all fuzzy
+  candidates above the score threshold). Bulky step-1..5 pickles are optional
+  (`--no-intermediates`).
 - `HTML/` — per-settlement interactive street inspectors (`*_roads.html`)
-- `batch_reports/` — batch logs and summaries
+- `batch_reports/` — batch summaries, `settlement_match_report.csv` and
+  `processed_settlements.json`
 - `index.html` — national dashboard (search, filters, analytics)
 - `assets/` — shared CSS/JS used by the dashboard and every settlement page
 

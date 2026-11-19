@@ -18,6 +18,7 @@ from enum import Enum
 import pandas as pd
 
 from data_loader import (
+    city_key,
     load_or_fetch_LAMAS,
     load_or_fetch_osm,
     normalize_city,
@@ -35,11 +36,50 @@ from normalization import (
     select_ai_candidates,
 )
 from OSM_streets import place_name as OSM_PLACE_NAME
+from settlement_names import canonical_key
 
 logger = logging.getLogger(__name__)
 
 ISRAEL_BOUNDS = (29.0, 34.0, 33.7, 36.0)
 _LOCAL_RESOLVER_CACHE: dict[str, LayaAIResolver | LocalAIResolver] = {}
+# CSV audit outputs are always kept; bulky pickle intermediates are optional.
+ESSENTIAL_STEPS = {"diagnostic_report", "step4_candidate_scores"}
+
+
+def _save_step(
+    df: pd.DataFrame, step_name: str, identifier: str, save_intermediates: bool
+) -> None:
+    """Skip bulky intermediate pickles unless they were explicitly requested."""
+    if not save_intermediates and step_name not in ESSENTIAL_STEPS:
+        return
+    save_intermediate_df(df, step_name, identifier)
+
+
+def _filter_lamas_by_city(LAMAS_df: pd.DataFrame, target_key: str) -> pd.DataFrame:
+    """Join LAMAS streets to a settlement using canonical city keys.
+
+    OSM and LAMAS spell city names differently; falling back to a tight fuzzy
+    key match prevents a whole city from silently producing zero LAMAS rows.
+    """
+    rows = LAMAS_df[LAMAS_df["city_key"] == target_key]
+    if not rows.empty or not target_key:
+        return rows
+    try:
+        from rapidfuzz import fuzz, process
+
+        keys = sorted(set(LAMAS_df["city_key"].dropna().tolist()))
+        best = process.extractOne(
+            target_key, keys, scorer=fuzz.ratio, score_cutoff=92
+        )
+        if best:
+            logger.info(
+                "Fuzzy city key match: '%s' -> '%s' (%.1f)",
+                target_key, best[0], best[1],
+            )
+            return LAMAS_df[LAMAS_df["city_key"] == best[0]]
+    except Exception as exc:
+        logger.debug("Fuzzy city fallback unavailable: %s", exc)
+    return rows
 
 
 class PipelineStatus(Enum):
@@ -168,6 +208,9 @@ def run_pipeline(
     skip_html: bool = False,
     output_name: str | None = None,
     use_pbf: bool = True,
+    lamas_df: pd.DataFrame | None = None,
+    lamas_city: str | None = None,
+    save_intermediates: bool = True,
 ) -> PipelineStatus:
     """Run the full street-mapping pipeline for a settlement."""
     _setup_logging()
@@ -207,7 +250,13 @@ def run_pipeline(
         logger.info("Using place: %s", chosen_place_str)
         file_identifier = output_name if output_name else chosen_place_str
 
-        LAMAS_df = load_or_fetch_LAMAS(force_refresh=force_refresh)
+        # A batch already fetched the national LAMAS table once; reuse it
+        # instead of re-reading the pickle for every settlement.
+        LAMAS_df = (
+            lamas_df.copy()
+            if lamas_df is not None
+            else load_or_fetch_LAMAS(force_refresh=force_refresh)
+        )
         osm_gdf = load_or_fetch_osm(
             place_obj_for_osm, force_refresh=force_refresh, use_pbf=use_pbf
         )
@@ -249,9 +298,14 @@ def run_pipeline(
         if "city" in LAMAS_df.columns:
             LAMAS_df["city"] = normalize_city(LAMAS_df["city"])
         osm_gdf["city"] = normalize_city(osm_gdf["city"])
+        if lamas_city:
+            # Keep the authoritative LAMAS settlement label in every output.
+            osm_gdf["city"] = lamas_city
+        LAMAS_df["city_key"] = city_key(LAMAS_df["city"])
+        target_city_key = canonical_key(lamas_city or osm_gdf["city"].iloc[0])
 
-        save_intermediate_df(LAMAS_df, "step1_lamas_raw", file_identifier)
-        save_intermediate_df(osm_gdf, "step1_osm_raw", file_identifier)
+        _save_step(LAMAS_df, "step1_lamas_raw", file_identifier, save_intermediates)
+        _save_step(osm_gdf, "step1_osm_raw", file_identifier, save_intermediates)
 
     except Exception as e:
         logger.error("FATAL ERROR during Data Acquisition: %s", e)
@@ -272,8 +326,8 @@ def run_pipeline(
     LAMAS_df.dropna(subset=["normalized_name"], inplace=True)
     osm_gdf.dropna(subset=["normalized_name"], inplace=True)
 
-    save_intermediate_df(LAMAS_df, "step2_lamas_normalized", file_identifier)
-    save_intermediate_df(osm_gdf, "step2_osm_normalized", file_identifier)
+    _save_step(LAMAS_df, "step2_lamas_normalized", file_identifier, save_intermediates)
+    _save_step(osm_gdf, "step2_osm_normalized", file_identifier, save_intermediates)
 
     logger.info("[Step 3/7] Building Adjacency Map (Topology)...")
     map_of_adjacents = build_adjacency_map(osm_gdf)
@@ -282,21 +336,26 @@ def run_pipeline(
     osm_city_label = osm_gdf["city"].iloc[0]
     logger.info("Filtering LAMAS data for city: '%s'", osm_city_label)
 
-    lamas_city_df = LAMAS_df[LAMAS_df["city"] == osm_city_label].copy()
+    lamas_city_df = _filter_lamas_by_city(LAMAS_df, target_city_key).copy()
     if lamas_city_df.empty:
         logger.warning(
             "No LAMAS data found for city '%s'. Fuzzy matching will yield MISSING.",
             osm_city_label,
+        )
+    else:
+        logger.info(
+            "Matched '%s' to %d LAMAS street records (canonical city key '%s')",
+            osm_city_label, len(lamas_city_df), target_city_key,
         )
 
     candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
     candidates_df = validate_candidate_geography(
         osm_gdf, candidates_df, map_of_adjacents
     )
-    save_intermediate_df(candidates_df, "step4_candidates", file_identifier)
+    _save_step(candidates_df, "step4_candidates", file_identifier, save_intermediates)
     candidate_scores_df = _build_candidate_score_report(candidates_df, osm_gdf)
-    save_intermediate_df(
-        candidate_scores_df, "step4_candidate_scores", file_identifier
+    _save_step(
+        candidate_scores_df, "step4_candidate_scores", file_identifier, save_intermediates
     )
 
     logger.info("[Step 5/7] (Optional) Invoking AI for ambiguous cases...")
@@ -478,7 +537,7 @@ def run_pipeline(
             "ai_method",
         ],
     )
-    save_intermediate_df(ai_decisions_df, "step5_ai_decisions", file_identifier)
+    _save_step(ai_decisions_df, "step5_ai_decisions", file_identifier, save_intermediates)
 
     logger.info("[Step 6/7] Merging results to create final diagnostic table...")
 
@@ -517,7 +576,7 @@ def run_pipeline(
         final_mapping_df[["osm_id", "final_LAMAS_id"]], on="osm_id", how="left"
     )
 
-    save_intermediate_df(diagnostic_df_full, "diagnostic_report", file_identifier)
+    _save_step(diagnostic_df_full, "diagnostic_report", file_identifier, save_intermediates)
 
     logger.info("PIPELINE COMPLETED")
     named_osm_count = diagnostic_df_full["normalized_name"].nunique()
@@ -542,8 +601,7 @@ def run_pipeline(
     )
 
     logger.info("[Step 6.5/7] Calculating diagnostic summary...")
-    osm_city_label = osm_gdf["city"].iloc[0]
-    lamas_in_city_df = LAMAS_df[LAMAS_df["city"] == osm_city_label]
+    lamas_in_city_df = _filter_lamas_by_city(LAMAS_df, target_city_key)
     diagnostics = calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf)
     logger.info("Diagnostic Summary: %s", diagnostics)
 
@@ -586,6 +644,15 @@ if __name__ == "__main__":
         "--output-name",
         help="Name outputs separately, e.g. for comparing model runs",
     )
+    parser.add_argument(
+        "--lamas-city",
+        help="Authoritative LAMAS settlement name used to filter street records",
+    )
+    parser.add_argument(
+        "--no-intermediates",
+        action="store_true",
+        help="Skip bulky intermediate pickles (CSV audit reports are still saved)",
+    )
     args = parser.parse_args()
 
     status = run_pipeline(
@@ -597,5 +664,7 @@ if __name__ == "__main__":
         local_ai_model=args.local_ai_model,
         use_gemini=not args.no_gemini,
         output_name=args.output_name,
+        lamas_city=args.lamas_city,
+        save_intermediates=not args.no_intermediates,
     )
     sys.exit(0 if status == PipelineStatus.SUCCESS else 1)

@@ -3,8 +3,14 @@ Settlement Matcher Module
 
 This module handles matching settlement names from LAMAS to OSM places using Nominatim,
 with geographic validation to ensure results are within Israel/Palestine.
+
+The batch pipeline resolves settlements offline first (see ``settlement_index.py``)
+and calls Nominatim only for the names the local OSM index cannot explain.  The
+cache keeps both positive and negative results, and can defer disk writes so a
+whole batch is persisted with a single atomic write.
 """
 
+import datetime
 import requests
 import json
 import os
@@ -16,13 +22,24 @@ from dataclasses import dataclass
 
 from rapidfuzz.fuzz import ratio
 
+from settlement_names import (
+    NON_SETTLEMENT_ADMIN_LEVELS,
+    NON_SETTLEMENT_PLACE_TYPES,
+    admin_level,
+    canonical_key,
+    load_aliases,
+    load_osm_id_overrides,
+)
+
 # Geographic bounds for Israel/Palestine (min_lat, min_lon, max_lat, max_lon)
 ISRAEL_BOUNDS = (29.0, 34.0, 33.5, 36.0)
 
-# Acceptable place types from Nominatim
+# Acceptable place types from Nominatim.  Suburbs/neighbourhoods are deliberately
+# excluded: a quarter inside a city must never "steal" a LAMAS settlement's
+# identity (see settlement_index.NON_SETTLEMENT_PLACE_TYPES).
 VALID_PLACE_TYPES = {
     'city', 'town', 'village', 'municipality', 'administrative',
-    'hamlet', 'suburb', 'neighbourhood', 'locality'
+    'hamlet', 'locality'
 }
 VALID_COUNTRY_CODES = {'il', 'ps'}
 VALID_PLACE_CLASSES = {'place', 'boundary'}
@@ -31,8 +48,12 @@ SETTLEMENT_ALIASES = {
     'אביה': ('חוות אביה',),
     'אבורובייעה': ('أبو ربيعة', 'أبو ربية'),
 }
-MATCH_CACHE_VERSION = 'v2'
+# v4: suburb/neighbourhood results are no longer valid; invalidate v3 caches.
+MATCH_CACHE_VERSION = 'v4'
 MIN_NAME_MATCH_SCORE = 92
+# Negative results are cached too, but for a shorter period: OSM is updated often.
+UNRESOLVED_CACHE_TTL_DAYS = 7
+MATCHED_CACHE_TTL_DAYS = 180
 
 # Nominatim API settings
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
@@ -61,42 +82,151 @@ class SettlementMatch:
     osm_type: str = ""
     category: str = ""
     country_code: str = ""
+    match_source: str = "nominatim"
+    name_score: float = 0.0
+    center_distance_m: Optional[float] = None
+
+    def to_place_dict(self) -> Dict[str, Any]:
+        """Dict consumed by ``run_pipeline`` / ``fetch_pbf_street_data``."""
+        return {
+            "settlement_name": self.settlement_name,
+            "display_name": self.display_name,
+            "lat": self.lat,
+            "lon": self.lon,
+            "boundingbox": tuple(self.boundingbox),
+            "place_type": self.place_type,
+            "osm_id": self.osm_id,
+            "osm_type": self.osm_type,
+            "category": self.category,
+            "country_code": self.country_code,
+            "match_source": self.match_source,
+            "name_score": self.name_score,
+            "center_distance_m": self.center_distance_m,
+            "validation_message": self.validation_message,
+        }
 
 
 class NominatimCache:
-    """Simple JSON-based cache for Nominatim results"""
-    
-    def __init__(self, cache_file: str = NOMINATIM_CACHE_FILE):
+    """JSON cache for Nominatim results (positive *and* negative results).
+
+    ``auto_save=False`` lets a batch resolve hundreds of names in memory and
+    write the cache exactly once with :meth:`save`.  Writes are atomic so a
+    crashed run cannot corrupt the cache.
+    """
+
+    def __init__(
+        self,
+        cache_file: str = NOMINATIM_CACHE_FILE,
+        auto_save: bool = True,
+        unresolved_ttl_days: int = UNRESOLVED_CACHE_TTL_DAYS,
+    ):
         self.cache_file = cache_file
+        self.auto_save = auto_save
+        self.unresolved_ttl_days = unresolved_ttl_days
         self.cache = self._load_cache()
-    
+        self.dirty = False
+
+    @staticmethod
+    def _is_fresh(entry: Dict, days: int) -> bool:
+        checked_at = entry.get("checked_at") if isinstance(entry, dict) else None
+        if not checked_at:
+            # Legacy entries have no timestamp: treat them as usable matches.
+            return "status" not in (entry or {})
+        try:
+            age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(
+                checked_at
+            )
+        except (TypeError, ValueError):
+            return False
+        return age.days <= days
+
     def _load_cache(self) -> Dict:
-        """Load cache from file"""
+        """Load cache from file (supports the legacy flat format)."""
         if os.path.exists(self.cache_file):
             try:
                 with open(self.cache_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    payload = json.load(f)
+                if isinstance(payload, dict) and isinstance(payload.get("entries"), dict):
+                    return payload["entries"]
+                if isinstance(payload, dict):
+                    return payload
             except Exception as e:
                 print(f"Warning: Failed to load cache: {e}")
-                return {}
         return {}
-    
-    def _save_cache(self):
-        """Save cache to file"""
+
+    def save(self):
+        """Persist the whole cache in one atomic write."""
         try:
-            with open(self.cache_file, 'w', encoding='utf-8') as f:
-                json.dump(self.cache, f, ensure_ascii=False, indent=2)
+            os.makedirs(os.path.dirname(self.cache_file) or ".", exist_ok=True)
+            temp_file = f"{self.cache_file}.tmp"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(
+                    {"version": MATCH_CACHE_VERSION, "entries": self.cache},
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            os.replace(temp_file, self.cache_file)
+            self.dirty = False
         except Exception as e:
             print(f"Warning: Failed to save cache: {e}")
-    
+
+    # Backwards-compatible alias used by older callers.
+    _save_cache = save
+
+    def flush(self):
+        if self.dirty:
+            self.save()
+
     def get(self, key: str) -> Optional[Dict]:
         """Get cached result"""
         return self.cache.get(key)
-    
+
+    def cached_match(self, key: str) -> Optional[Dict]:
+        """Return a usable cached match dict, or ``None``."""
+        entry = self.cache.get(key)
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("status") == "unresolved":
+            return None
+        if entry.get("status") == "matched" and not self._is_fresh(
+            entry, MATCHED_CACHE_TTL_DAYS
+        ):
+            return None
+        payload = entry.get("match", entry)
+        if not isinstance(payload, dict) or payload.get("error"):
+            return None
+        return payload
+
+    def is_fresh_unresolved(self, key: str) -> bool:
+        entry = self.cache.get(key)
+        return (
+            isinstance(entry, dict)
+            and entry.get("status") == "unresolved"
+            and self._is_fresh(entry, self.unresolved_ttl_days)
+        )
+
+    def _store(self, key: str, entry: Dict) -> None:
+        self.cache[key] = entry
+        self.dirty = True
+        if self.auto_save:
+            self.save()
+
     def set(self, key: str, value: Dict):
-        """Set cached result and save"""
-        self.cache[key] = value
-        self._save_cache()
+        """Set a successful result and save (unless auto_save is disabled)."""
+        self._store(key, {
+            "status": "matched",
+            "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "match": value,
+        })
+
+    def set_unresolved(self, key: str, reason: str = "no valid result"):
+        """Remember a failed lookup so the next run does not repeat the request."""
+        self._store(key, {
+            "status": "unresolved",
+            "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "reason": reason,
+        })
 
 
 class SettlementMatcher:
@@ -108,9 +238,12 @@ class SettlementMatcher:
     # Nominatim query yields no valid result.
     # The SPECIAL_CASES dict is removed.
     
-    def __init__(self):
-        self.cache = NominatimCache()
+    def __init__(self, cache: Optional[NominatimCache] = None):
+        self.cache = cache if cache is not None else NominatimCache()
         self.last_request_time = 0
+        # Exposed to the batch resolver so the audit CSV can say *why* a
+        # Nominatim lookup was rejected, not just "no valid result".
+        self.last_rejection_reason = ""
     
     @staticmethod
     def normalize_settlement_name(name: str) -> str:
@@ -142,19 +275,41 @@ class SettlementMatcher:
 
     @classmethod
     def _normalized_match_name(cls, name: str) -> str:
-        normalized = cls.normalize_settlement_name(name)
-        normalized = ''.join(
-            character
-            for character in unicodedata.normalize("NFKD", normalized)
-            if not unicodedata.combining(character)
-        )
-        return re.sub(r'[\s.,:;"״׳\'’`]+', '', normalized).casefold()
+        """Canonical comparison key shared with the offline settlement index."""
+        return canonical_key(name)
 
     @classmethod
     def _query_variants(cls, settlement_name: str) -> list[str]:
+        """Cleaned name first, then curated aliases (bounded query count)."""
         normalized = cls.normalize_settlement_name(settlement_name)
-        aliases = SETTLEMENT_ALIASES.get(cls._normalized_match_name(normalized), ())
-        return list(dict.fromkeys((normalized, *aliases)))
+        key = canonical_key(normalized)
+        aliases = list(SETTLEMENT_ALIASES.get(normalized, ()))
+        aliases.extend(SETTLEMENT_ALIASES.get(key, ()))
+        aliases.extend(load_aliases().get(key, []))
+        variants = [normalized]
+        seen = {key}
+        for alias in aliases:
+            alias_key = canonical_key(alias)
+            if alias_key and alias_key not in seen:
+                seen.add(alias_key)
+                variants.append(alias)
+        return variants[:6]
+
+    @staticmethod
+    def _pinned_id_matches(result: Dict[str, Any], original_name: str) -> bool:
+        """A verified config pin may override the suburb guard for one id."""
+        pinned = load_osm_id_overrides().get(canonical_key(original_name))
+        if not pinned:
+            return False
+        value = str(pinned).strip().lower()
+        prefix = value[0] if value[:1] in {"n", "w", "r"} else ""
+        raw = value[1:] if prefix else value
+        result_type = str(result.get("osm_type") or "").strip().lower()
+        expected_type = {"n": "node", "w": "way", "r": "relation"}.get(prefix)
+        return (
+            str(result.get("osm_id") or "") == raw
+            and (expected_type is None or result_type == expected_type)
+        )
 
     @classmethod
     def _candidate_names(cls, result: Dict[str, Any]) -> list[str]:
@@ -227,6 +382,25 @@ class SettlementMatcher:
             if country_code not in VALID_COUNTRY_CODES:
                 return False, f"Country is not Israel/Palestine: {display_name}"
 
+            # A neighbourhood/quarter with the same name is not a settlement.
+            extratags = result.get('extratags', {})
+            level = admin_level(
+                extratags.get('admin_level', '') if isinstance(extratags, dict) else ''
+            )
+            pinned = self._pinned_id_matches(result, original_name)
+            if (
+                not pinned
+                and (
+                    str(place_type).casefold() in NON_SETTLEMENT_PLACE_TYPES
+                    or level in NON_SETTLEMENT_ADMIN_LEVELS
+                )
+            ):
+                return False, (
+                    f"Non-settlement OSM feature ({category}/{place_type}"
+                    f"{f', admin_level={level}' if level else ''}): "
+                    f"{display_name}"
+                )
+
             query_names = accepted_names or [original_name]
             name_score = self._name_match_score(result, query_names)
             if name_score < MIN_NAME_MATCH_SCORE:
@@ -254,7 +428,11 @@ class SettlementMatcher:
             # (No region keyword validation)
             
             # Check 3: Place type should be appropriate
-            if place_type not in VALID_PLACE_TYPES and not valid_residential_alias:
+            if (
+                not pinned
+                and place_type not in VALID_PLACE_TYPES
+                and not valid_residential_alias
+            ):
                 return False, f"Invalid place type '{place_type}': {display_name}"
             
             # Check 4: Bounding box should be reasonable (not too large)
@@ -272,6 +450,8 @@ class SettlementMatcher:
                 if bbox_lat_range > max_range or bbox_lon_range > max_range:
                     return False, f"Bounding box too large ({bbox_lat_range:.2f}°, {bbox_lon_range:.2f}°): {display_name}"
             
+            if pinned:
+                return True, f"Pinned OSM id override (name score {name_score:.1f})"
             return True, f"Exact settlement name match ({name_score:.1f})"
             
         except Exception as e:
@@ -320,8 +500,17 @@ class SettlementMatcher:
         The query_name is already a fully‑formed query (may include country qualifier).
         """
         cache_key = f"{MATCH_CACHE_VERSION}:{query_name}"
-        
-        cached_result = self.cache.get(cache_key)
+        self.last_rejection_reason = ""
+
+        if self.cache.is_fresh_unresolved(cache_key):
+            entry = self.cache.get(cache_key) or {}
+            self.last_rejection_reason = str(
+                entry.get("reason", "cached unresolved Nominatim result")
+            )
+            print(f"  ✓ Cache hit (known unresolved) for '{query_name}'")
+            return None
+
+        cached_result = self.cache.cached_match(cache_key)
         if cached_result:
             print(f"  ✓ Cache hit for query '{query_name}'")
             if not cached_result.get('error'):
@@ -339,10 +528,13 @@ class SettlementMatcher:
                     'osm_id': cached_match.osm_id,
                     'osm_type': cached_match.osm_type,
                 })
-                is_valid, _ = self._validate_result(
+                is_valid, validation_msg = self._validate_result(
                     cached_candidate, original_name, accepted_names
                 )
                 if is_valid:
+                    cached_match.validation_message = validation_msg
+                    if validation_msg.startswith("Pinned OSM id override"):
+                        cached_match.match_source = "pinned"
                     return cached_match
 
         print(f"  → Searching Nominatim for '{query_name}'...")
@@ -373,15 +565,20 @@ class SettlementMatcher:
                 
                 if not results:
                     print(f"  ✗ No results found for '{original_name}'")
+                    self.last_rejection_reason = "No Nominatim results"
+                    self.cache.set_unresolved(cache_key, self.last_rejection_reason)
                     return None
                 
                 valid_results = []
+                rejected_reasons = []
                 for result in results:
                     is_valid, validation_msg = self._validate_result(
                         result, original_name, accepted_names
                     )
                     if is_valid:
                         valid_results.append((result, validation_msg))
+                    else:
+                        rejected_reasons.append(validation_msg)
 
                 if valid_results:
                     valid_results.sort(
@@ -406,14 +603,25 @@ class SettlementMatcher:
                         osm_type=best_result.get('osm_type', ''),
                         category=best_result.get('category', ''),
                         country_code=best_result.get('address', {}).get('country_code', ''),
+                        name_score=self._name_match_score(best_result, accepted_names),
+                        match_source=(
+                            "pinned"
+                            if validation_msg.startswith("Pinned OSM id override")
+                            else "nominatim"
+                        ),
                     )
                     print(f"  ✓ Valid match: {match.display_name}")
                     self.cache.set(cache_key, self._match_to_dict(match))
                     return match
                 print(f"  ✗ No valid results for '{original_name}' (all failed validation)")
+                self.last_rejection_reason = "; ".join(
+                    dict.fromkeys(rejected_reasons)
+                )[:500] or "all results failed validation"
+                self.cache.set_unresolved(cache_key, self.last_rejection_reason)
                 return None
                 
             except (requests.exceptions.RequestException, ValueError) as e:
+                self.last_rejection_reason = f"Nominatim request/validation error: {e}"
                 print(f"  ⚠ Request error (attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     time.sleep(2 ** attempt)  # Exponential backoff
@@ -440,6 +648,9 @@ class SettlementMatcher:
             'osm_type': match.osm_type,
             'category': match.category,
             'country_code': match.country_code,
+            'match_source': match.match_source,
+            'name_score': match.name_score,
+            'center_distance_m': match.center_distance_m,
         }
     
     def _dict_to_match(self, data: Dict, settlement_name: str) -> SettlementMatch:
@@ -458,6 +669,9 @@ class SettlementMatcher:
             osm_type=data.get('osm_type', ''),
             category=data.get('category', ''),
             country_code=data.get('country_code', ''),
+            match_source=data.get('match_source', 'nominatim'),
+            name_score=float(data.get('name_score', 0.0) or 0.0),
+            center_distance_m=data.get('center_distance_m'),
         )
 
 
@@ -483,13 +697,13 @@ def test_settlement_matcher():
         print("-" * 60)
         match = matcher.search_settlement(settlement)
         if match:
-            print(f"✓ SUCCESS")
+            print("✓ SUCCESS")
             print(f"  Display Name: {match.display_name}")
             print(f"  Coordinates: ({match.lat:.4f}, {match.lon:.4f})")
             print(f"  Type: {match.place_type}")
             print(f"  Validation: {match.validation_message}")
         else:
-            print(f"✗ FAILED - No valid match found")
+            print("✗ FAILED - No valid match found")
     
     print("\n" + "=" * 60)
 
@@ -507,12 +721,12 @@ if __name__ == "__main__":
                 print(f"Testing settlement: {settlement}")
                 match = matcher.search_settlement(settlement)
                 if match:
-                    print(f"\n✓ Match found:")
+                    print("\n✓ Match found:")
                     print(f"  Display: {match.display_name}")
                     print(f"  Coords: ({match.lat:.4f}, {match.lon:.4f})")
                     print(f"  Type: {match.place_type}")
                 else:
-                    print(f"\n✗ No valid match found")
+                    print("\n✗ No valid match found")
             else:
                 # Run all tests
                 test_settlement_matcher()
