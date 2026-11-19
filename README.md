@@ -191,6 +191,10 @@ What you get:
   geographic review (violet), no match (red), unnamed (grey). Partial approvals
   keep one stable gold tone instead of a gradient, so they never read as
   “unmatched”. AI proposals and geographic reviews are always *not approved*.
+- **Score-first recommendation lists** — filtering “מאושר חלקי” or “הצעת AI”
+  orders the streets by score, highest first, and the list header says so. AI
+  rows show their score instead of an internal candidate id, so the ranking is
+  comparable with partial approvals.
 - **Gap finder** — the two “unmatched” directions are promoted out of the
   insights tab into a wide panel under the map: OSM streets without an approved
   LAMAS match (click a chip to locate and zoom it) and LAMAS names without an

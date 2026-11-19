@@ -36,6 +36,7 @@
   var moreBtn = document.getElementById("list-more");
   var emptyEl = document.getElementById("list-empty");
   var resultCount = document.getElementById("result-count");
+  var sortNote = document.getElementById("sort-note");
   var searchInput = document.getElementById("street-search");
   var filterBtns = Array.prototype.slice.call(document.querySelectorAll("[data-filter]"));
   var card = document.getElementById("selection-card");
@@ -247,8 +248,29 @@
     return q.split(" ").every(function (token) { return hay.indexOf(token) !== -1; });
   }
 
+  function matchScore(rec) {
+    // The visible "score" column is best_score for every status, including AI.
+    // Only when it is missing do we fall back to a 0..1 model confidence.
+    if (rec.score != null && !isNaN(rec.score)) return rec.score;
+    var conf = parseFloat(rec.confidence);
+    if (!isNaN(conf)) return conf <= 1 ? conf * 100 : conf;
+    return null;
+  }
+
+  function byScoreDesc(a, b) {
+    var sa = matchScore(a), sb = matchScore(b);
+    if (sa == null && sb == null) return b.length - a.length;
+    if (sa == null) return 1;
+    if (sb == null) return -1;
+    if (sb !== sa) return sb - sa;
+    return b.length - a.length;
+  }
+
   function filteredRecords() {
-    return records.filter(matches);
+    var rows = records.filter(matches);
+    // Recommendations are most useful from the strongest score downwards.
+    if (state.filter === "partial" || state.filter === "ai") rows.sort(byScoreDesc);
+    return rows;
   }
 
   /* ------------------------------------------------------------------ *
@@ -258,15 +280,19 @@
   function statusColor(status) { return PALETTE[status] || PALETTE.unmatched; }
 
   function scoreText(rec) {
-    if (rec.status === "ai") return rec.ai || "AI";
-    if (rec.score == null || isNaN(rec.score)) return "—";
-    return Math.round(rec.score);
+    var value = matchScore(rec);
+    return value == null ? "—" : Math.round(value);
   }
 
   function renderList(reset) {
     if (reset) { state.shown = PAGE_SIZE; listEl.innerHTML = ""; }
     var list = filteredRecords();
     resultCount.textContent = list.length.toLocaleString("he-IL");
+    if (sortNote) {
+      sortNote.textContent = (state.filter === "partial" || state.filter === "ai")
+        ? "לפי ציון, מהגבוה לנמוך"
+        : "לפי אורך הרחוב";
+    }
     emptyEl.hidden = list.length !== 0;
 
     var slice = list.slice(0, state.shown);
@@ -1148,8 +1174,9 @@
   document.getElementById("export-btn").addEventListener("click", function () {
     var rows = [["שם OSM", "שם רשמי (למ״ס)", "מזהה למ״ס", "סטטוס", "ציון", "הצעת AI", "אורך (יחידות מפה)"]];
     filteredRecords().forEach(function (rec) {
+      var score = matchScore(rec);
       rows.push([rec.name, rec.lamas, rec.lamasId, LABELS[rec.status] || rec.status,
-        rec.score == null || isNaN(rec.score) ? "" : Math.round(rec.score), rec.ai, Math.round(rec.length)]);
+        score == null ? "" : Math.round(score), rec.ai, Math.round(rec.length)]);
     });
     var csv = "\ufeff" + rows.map(function (row) {
       return row.map(function (cell) { return '"' + String(cell == null ? "" : cell).replace(/"/g, '""') + '"'; }).join(",");
