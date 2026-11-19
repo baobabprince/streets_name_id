@@ -3,8 +3,10 @@
 
     python run_all.py                     # fetch -> match -> process -> report -> dashboard
     python run_all.py --cities --workers 4 --use-ai
+    python run_all.py --non-cities --match-only --refresh-matches
+    python run_all.py --only-file batch_reports/settlement_match_retry.txt --force
     python run_all.py --refresh-all       # refresh every source and reprocess
-    python run_all.py --fast              # data + matching only, no HTML/AI
+    python run_all.py --fast              # no AI/HTML/dashboard/intermediates
     python run_all.py --match-only        # rebuild the settlement match map
     python run_all.py --dashboard-only    # rebuild index.html
 

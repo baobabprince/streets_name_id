@@ -515,7 +515,8 @@ def build_cli_parser(**kwargs) -> argparse.ArgumentParser:
 Examples:
   python run_all.py                         # everything, one command
   python run_all.py --cities --workers 4    # the 83 official cities
-  python run_all.py --match-only            # only rebuild settlement matches
+  python run_all.py --non-cities --match-only  # audit all other settlements
+  python run_all.py --only-file batch_reports/settlement_match_retry.txt --force
   python run_all.py --dry-run --limit 10    # preview without processing
 """,
         **kwargs,
@@ -544,8 +545,12 @@ Examples:
                         help="Number of parallel workers (default: 1)")
     parser.add_argument("--cities", action="store_true",
                         help="Process only the 83 cities in config/israel_83_cities_lamas.json")
+    parser.add_argument("--non-cities", action="store_true",
+                        help="Process every LAMAS settlement except the 83 official cities")
     parser.add_argument("--only", metavar="NAMES",
                         help="Comma-separated settlement names to process")
+    parser.add_argument("--only-file", metavar="PATH",
+                        help="File with settlement names (one per line or comma-separated)")
     parser.add_argument("--local-ai-model", choices=("qwen", "laya"), default="qwen",
                         help="Local model to use for AI resolution (default: qwen)")
     parser.add_argument("--no-gemini", action="store_true",
@@ -563,15 +568,57 @@ Examples:
     return parser
 
 
-def _select_settlements(lamas_df: pd.DataFrame, args) -> List[str]:
-    settlements = sorted(lamas_df["city"].dropna().unique().tolist())
-    if getattr(args, "cities", False):
-        settlements = filter_to_official_cities(settlements)
-        print(f"Filtered to {len(settlements)} configured cities of Israel.")
+def _official_city_keys() -> set[str]:
+    """Canonical names of the 83 official cities, used by --non-cities."""
+    with open(OFFICIAL_CITIES_FILE, "r", encoding="utf-8") as file:
+        payload = json.load(file)
+    cities = payload.get("cities", [])
+    return {canonical_key(city) for city in cities if city}
+
+
+def _requested_name_keys(args) -> set[str]:
+    """Union of --only and --only-file names, canonicalized."""
+    parts: List[str] = []
     only = getattr(args, "only", None)
     if only:
-        requested = {canonical_key(part) for part in only.split(",") if part.strip()}
-        settlements = [name for name in settlements if canonical_key(name) in requested]
+        parts.extend(only.split(","))
+    path = getattr(args, "only_file", None)
+    if path:
+        with open(path, "r", encoding="utf-8-sig") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts.extend(line.split(","))
+    return {
+        canonical_key(part) for part in parts if part and part.strip()
+    }
+
+
+def _select_settlements(lamas_df: pd.DataFrame, args) -> List[str]:
+    settlements = sorted(lamas_df["city"].dropna().unique().tolist())
+    cities = bool(getattr(args, "cities", False))
+    non_cities = bool(getattr(args, "non_cities", False))
+    if cities and non_cities:
+        raise ValueError("--cities and --non-cities are mutually exclusive")
+    if cities:
+        settlements = filter_to_official_cities(settlements)
+        print(f"Filtered to {len(settlements)} configured cities of Israel.")
+    elif non_cities:
+        before = len(settlements)
+        official = _official_city_keys()
+        settlements = [
+            name for name in settlements if canonical_key(name) not in official
+        ]
+        print(
+            f"Excluded {before - len(settlements)} official cities; "
+            f"{len(settlements)} other LAMAS settlements remain."
+        )
+    requested = _requested_name_keys(args)
+    if requested:
+        settlements = [
+            name for name in settlements if canonical_key(name) in requested
+        ]
         print(f"Filtered to {len(settlements)} requested settlements.")
     limit = getattr(args, "limit", None)
     if limit:

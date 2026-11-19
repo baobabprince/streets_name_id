@@ -118,9 +118,12 @@ match; the map and coverage statistics keep suggestions separate.
 ```bash
 python run_all.py                          # every LAMAS settlement, start to finish
 python run_all.py --cities --workers 4      # only the 83 configured cities
+python run_all.py --non-cities --match-only --refresh-matches  # audit the long tail
+python evaluate_settlement_matching.py      # prioritise settlement-ID failures
+python run_all.py --only-file batch_reports/settlement_match_retry.txt --force --refresh-matches
 python run_all.py --refresh-all             # refresh LAMAS + OSM + matches, reprocess all
-python run_all.py --fast                    # data + matching only, no AI/HTML/dashboard
-python run_all.py --match-only              # rebuild the settlement match map
+python run_all.py --fast                    # no AI/HTML/dashboard/intermediates; pipelines still run
+python run_all.py --match-only              # rebuild the settlement match map only
 python run_all.py --dashboard-only          # just rebuild index.html
 python run_all.py --dry-run --limit 10      # preview
 ```
@@ -153,9 +156,10 @@ flags (without the strict exit code / presets).
 | `--no-intermediates` | Skip bulky step-1..5 pickles (CSV audit reports are kept) |
 | `--match-only` / `--dashboard-only` | Run only that phase |
 | `--only "חיפה,אילת"` | Process just these settlements |
+| `--only-file PATH` | Read settlement names from a newline/comma-separated file; combines with `--only` |
 | `--fast` / `--refresh-all` | Presets (see above) |
 | `--skip-dashboard` | Keep `index.html` untouched |
-| `--cities`, `--limit`, `--workers`, `--use-ai`, `--no-pbf`, `--skip-html`, … | Same as the batch flags below |
+| `--cities`, `--non-cities`, `--limit`, `--workers`, `--use-ai`, `--no-pbf`, `--skip-html`, … | Same as the batch flags below |
 
 ### Single settlement
 
@@ -204,7 +208,9 @@ python batch_process_settlements.py --dry-run
 | `--no-intermediates` | Skip bulky intermediate pickles |
 | `--match-only` / `--dashboard-only` | Run only that phase |
 | `--only NAMES` | Comma-separated settlement names |
+| `--only-file PATH` | Settlement names from a file (one per line or comma-separated) |
 | `--cities` | Process exactly the 83 cities listed in `config/israel_83_cities_lamas.json` |
+| `--non-cities` | Process every LAMAS settlement except those 83 cities |
 | `--local-ai-model laya` | Use Laya for local AI decisions |
 | `--no-gemini` | Keep all unresolved decisions local |
 
@@ -238,6 +244,41 @@ seven days so a rerun does not repeat failing Nominatim requests; use
 `--refresh-matches` to retry them immediately. Duplicate assignments (two LAMAS
 names pointing at the same OSM feature) are detected and the farther one is
 flagged as unresolved instead of being silently mis-matched.
+
+### התמקדות ביישובים הקטנים, לא רק ב־83 הערים
+
+83 הערים הן בעיקר **sanity check**: הן כמעט תמיד נפתרות offline מה־PBF. עיקר
+בעיות הזיהוי נמצא ביתר היישובים ברשימת הלמ"ס — שבטים בדואים, מושבים, כפרים
+קטנים, מחנות, מוסדות ויישובים ש־OSM מיפה כ־`locality`, `hamlet`,
+`landuse=residential` או אפילו כשכונה. לכן יש זרימת עבודה נפרדת:
+
+```bash
+# 1. בנה/רענן דוח התאמה לכל היישובים שאינן 83 הערים, בלי להריץ pipelines
+python run_all.py --non-cities --match-only --refresh-matches
+
+# 2. דרג את הכשלים לפי סיבה, וצור רשימת שמות לטיפול חוזר
+python evaluate_settlement_matching.py
+
+# 3. עבד/בדוק רק את השמות שסומנו P1/P2
+python run_all.py --only-file batch_reports/settlement_match_retry.txt \
+  --workers 2 --fast --force --refresh-matches
+```
+
+`evaluate_settlement_matching.py` כותב שלושה קבצים:
+
+| קובץ | תוכן |
+|---|---|
+| `batch_reports/settlement_match_audit.csv` | כל שורה בדוח ההתאמה + `issues`, `priority`, `suggested_action` |
+| `batch_reports/settlement_match_audit.md` | ספירות לפי מקור/עדיפות/סיבה ודוגמאות לכל סוג כשל |
+| `batch_reports/settlement_match_retry.txt` | שמות מוכנים ל־`--only-file` |
+
+הבאקטים המרכזיים: `unresolved_non_settlement`, `unresolved_nominatim`,
+`unresolved_offline`, `duplicate_osm_id`, `inside_another_city`,
+`empty_osm_type`, `nominatim_fallback`, `fuzzy_name`, `display_name_mismatch`,
+`suburb_candidates_ignored`, `institution_or_camp`, `pinned_override`.
+הפעולה המוצעת אומרת אם להוסיף alias, לבדוק `osm_id_override` מאומת, לתקן
+מרכז למ"ס, או לעשות בדיקה ידנית. `--non-cities` ו־`--cities` סותרים זה את זה;
+`--only` ו־`--only-file` מתאחדים לפי `canonical_key`.
 
 ### GitHub Actions: all 83 cities
 

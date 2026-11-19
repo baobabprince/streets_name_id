@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -95,6 +97,40 @@ class TestBatchOrchestration(unittest.TestCase):
         load.assert_not_called()
         dashboard.assert_called_once()
         self.assertEqual(summary, {"dashboard_only": True})
+
+    def test_non_cities_excludes_the_83_official_cities(self):
+        args = batch.build_cli_parser().parse_args(["--non-cities"])
+        lamas_df = pd.DataFrame({"city": [
+            "חיפה", "תל אביב - יפו", "אבו עמאר )שבט(", "אבו קרינאת )יישוב(",
+        ]})
+        selected = batch._select_settlements(lamas_df, args)
+        self.assertEqual(selected, ["אבו עמאר )שבט(", "אבו קרינאת )יישוב("])
+        self.assertNotIn("חיפה", selected)
+
+    def test_only_file_and_only_combine_by_canonical_name(self):
+        lamas_df = pd.DataFrame({"city": [
+            "חיפה", "אבו עמאר )שבט(", "אבו קרינאת )יישוב(", "יישוב אחר",
+        ]})
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "retry.txt")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "# generated retry list\n"
+                    "אבו עמאר )שבט(\n"
+                    "אבו קרינאת )יישוב(,חיפה\n"
+                )
+            args = batch.build_cli_parser().parse_args([
+                "--only-file", path, "--only", "יישוב אחר",
+            ])
+            selected = batch._select_settlements(lamas_df, args)
+        self.assertEqual(set(selected), {
+            "אבו עמאר )שבט(", "אבו קרינאת )יישוב(", "חיפה", "יישוב אחר",
+        })
+
+    def test_cities_and_non_cities_are_mutually_exclusive(self):
+        args = batch.build_cli_parser().parse_args(["--cities", "--non-cities"])
+        with self.assertRaises(ValueError):
+            batch._select_settlements(pd.DataFrame({"city": ["חיפה"]}), args)
 
     def test_run_all_presets_and_strict_exit_code(self):
         captured = {}
