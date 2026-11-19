@@ -69,8 +69,6 @@ class TestGenerateHtml(unittest.TestCase):
         self.assertNotIn('src="https://www.govmap.gov.il', html)
         self.assertIn('id="gaps-panel"', html)
         self.assertIn('id="gap-osm-list"', html)
-        self.assertIn('id="context-layer"', html)
-        self.assertIn('id="basemap-toggle"', html)
         self.assertNotIn("@@", html)
         meta = json.loads(
             html.split('<script id="page-meta" type="application/json">', 1)[1].split("</script>", 1)[0]

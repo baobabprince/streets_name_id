@@ -41,7 +41,6 @@ class TestMigrateLegacyPages(unittest.TestCase):
         self.assertIn("assets/map.js", html)
         self.assertIn('id="gaps-panel"', html)
         self.assertIn('id="govmap-panel"', html)
-        self.assertIn('id="context-layer"', html)
         self.assertNotIn("@@", html)
         self.assertNotIn("const filterBtns", html)
         # coordinates are rounded to 0.1 m

@@ -65,9 +65,6 @@
   var gapOsmFilter = document.getElementById("gap-osm-filter");
   var mapReset = document.getElementById("map-reset");
   var mapZoomLabel = document.getElementById("map-zoom-label");
-  var contextLayer = document.getElementById("context-layer");
-  var contextNetwork = document.getElementById("context-network");
-  var basemapBtn = document.getElementById("basemap-toggle");
 
   var meta = {};
   try {
@@ -170,35 +167,6 @@
     return String(a.name).localeCompare(String(b.name), "he");
   });
   records.forEach(function (rec, i) { rec.index = i; });
-
-  function buildContextNetwork() {
-    if (!contextNetwork) return;
-    var parts = [];
-    document.querySelectorAll("#street-layer .street-path").forEach(function (path) {
-      var d = path.getAttribute("d");
-      if (d) parts.push(d);
-    });
-    contextNetwork.setAttribute("d", parts.join(" "));
-  }
-  buildContextNetwork();
-
-  var basemapOn = true;
-  try { if (localStorage.getItem("sni-basemap") === "off") basemapOn = false; } catch (e) { /* private mode */ }
-  function applyBasemap(on) {
-    basemapOn = on;
-    if (contextLayer) contextLayer.classList.toggle("is-off", !on);
-    if (basemapBtn) {
-      basemapBtn.setAttribute("aria-pressed", String(on));
-      basemapBtn.classList.toggle("is-off", !on);
-    }
-  }
-  if (basemapBtn) {
-    basemapBtn.addEventListener("click", function () {
-      applyBasemap(!basemapOn);
-      try { localStorage.setItem("sni-basemap", basemapOn ? "on" : "off"); } catch (e) { /* ignore */ }
-    });
-  }
-  applyBasemap(basemapOn);
 
   var counts = { all: records.length, perfect: 0, partial: 0, ai: 0, "geo-review": 0, unmatched: 0, unnamed: 0 };
   var scoreBuckets = new Array(10).fill(0);
