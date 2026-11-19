@@ -199,8 +199,11 @@
 
   var kpiUnmatched = document.querySelector('[data-kpi="unmatched"]');
   var kpiAi = document.querySelector('[data-kpi="ai"]');
-  var noMatch = counts.unmatched + counts["geo-review"] + counts.ai;
-  if (kpiUnmatched) kpiUnmatched.textContent = noMatch.toLocaleString("he-IL");
+  // Keep the headline honest and identical to the gap panel: unique OSM street
+  // names with no approved match. AI proposals / geographic reviews are open
+  // recommendations and are counted separately.
+  var gapOsmNames = collectGapNames();
+  if (kpiUnmatched) kpiUnmatched.textContent = gapOsmNames.length.toLocaleString("he-IL");
   if (kpiAi) kpiAi.textContent = counts.ai.toLocaleString("he-IL");
 
   var state = { filter: "all", query: "", shown: PAGE_SIZE, active: null, labels: true };
@@ -213,6 +216,27 @@
       .replace(/[־–—-]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  // One canonical OSM-gap definition shared by the headline and the panel:
+  // unique street names that have no approved (exact or partial) record at all.
+  function collectGapNames() {
+    var approved = Object.create(null);
+    records.forEach(function (rec) {
+      if (rec.name && (rec.status === "perfect" || rec.status === "partial")) {
+        approved[normalize(rec.name)] = true;
+      }
+    });
+    var seen = Object.create(null), names = [];
+    records.forEach(function (rec) {
+      if (rec.status !== "unmatched" || !rec.name) return;
+      var key = normalize(rec.name);
+      if (!key || seen[key] || approved[key]) return;
+      seen[key] = true;
+      names.push(rec.name);
+    });
+    names.sort(function (a, b) { return a.localeCompare(b, "he"); });
+    return names;
   }
 
   function matches(rec) {
@@ -974,22 +998,11 @@
       else if (/OSM/i.test(text)) osmBlock = block;
     });
 
-    // Build OSM gaps from the full record table, not the (possibly capped)
+    // Reuse the exact list behind the headline count, so the two can never
+    // disagree. It comes from the full record table, not the (possibly capped)
     // diagnostics list, so every chip is clickable and nothing is truncated.
-    var matchedNames = Object.create(null);
-    records.forEach(function (rec) {
-      if (rec.name && rec.status !== "unmatched") matchedNames[normalize(rec.name)] = true;
-    });
-    var osmNames = [], seenOsm = Object.create(null);
-    records.forEach(function (rec) {
-      if (rec.status !== "unmatched" || !rec.name) return;
-      var key = normalize(rec.name);
-      if (!key || seenOsm[key] || matchedNames[key]) return;
-      seenOsm[key] = true;
-      osmNames.push(rec.name);
-    });
+    var osmNames = gapOsmNames.slice();
     if (osmBlock) osmBlock.remove();
-    osmNames.sort(function (a, b) { return a.localeCompare(b, "he"); });
 
     gapOsmList.innerHTML = "";
     osmNames.forEach(function (name) {
