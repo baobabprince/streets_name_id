@@ -211,7 +211,7 @@ python batch_process_settlements.py --dry-run
 | `--only-file PATH` | Settlement names from a file (one per line or comma-separated) |
 | `--cities` | Process exactly the 83 cities listed in `config/israel_83_cities_lamas.json` |
 | `--non-cities` | Process every LAMAS settlement except those 83 cities |
-| `--local-ai-model laya` | Use Laya for local AI decisions |
+| `--local-ai-model laya` | Use Laya for local AI decisions (implies `--use-ai`) |
 | `--no-gemini` | Keep all unresolved decisions local |
 
 ### Tuning settlement matching

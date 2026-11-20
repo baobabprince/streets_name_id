@@ -505,6 +505,14 @@ class BatchProcessor:
         return self.generate_summary_report()
 
 
+class _LocalAIModelAction(argparse.Action):
+    """Record the chosen local AI model and implicitly enable AI resolution."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, "use_ai", True)
+
+
 def build_cli_parser(**kwargs) -> argparse.ArgumentParser:
     kwargs.setdefault(
         "description", "Fetch, match and process every LAMAS settlement in one run"
@@ -552,7 +560,8 @@ Examples:
     parser.add_argument("--only-file", metavar="PATH",
                         help="File with settlement names (one per line or comma-separated)")
     parser.add_argument("--local-ai-model", choices=("qwen", "laya"), default="qwen",
-                        help="Local model to use for AI resolution (default: qwen)")
+                        action=_LocalAIModelAction,
+                        help="Local model to use for AI resolution (implies --use-ai; default: qwen)")
     parser.add_argument("--no-gemini", action="store_true",
                         help="Disable Gemini cloud fallback")
     parser.add_argument("--no-pbf", action="store_true",

@@ -160,6 +160,35 @@ class TestBatchOrchestration(unittest.TestCase):
             "failed_pipeline": 0, "skipped_already_processed": 1,
         }}), 0)
 
+    def test_local_ai_model_flag_implicitly_enables_use_ai(self):
+        default_args = batch.build_cli_parser().parse_args([])
+        self.assertFalse(default_args.use_ai)
+        self.assertEqual(default_args.local_ai_model, "qwen")
+
+        laya_args = batch.build_cli_parser().parse_args(["--local-ai-model", "laya"])
+        self.assertTrue(laya_args.use_ai)
+        self.assertEqual(laya_args.local_ai_model, "laya")
+
+        qwen_args = batch.build_cli_parser().parse_args(["--local-ai-model", "qwen"])
+        self.assertTrue(qwen_args.use_ai)
+        self.assertEqual(qwen_args.local_ai_model, "qwen")
+
+        run_all_args = run_all.build_parser().parse_args(["--local-ai-model", "laya"])
+        self.assertTrue(run_all_args.use_ai)
+        self.assertEqual(run_all_args.local_ai_model, "laya")
+
+        captured = {}
+
+        def fake_run(args):
+            captured["args"] = args
+            return {"statistics": {"total_settlements": 0, "successful": 0,
+                                   "failed_pipeline": 0, "skipped_already_processed": 0}}
+
+        with patch.object(run_all, "run_everything", side_effect=fake_run):
+            run_all.main(["--local-ai-model", "laya", "--fast"])
+        self.assertFalse(captured["args"].use_ai)
+        self.assertTrue(captured["args"].no_local_ai)
+
 
 if __name__ == "__main__":
     unittest.main()
