@@ -20,8 +20,9 @@ from typing import Any, Dict, Optional, Tuple
 
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import LineString, box, shape
+from shapely.geometry import LineString, Point, box, shape
 from shapely.geometry.base import BaseGeometry
+from shapely.ops import unary_union
 
 from rapidfuzz import fuzz, process
 
@@ -32,6 +33,7 @@ from settlement_names import (
     NON_SETTLEMENT_ADMIN_LEVELS,
     admin_level,
     canonical_key,
+    is_regional_boundary_name,
     load_osm_id_overrides,
     place_is_settlement,
 )
@@ -54,6 +56,7 @@ _CACHED_STREETS_GDF: Optional[gpd.GeoDataFrame] = None
 _CACHED_BOUNDARIES_GDF: Optional[gpd.GeoDataFrame] = None
 _CACHED_PLACES_GDF: Optional[gpd.GeoDataFrame] = None
 _BOUNDARY_INDEX_CACHE: Dict[tuple, tuple] = {}
+_NEIGHBOR_POLYGONS_CACHE: Optional[gpd.GeoDataFrame] = None
 
 
 def is_hebrew(text: Any) -> bool:
@@ -527,7 +530,16 @@ def _boundary_name_index(boundaries_gdf: gpd.GeoDataFrame):
             continue
         level = admin_level(row.get("admin_level"))
         if level in NON_SETTLEMENT_ADMIN_LEVELS:
-            continue  # neighbourhood / statistical subdivision of a city
+            continue  # district / subdistrict / neighbourhood subdivision
+        row_names = [
+            part.strip()
+            for col in NAME_COLUMNS
+            if not pd.isna(row.get(col))
+            for part in str(row.get(col)).split(";")
+            if part.strip()
+        ]
+        if any(is_regional_boundary_name(name) for name in row_names):
+            continue  # regional council / subdistrict / district
         try:
             minx, miny, maxx, maxy = geometry.bounds
             if max(maxy - miny, maxx - minx) > MAX_SETTLEMENT_BBOX_SPAN_DEG:
@@ -618,19 +630,168 @@ def find_settlement_boundary(
     return None
 
 
+def _is_polygon_geom(geom: Optional[BaseGeometry]) -> bool:
+    return (
+        geom is not None
+        and not getattr(geom, "is_empty", True)
+        and getattr(geom, "geom_type", "") in {"Polygon", "MultiPolygon"}
+    )
+
+
+def _load_settlement_polygons_for_clipping() -> Optional[gpd.GeoDataFrame]:
+    """Build a cached GeoDataFrame of all real settlement polygons (for clipping node fallback boxes)."""
+    global _NEIGHBOR_POLYGONS_CACHE
+    if _NEIGHBOR_POLYGONS_CACHE is not None:
+        return _NEIGHBOR_POLYGONS_CACHE
+
+    records = []
+    try:
+        boundaries_gdf = load_national_boundaries()
+    except Exception:
+        boundaries_gdf = None
+    if boundaries_gdf is not None and not boundaries_gdf.empty:
+        for _, row in boundaries_gdf.iterrows():
+            geom = row.get("geometry")
+            if not _is_polygon_geom(geom):
+                continue
+            if admin_level(row.get("admin_level")) in NON_SETTLEMENT_ADMIN_LEVELS:
+                continue
+            names = [
+                part.strip()
+                for col in NAME_COLUMNS
+                if not pd.isna(row.get(col))
+                for part in str(row.get(col)).split(";")
+                if part.strip()
+            ]
+            if any(is_regional_boundary_name(n) for n in names):
+                continue
+            try:
+                minx, miny, maxx, maxy = geom.bounds
+                if max(maxy - miny, maxx - minx) > MAX_SETTLEMENT_BBOX_SPAN_DEG:
+                    continue
+            except Exception:
+                continue
+            keys = frozenset(canonical_key(n) for n in names if canonical_key(n))
+            if keys:
+                records.append({"keys": keys, "geometry": geom})
+
+    try:
+        places_gdf = load_national_places()
+    except Exception:
+        places_gdf = None
+    if places_gdf is not None and not places_gdf.empty:
+        for _, row in places_gdf.iterrows():
+            geom = row.get("geometry")
+            if not _is_polygon_geom(geom):
+                continue
+            if not place_is_settlement(row.get("place"), row.get("admin_level"), "place"):
+                continue
+            names = [
+                part.strip()
+                for col in NAME_COLUMNS
+                if not pd.isna(row.get(col))
+                for part in str(row.get(col)).split(";")
+                if part.strip()
+            ]
+            keys = frozenset(canonical_key(n) for n in names if canonical_key(n))
+            if keys:
+                records.append({"keys": keys, "geometry": geom})
+
+    if not records:
+        _NEIGHBOR_POLYGONS_CACHE = gpd.GeoDataFrame(
+            columns=["keys", "geometry"], crs="EPSG:4326"
+        )
+    else:
+        _NEIGHBOR_POLYGONS_CACHE = gpd.GeoDataFrame(records, crs="EPSG:4326")
+    return _NEIGHBOR_POLYGONS_CACHE
+
+
+def _subtract_neighbor_settlements(
+    fallback_box: BaseGeometry,
+    city_name: str,
+    center_point: Optional[Point] = None,
+) -> BaseGeometry:
+    """Carve adjacent settlements' polygons out of a node-only fallback box.
+
+    Never subtracts polygons that share ``city_name`` or that enclose
+    ``center_point`` (enclave settlements), so the target settlement itself is
+    never erased.
+    """
+    try:
+        neighbors_gdf = _load_settlement_polygons_for_clipping()
+        if neighbors_gdf is None or neighbors_gdf.empty:
+            return fallback_box
+        target_key = canonical_key(clean_place_name(city_name)) if city_name else ""
+        center = center_point or fallback_box.representative_point()
+        cand_idx = list(neighbors_gdf.sindex.intersection(fallback_box.bounds))
+        if not cand_idx:
+            return fallback_box
+        to_subtract = []
+        for idx in cand_idx:
+            row = neighbors_gdf.iloc[idx]
+            if target_key and target_key in row["keys"]:
+                continue
+            poly = row["geometry"]
+            if not poly.intersects(fallback_box):
+                continue
+            if poly.contains(center):
+                continue  # target settlement sits inside this polygon (enclave)
+            to_subtract.append(poly)
+        if not to_subtract:
+            return fallback_box
+        clipped = fallback_box.difference(unary_union(to_subtract))
+        if clipped is None or clipped.is_empty:
+            return fallback_box
+        return clipped
+    except Exception as exc:
+        logger.debug("Neighbor-polygon clipping skipped for '%s': %s", city_name, exc)
+        return fallback_box
+
+
+def _lookup_place_polygon_by_id(
+    osm_id_str: str,
+    osm_type: str = "",
+    places_gdf: Optional[gpd.GeoDataFrame] = None,
+) -> Optional[BaseGeometry]:
+    """Return an exact polygon geometry from ``israel_places.pkl`` by OSM id."""
+    if not osm_id_str:
+        return None
+    if places_gdf is None:
+        try:
+            places_gdf = load_national_places()
+        except Exception:
+            return None
+    if places_gdf is None or places_gdf.empty:
+        return None
+    ids = places_gdf["osm_id"].astype(str).str.lstrip("rnwRNW")
+    matches = places_gdf[ids == osm_id_str]
+    if matches.empty:
+        return None
+    type_prefix = (osm_type or "")[:1].lower()
+    if type_prefix in {"w", "r", "n"} and "osm_type" in matches.columns:
+        typed = matches[matches["osm_type"].astype(str).str.lower() == type_prefix]
+        if not typed.empty:
+            matches = typed
+    for _, row in matches.iterrows():
+        geom = row.get("geometry")
+        if _is_polygon_geom(geom):
+            return geom
+    return None
+
+
 def find_settlement_place_area(
     place_name: str,
     places_gdf: Optional[gpd.GeoDataFrame] = None,
     expected_center: Optional[Tuple[float, float]] = None,
     max_distance_m: float = 25000.0,
     allow_non_settlement: bool = False,
+    polygons_only: bool = False,
 ) -> Optional[BaseGeometry]:
-    """Small search area around a ``place=*`` node/way with a matching name.
+    """Find a ``place=*`` polygon (preferred) or small search box around a node.
 
-    Many Israeli settlements have no administrative boundary relation at all;
-    the national place index still knows their name and location.  Suburbs and
-    neighbourhoods are skipped unless explicitly pinned via config, so a
-    quarter inside a city cannot be used as that city's search area.
+    Many Israeli settlements have no administrative boundary relation, but DO
+    have an exact ``place=village`` / ``place=town`` polygon in OSM.  Always
+    return that exact polygon when available instead of an inflated square.
     """
     if places_gdf is None:
         try:
@@ -643,6 +804,10 @@ def find_settlement_place_area(
     query_key = canonical_key(clean_place_name(place_name))
     if not query_key:
         return None
+
+    best_poly: Optional[Tuple[float, BaseGeometry]] = None
+    best_point: Optional[Tuple[float, Point]] = None
+
     for _, row in places_gdf.iterrows():
         if not allow_non_settlement and not place_is_settlement(
             row.get("place"), row.get("admin_level"), "place"
@@ -659,12 +824,30 @@ def find_settlement_place_area(
         if geometry is None or getattr(geometry, "is_empty", True):
             continue
         point = geometry.representative_point()
+        dist_m = 0.0
         if expected_center:
             dx = (point.x - expected_center[0]) * 94_000
             dy = (point.y - expected_center[1]) * 111_000
-            if (dx * dx + dy * dy) ** 0.5 > max_distance_m:
+            dist_m = (dx * dx + dy * dy) ** 0.5
+            if dist_m > max_distance_m:
                 continue
-        return box(point.x - 0.018, point.y - 0.015, point.x + 0.018, point.y + 0.015)
+        if _is_polygon_geom(geometry):
+            if best_poly is None or dist_m < best_poly[0]:
+                best_poly = (dist_m, geometry)
+        elif not polygons_only:
+            if best_point is None or dist_m < best_point[0]:
+                best_point = (dist_m, point)
+
+    if best_poly is not None:
+        return best_poly[1]
+    if best_point is not None:
+        pt = best_point[1]
+        return box(
+            pt.x - MIN_SETTLEMENT_HALF_WIDTH_LON,
+            pt.y - MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+            pt.x + MIN_SETTLEMENT_HALF_WIDTH_LON,
+            pt.y + MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+        )
     return None
 
 
@@ -686,43 +869,87 @@ def fetch_pbf_street_data(
         return None
 
     query_geom: Optional[BaseGeometry] = None
+    used_node_fallback = False
+    fallback_center: Optional[Point] = None
     city_name: str = ""
 
     # Case A: place is a dictionary (from settlement_matcher or nominatim result)
     if isinstance(place, dict):
         city_name = place.get("settlement_name") or place.get("display_name", "")
-        
-        # Check if osm_id matches a known administrative boundary
+        expected_center = None
+        if place.get("lat") is not None and place.get("lon") is not None:
+            try:
+                expected_center = (float(place["lon"]), float(place["lat"]))
+                fallback_center = Point(expected_center[0], expected_center[1])
+            except (ValueError, TypeError):
+                expected_center = None
+
+        # 1a. Check if osm_id matches a known non-regional administrative boundary
         if place.get("osm_id"):
-            osm_id_str = str(place["osm_id"]).lstrip("RNW")
+            osm_id_str = str(place["osm_id"]).lstrip("rnwRNW")
+            osm_type = str(place.get("osm_type") or "")
             try:
                 boundaries_gdf = load_national_boundaries()
-                # Boundary ids may be stored as "r1392848" or "1392848".
                 ids = boundaries_gdf["osm_id"].astype(str).str.lstrip("rnwRNW")
                 match = boundaries_gdf[ids == osm_id_str]
                 if not match.empty:
-                    query_geom = match.iloc[0].geometry
+                    row = match.iloc[0]
+                    names = [
+                        part.strip()
+                        for col in NAME_COLUMNS
+                        if col in match.columns and not pd.isna(row.get(col))
+                        for part in str(row.get(col)).split(";")
+                        if part.strip()
+                    ]
+                    if (
+                        admin_level(row.get("admin_level")) not in NON_SETTLEMENT_ADMIN_LEVELS
+                        and not any(is_regional_boundary_name(n) for n in names)
+                        and _is_polygon_geom(row.geometry)
+                    ):
+                        query_geom = row.geometry
             except Exception:
                 pass
 
-        # Check bounding box
+            # 1b. Check if osm_id matches an exact place=* polygon in israel_places.pkl
+            if query_geom is None:
+                query_geom = _lookup_place_polygon_by_id(osm_id_str, osm_type=osm_type)
+
+        # 2. If matched feature was only a point node (or missing from caches),
+        #    prefer any exact boundary or place polygon within 3 km of the node.
+        if query_geom is None and city_name:
+            try:
+                query_geom = find_settlement_boundary(
+                    city_name,
+                    expected_center=expected_center,
+                    max_distance_m=3000.0 if expected_center else 25000.0,
+                )
+            except Exception:
+                pass
+        if query_geom is None and city_name:
+            try:
+                query_geom = find_settlement_place_area(
+                    city_name,
+                    expected_center=expected_center,
+                    max_distance_m=3000.0 if expected_center else 25000.0,
+                    polygons_only=True,
+                )
+            except Exception:
+                pass
+
+        # 3. Node-only bounding box fallback (compact radius + neighbor clipping)
         if query_geom is None:
             bbox = place.get("boundingbox")
             if bbox and len(bbox) == 4:
                 try:
-                    # Nominatim boundingbox format: [min_lat, max_lat, min_lon, max_lon]
                     min_lat, max_lat, min_lon, max_lon = (
                         float(bbox[0]),
                         float(bbox[1]),
                         float(bbox[2]),
                         float(bbox[3]),
                     )
-                    # Older caches / Nominatim place nodes can carry a tiny or
-                    # zero-area bbox.  Always use at least the minimum settlement
-                    # search box, otherwise real roads just outside the feature
-                    # are missed and the run falls back to Overpass.
                     center_lat = float(place.get("lat") or (min_lat + max_lat) / 2)
                     center_lon = float(place.get("lon") or (min_lon + max_lon) / 2)
+                    fallback_center = Point(center_lon, center_lat)
                     half_lat = max(
                         (max_lat - min_lat) / 2,
                         MIN_SETTLEMENT_HALF_HEIGHT_LAT,
@@ -736,31 +963,24 @@ def fetch_pbf_street_data(
                     min_lat, max_lat = center_lat - half_lat, center_lat + half_lat
                     min_lon, max_lon = center_lon - half_lon, center_lon + half_lon
                     query_geom = box(min_lon, min_lat, max_lon, max_lat)
+                    used_node_fallback = True
                 except (ValueError, TypeError):
                     pass
 
-        # Try matching settlement name against boundary polygons if bbox was missing
-        if query_geom is None and city_name:
-            try:
-                query_geom = find_settlement_boundary(city_name)
-            except Exception:
-                pass
-
-        # Check point fallback only if no osm_id was specified (to avoid incorrect fallback for missing relations)
-        if query_geom is None and not place.get("osm_id") and place.get("lat") and place.get("lon"):
-            try:
-                lat = float(place["lat"])
-                lon = float(place["lon"])
-                query_geom = box(lon - 0.018, lat - 0.015, lon + 0.018, lat + 0.015)
-            except (ValueError, TypeError):
-                pass
+        # 4. Point-only fallback when neither polygon nor bbox was provided
+        if query_geom is None and not place.get("osm_id") and expected_center is not None:
+            lon, lat = expected_center
+            query_geom = box(
+                lon - MIN_SETTLEMENT_HALF_WIDTH_LON,
+                lat - MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+                lon + MIN_SETTLEMENT_HALF_WIDTH_LON,
+                lat + MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+            )
+            used_node_fallback = True
 
     # Case B: place is a string
     elif isinstance(place, str):
         city_name = clean_place_name(place)
-        # Try finding polygon boundary from boundaries cache.  LAMAS settlement
-        # centres keep fuzzy/ambiguous names from resolving to a same-sounding
-        # place on the other side of the country.
         expected_center = None
         try:
             from settlement_index import load_settlement_centers
@@ -783,6 +1003,15 @@ def fetch_pbf_street_data(
                     expected_center=expected_center,
                     allow_non_settlement=pinned,
                 )
+                if query_geom is not None and getattr(query_geom, "geom_type", "") == "Polygon":
+                    # Check if find_settlement_place_area returned a node box (rectangle) vs real polygon
+                    minx, miny, maxx, maxy = query_geom.bounds
+                    if (
+                        abs((maxx - minx) - 2 * MIN_SETTLEMENT_HALF_WIDTH_LON) < 1e-6
+                        and abs((maxy - miny) - 2 * MIN_SETTLEMENT_HALF_HEIGHT_LAT) < 1e-6
+                    ):
+                        used_node_fallback = True
+                        fallback_center = query_geom.representative_point()
             except Exception as exc:
                 logger.debug("Place-area lookup failed for %s: %s", city_name, exc)
 
@@ -791,12 +1020,14 @@ def fetch_pbf_street_data(
 
             match = SettlementMatcher().search_settlement(city_name)
             if match is not None:
+                fallback_center = Point(match.lon, match.lat)
                 query_geom = box(
-                    match.lon - 0.018,
-                    match.lat - 0.015,
-                    match.lon + 0.018,
-                    match.lat + 0.015,
+                    match.lon - MIN_SETTLEMENT_HALF_WIDTH_LON,
+                    match.lat - MIN_SETTLEMENT_HALF_HEIGHT_LAT,
+                    match.lon + MIN_SETTLEMENT_HALF_WIDTH_LON,
+                    match.lat + MIN_SETTLEMENT_HALF_HEIGHT_LAT,
                 )
+                used_node_fallback = True
                 logger.info(
                     "No local boundary found for '%s'; using a geocoded local "
                     "search area with the PBF.",
@@ -806,6 +1037,11 @@ def fetch_pbf_street_data(
     if query_geom is None:
         logger.warning("Could not determine spatial geometry or bounding box for place: %s", place)
         return None
+
+    if used_node_fallback:
+        query_geom = _subtract_neighbor_settlements(
+            query_geom, city_name, center_point=fallback_center
+        )
 
     # Spatial query against national streets index
     try:

@@ -124,6 +124,8 @@ class TestOSMSettlementIndex(unittest.TestCase):
             patch.object(osm_pbf_loader, "load_national_streets", return_value=streets),
             patch.object(osm_pbf_loader, "load_national_boundaries",
                          side_effect=RuntimeError("no boundary cache")),
+            patch.object(osm_pbf_loader, "load_national_places",
+                         side_effect=RuntimeError("no places cache")),
         ):
             result = osm_pbf_loader.fetch_pbf_street_data(place)
         self.assertIsNotNone(result)
@@ -135,7 +137,7 @@ class TestOSMSettlementIndex(unittest.TestCase):
                 "osm_id": ["s2"],
                 "osm_name": ["דרך עוקפת"],
                 "highway": ["residential"],
-                "geometry": [LineString([(34.815, 32.0), (34.816, 32.0)])],
+                "geometry": [LineString([(34.805, 32.0), (34.806, 32.0)])],
             },
             crs="EPSG:4326",
         )
@@ -149,10 +151,101 @@ class TestOSMSettlementIndex(unittest.TestCase):
             patch.object(osm_pbf_loader, "load_national_streets", return_value=streets),
             patch.object(osm_pbf_loader, "load_national_boundaries",
                          side_effect=RuntimeError("no boundary cache")),
+            patch.object(osm_pbf_loader, "load_national_places",
+                         side_effect=RuntimeError("no places cache")),
         ):
             result = osm_pbf_loader.fetch_pbf_street_data(place)
         self.assertIsNotNone(result)
         self.assertEqual(result["osm_id"].tolist(), ["s2"])
+
+    def test_place_polygon_is_used_verbatim_without_inflating_to_square(self):
+        village_poly = box(34.800, 32.000, 34.803, 32.003)
+        places = gpd.GeoDataFrame(
+            {
+                "osm_id": ["w94713250"],
+                "osm_type": ["w"],
+                "name:he": ["גליל ים"],
+                "place": ["village"],
+                "geometry": [village_poly],
+            },
+            crs="EPSG:4326",
+        )
+        streets = gpd.GeoDataFrame(
+            {
+                "osm_id": ["inside", "neighbor_city"],
+                "osm_name": ["רחוב הקיבוץ", "רחוב הרצליה"],
+                "highway": ["residential", "residential"],
+                "geometry": [
+                    LineString([(34.801, 32.001), (34.802, 32.002)]),
+                    LineString([(34.808, 32.001), (34.809, 32.002)]),
+                ],
+            },
+            crs="EPSG:4326",
+        )
+        place = {
+            "settlement_name": "גליל ים",
+            "display_name": "גליל ים, Israel",
+            "osm_id": "94713250",
+            "osm_type": "way",
+            "lat": 32.0015,
+            "lon": 34.8015,
+            "boundingbox": (32.000, 32.003, 34.800, 34.803),
+        }
+        with (
+            patch.object(osm_pbf_loader, "load_national_streets", return_value=streets),
+            patch.object(
+                osm_pbf_loader,
+                "load_national_boundaries",
+                return_value=gpd.GeoDataFrame(columns=["osm_id", "geometry"], crs="EPSG:4326"),
+            ),
+            patch.object(osm_pbf_loader, "load_national_places", return_value=places),
+        ):
+            result = osm_pbf_loader.fetch_pbf_street_data(place)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["osm_id"].tolist(), ["inside"])
+
+    def test_settlement_index_prefers_polygon_over_closer_node_and_rejects_regional_councils(self):
+        from settlement_index import SettlementNameIndex
+
+        boundaries = gpd.GeoDataFrame(
+            {
+                "osm_id": ["r1", "r2"],
+                "admin_level": ["8", "5"],
+                "name:he": ["מועצה אזורית שומרון", "נפת כנרת"],
+                "geometry": [
+                    box(35.0, 32.1, 35.3, 32.4),
+                    box(35.4, 32.6, 35.7, 32.9),
+                ],
+            },
+            crs="EPSG:4326",
+        )
+        places = gpd.GeoDataFrame(
+            {
+                "osm_id": ["n10", "w20"],
+                "osm_type": ["n", "w"],
+                "name:he": ["כפר מל\"ל", "כפר מל\"ל"],
+                "place": ["village", "village"],
+                "geometry": [
+                    Point(34.9000, 32.1700),
+                    box(34.8990, 32.1690, 34.9040, 32.1730),  # centroid slightly farther than node
+                ],
+            },
+            crs="EPSG:4326",
+        )
+        osm_places = build_osm_places(boundaries=boundaries, places=places)
+        index = SettlementNameIndex(osm_places)
+
+        # Polygon wins over node even when node is right on top of the LAMAS centre
+        decision = index.decide(['כפר מל"ל'], center=(34.9000, 32.1700))
+        self.assertIsNotNone(decision.place)
+        self.assertEqual(decision.place.osm_type, "way")
+        self.assertTrue(decision.place.has_polygon)
+
+        # Regional councils & subdistricts must never win a settlement match
+        rc_decision = index.decide(["שער שומרון"], center=(35.15, 32.25))
+        self.assertIsNone(rc_decision.place)
+        sub_decision = index.decide(["כנרת"], center=(35.55, 32.75))
+        self.assertIsNone(sub_decision.place)
 
     def test_place_point_creates_offline_search_area(self):
         places = gpd.GeoDataFrame(

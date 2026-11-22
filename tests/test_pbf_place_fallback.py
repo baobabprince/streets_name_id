@@ -28,6 +28,11 @@ class TestPBFPlaceFallback(unittest.TestCase):
             patch.object(osm_pbf_loader, "load_national_streets", return_value=streets),
             patch.object(osm_pbf_loader, "find_settlement_boundary", return_value=None),
             patch.object(osm_pbf_loader, "find_settlement_place_area", return_value=None),
+            patch.object(
+                osm_pbf_loader,
+                "_subtract_neighbor_settlements",
+                side_effect=lambda geom, *args, **kwargs: geom,
+            ),
             patch.object(settlement_matcher, "SettlementMatcher") as matcher_class,
         ):
             matcher_class.return_value.search_settlement.return_value = SimpleNamespace(

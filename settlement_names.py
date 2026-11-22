@@ -35,15 +35,21 @@ NON_SETTLEMENT_PLACE_TYPES = {
     "borough", "isolated_dwelling", "farm", "farmyard", "island", "islet",
     "plot", "square", "region", "state", "county", "city_block", "allotments",
 }
-NON_SETTLEMENT_ADMIN_LEVELS = {"9", "10", "11", "12"}
+NON_SETTLEMENT_ADMIN_LEVELS = {"2", "3", "4", "5", "6", "9", "10", "11", "12"}
 CITY_ADMIN_LEVEL = "8"
 # No Israeli settlement spans more than ~60 km; larger polygons are districts
 # or regional councils, not the settlement itself.
 MAX_SETTLEMENT_BBOX_SPAN_DEG = 0.6
-# Minimum half-size for a place-node / tiny-Nominatim-bbox street search area
-# (~3.6 km x 3.3 km at Israel's latitude).
-MIN_SETTLEMENT_HALF_WIDTH_LON = 0.018
-MIN_SETTLEMENT_HALF_HEIGHT_LAT = 0.015
+# Minimum half-size for a truly node-only settlement search area
+# (~2.0 km x 2.2 km max in open terrain; adjacent settlement polygons are
+# subtracted automatically in osm_pbf_loader).
+MIN_SETTLEMENT_HALF_WIDTH_LON = 0.011
+MIN_SETTLEMENT_HALF_HEIGHT_LAT = 0.0105
+
+_REGIONAL_BOUNDARY_RE = re.compile(
+    r"(?:^\s*(?:מועצה\s+אזורית|נפת|נפה|מחוז|מ\.א\.|مجلس\s+إقليمي|محافظة|قضاء|ناحية)\b|\bregional\s+council\b)",
+    re.IGNORECASE,
+)
 
 # Hyphens / maqaf / dashes are used interchangeably in Israeli place names.
 _HYPHENS = "\u05be\u2010\u2011\u2012\u2013\u2014\u2015-"
@@ -224,6 +230,14 @@ def admin_level(value: object) -> str:
         return str(int(float(text)))
     except (TypeError, ValueError):
         return text
+
+
+def is_regional_boundary_name(name: object) -> bool:
+    """True when an OSM boundary name denotes a regional council, subdistrict, or district."""
+    if name is None:
+        return False
+    text = str(name).strip()
+    return bool(text and _REGIONAL_BOUNDARY_RE.search(text))
 
 
 def place_is_settlement(place_type: object, level: object, category: str) -> bool:

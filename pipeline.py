@@ -164,6 +164,26 @@ def _core_wratio(osm_name: str, lamas_name: str) -> float:
     return float(fuzz.WRatio(core_osm, core_lamas))
 
 
+def _is_eligible_for_option3_ai(
+    osm_name: str,
+    best_lamas_id: object,
+    best_lamas_name: object,
+    target_city_key: str,
+    min_core_wratio: float = AI_MIN_CORE_WRATIO,
+) -> bool:
+    """True only when a <90% street's top-1 fuzzy candidate could pass Option 3."""
+    if not _clean_id(best_lamas_id):
+        return False
+    lamas_label = "" if pd.isna(best_lamas_name) else str(best_lamas_name)
+    if not lamas_label.strip():
+        return False
+    if target_city_key and canonical_key(lamas_label) == target_city_key:
+        return False
+    if not _digits_compatible(osm_name, lamas_label):
+        return False
+    return _core_wratio(osm_name, lamas_label) >= min_core_wratio
+
+
 def _finalize_mappings(
     candidates_df: pd.DataFrame,
     ai_decisions_df: pd.DataFrame,
@@ -446,9 +466,19 @@ def run_pipeline(
             (candidates_df["status"] != "CONFIDENT")
             & (candidates_df["osm_id"].isin(osm_gdf_in_city["osm_id"]))
         ].merge(osm_gdf_in_city[["osm_id", "normalized_name"]], on="osm_id")
-        unmatched_names = (
-            unmatched_rows["normalized_name"].dropna().drop_duplicates().tolist()
-        )
+        unique_unmatched = unmatched_rows.dropna(
+            subset=["normalized_name"]
+        ).drop_duplicates(subset=["normalized_name"])
+        unmatched_names = [
+            row.normalized_name
+            for row in unique_unmatched.itertuples(index=False)
+            if _is_eligible_for_option3_ai(
+                row.normalized_name,
+                row.best_LAMAS_id,
+                row.best_LAMAS_name,
+                target_city_key,
+            )
+        ]
 
         if unmatched_names:
             try:

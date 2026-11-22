@@ -36,10 +36,13 @@ from settlement_names import (
     ALIASES_FILE as ALIASES_PATH,
     CITY_ADMIN_LEVEL,
     MAX_SETTLEMENT_BBOX_SPAN_DEG as MAX_SPAN_DEG,
+    MIN_SETTLEMENT_HALF_HEIGHT_LAT as MIN_PLACE_HALF_HEIGHT_LAT,
+    MIN_SETTLEMENT_HALF_WIDTH_LON as MIN_PLACE_HALF_WIDTH_LON,
     NON_SETTLEMENT_ADMIN_LEVELS,
     admin_level as _admin_level,
     canonical_key,
     fuzzy_form,
+    is_regional_boundary_name,
     load_aliases,
     load_osm_id_overrides,
     name_variants,
@@ -54,9 +57,9 @@ CENTERS_FILE = os.path.join(ROOT, "config", "settlement_centers.json")
 STORE_PATH = os.path.join(DATA_DIR, "settlement_matches.json")
 REPORT_PATH = os.path.join(ROOT, "batch_reports", "settlement_match_report.csv")
 
-# v3: Nominatim address-hierarchy guard added — v2 matches may include a
-# neighbourhood nested inside a differently named city.
-STORE_VERSION = 3
+# v4: polygon-over-node preference, regional-council/district exclusion, and
+# compact node-only fallback boxes.
+STORE_VERSION = 4
 MATCHED_TTL_DAYS = 90
 UNRESOLVED_TTL_DAYS = 7
 SCORE_CUTOFF = 88.0
@@ -65,10 +68,6 @@ NAME_COLUMNS = (
     "name:he", "name", "name:en", "name:ar", "alt_name",
     "official_name", "old_name", "short_name",
 )
-# A place node/way has no area; give it a minimum search box so street
-# extraction can actually find segments around it (~3.4 km x 3.3 km).
-MIN_PLACE_HALF_WIDTH_LON = 0.018
-MIN_PLACE_HALF_HEIGHT_LAT = 0.015
 
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -190,6 +189,7 @@ class OSMPlace:
     is_settlement: bool = True
     inside_city: bool = False
     span_deg: float = 0.0
+    has_polygon: bool = False
 
     @property
     def id_key(self) -> str:
@@ -204,10 +204,13 @@ def _city_polygons(boundaries: Any):
     for _, row in boundaries.iterrows():
         if _admin_level(row.get("admin_level")) != CITY_ADMIN_LEVEL:
             continue
+        names = _row_names(row)
+        if any(is_regional_boundary_name(n) for n in names):
+            continue
         geometry = row.get("geometry")
         if geometry is None or getattr(geometry, "is_empty", True):
             continue
-        keys = {canonical_key(name) for name in _row_names(row)}
+        keys = {canonical_key(name) for name in names}
         polygons.append((geometry, keys))
     return polygons
 
@@ -250,9 +253,13 @@ def build_osm_places(
             try:
                 point = geometry.representative_point()
                 minx, miny, maxx, maxy = geometry.bounds
-                if category == "place":
-                    # Point features (and very small place ways) would produce
-                    # a zero-area bbox downstream -> no streets extracted.
+                has_polygon = getattr(geometry, "geom_type", "") in {
+                    "Polygon",
+                    "MultiPolygon",
+                }
+                if category == "place" and not has_polygon:
+                    # Point features would produce a zero-area bbox downstream;
+                    # pad only points, never exact settlement polygons.
                     center_x, center_y = (minx + maxx) / 2, (miny + maxy) / 2
                     minx = min(minx, center_x - MIN_PLACE_HALF_WIDTH_LON)
                     maxx = max(maxx, center_x + MIN_PLACE_HALF_WIDTH_LON)
@@ -272,8 +279,11 @@ def build_osm_places(
             admin_level = _admin_level(row.get("admin_level"))
             is_settlement = place_is_settlement(place_type, admin_level, category)
             span_deg = max(maxy - miny, maxx - minx)
-            if category == "boundary" and span_deg > MAX_SPAN_DEG:
-                is_settlement = False  # district / regional council, not a town
+            if category == "boundary":
+                if span_deg > MAX_SPAN_DEG or any(
+                    is_regional_boundary_name(n) for n in names
+                ):
+                    is_settlement = False  # district / regional council, not a town
             name_keys = {canonical_key(name) for name in names}
             inside_city = (
                 category == "place"
@@ -293,6 +303,7 @@ def build_osm_places(
                 is_settlement=is_settlement,
                 inside_city=inside_city,
                 span_deg=span_deg,
+                has_polygon=has_polygon,
             )
             existing = records.get(key)
             if existing is None:
@@ -301,6 +312,7 @@ def build_osm_places(
                 existing.names = list(dict.fromkeys([*existing.names, *names]))
                 existing.is_settlement = existing.is_settlement or is_settlement
                 existing.inside_city = existing.inside_city and inside_city
+                existing.has_polygon = existing.has_polygon or has_polygon
                 if category == "place":
                     existing.place_type = place_type
     return list(records.values())
@@ -345,9 +357,10 @@ class SettlementNameIndex:
 
     @staticmethod
     def _rank(place: OSMPlace) -> tuple:
-        level_rank = {"8": 0, "7": 1, "6": 2}.get(place.admin_level, 3)
+        poly_rank = 0 if place.has_polygon else 1
         type_rank = 0 if place.category == "boundary" else 1
-        return (level_rank, type_rank, place.id_key)
+        level_rank = {"8": 0, "7": 1}.get(place.admin_level, 2)
+        return (poly_rank, type_rank, level_rank, place.id_key)
 
     @staticmethod
     def _describe(place: OSMPlace) -> str:
@@ -432,9 +445,18 @@ class SettlementNameIndex:
                     distance_m=self._distance(place, center),
                     matched_name=variant,
                 )
-                rank = (decision.distance_m or 0.0, self._rank(place))
+                dist_m = decision.distance_m or 0.0
+                # Within 3 km of the LAMAS centre, always prefer an exact polygon
+                # (boundary or place area) over a bare place node that happens to
+                # sit slightly closer to the nominal centre point.
+                near_bucket = 0 if dist_m <= 3000.0 else 1
+                rank = (near_bucket, self._rank(place), dist_m)
                 best_rank = (
-                    (best_exact.distance_m or 0.0, self._rank(best_exact.place))
+                    (
+                        0 if (best_exact.distance_m or 0.0) <= 3000.0 else 1,
+                        self._rank(best_exact.place),
+                        best_exact.distance_m or 0.0,
+                    )
                     if best_exact is not None and best_exact.place is not None
                     else None
                 )
@@ -460,7 +482,9 @@ class SettlementNameIndex:
                         continue
                     dist = self._distance(place, center)
                     # A near-by 92 beats a far-away 96: proximity is evidence.
-                    effective = score - min((dist or 0.0) / 1000.0, 25.0) * 0.4
+                    # Also prefer polygon features over point nodes on ties.
+                    poly_bonus = 2.0 if place.has_polygon else 0.0
+                    effective = score + poly_bonus - min((dist or 0.0) / 1000.0, 25.0) * 0.4
                     if effective > best_effective:
                         best_effective = effective
                         best = MatchDecision(
