@@ -9,13 +9,13 @@ from generate_svg import create_svg_from_gdf
 
 
 class TestGenerateSvg(unittest.TestCase):
-    def test_ai_suggestion_is_not_rendered_as_an_approved_match(self):
+    def test_ai_approved_match_is_rendered_with_lamas_id(self):
         gdf = gpd.GeoDataFrame(
             {
-                "osm_name": ["רחוב מוצע"],
-                "final_LAMAS_id": [None],
+                "osm_name": ["רחוב ליה"],
+                "final_LAMAS_id": ["123"],
                 "ai_suggested_LAMAS_id": ["123"],
-                "mapping_status": ["AI_PROPOSED"],
+                "mapping_status": ["APPROVED_AI"],
                 "geometry": [LineString([(34.8, 32.0), (34.801, 32.001)])],
             },
             crs="EPSG:4326",
@@ -33,8 +33,7 @@ class TestGenerateSvg(unittest.TestCase):
             os.chdir(original_dir)
 
         self.assertIn('stroke="#00BFFF"', svg)
-        self.assertIn("AI suggestion, not approved: 123", svg)
-        self.assertNotIn("LAMAS ID: 123", svg)
+        self.assertIn("LAMAS ID: 123 (AI approved)", svg)
 
 
 if __name__ == "__main__":

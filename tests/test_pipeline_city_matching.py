@@ -17,13 +17,6 @@ class TestPipelineCityMatching(unittest.TestCase):
             "best_score": [100.0],
             "best_LAMAS_id": ["101"],
             "best_LAMAS_name": ["רחוב הרצל"],
-            "all_candidates": ["ID: 101, Score: 100.0"],
-            "candidate_details": [[{
-                "lamas_id": "101", "lamas_name": "רחוב הרצל",
-                "score": 100.0, "aliases": ["רחוב הרצל"],
-            }]],
-            "geographic_validation": ["EXACT_NAME_ANCHOR"],
-            "geographic_distance_m": [0.0],
         })
 
     def test_canonical_city_key_matches_lamas_rows_despite_name_mismatch(self):
@@ -50,12 +43,7 @@ class TestPipelineCityMatching(unittest.TestCase):
 
         with (
             patch.object(pipeline, "load_or_fetch_osm", return_value=osm_gdf),
-            patch.object(pipeline, "build_adjacency_map", return_value={}),
             patch.object(pipeline, "find_fuzzy_candidates", side_effect=capture),
-            patch.object(
-                pipeline, "validate_candidate_geography",
-                side_effect=lambda osm, candidates, adjacency: candidates,
-            ),
             patch.object(
                 pipeline, "save_intermediate_df",
                 side_effect=lambda df, name, place: saved.setdefault(name, df.copy()),
@@ -75,8 +63,7 @@ class TestPipelineCityMatching(unittest.TestCase):
         self.assertEqual(status, PipelineStatus.SUCCESS)
         self.assertEqual(len(captured["lamas_rows"]), 1)
         self.assertIn("diagnostic_report", saved)
-        self.assertIn("step4_candidate_scores", saved)
-        # Bulky pickles are skipped, CSV audit outputs are kept.
+        # Bulky pickles are skipped, CSV audit output is kept.
         self.assertNotIn("step1_lamas_raw", saved)
         self.assertNotIn("step2_osm_normalized", saved)
         self.assertEqual(

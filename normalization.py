@@ -1,15 +1,15 @@
 """
-Street Name Normalization and Fuzzy Matching Module
+Street Name Normalization and Fuzzy Matching Module.
 
-This module provides functions for:
-1. Normalizing Hebrew street names (expanding abbreviations, removing punctuation)
-2. Finding fuzzy match candidates between OSM and LAMAS street data
-3. Grouping all synonym / optional names per LAMAS_id for matching and AI context
+Provides:
+1. Hebrew street-name normalization (abbreviations, punctuation, whitespace)
+2. Grouping all LAMAS display names / synonyms by LAMAS_id
+3. Single-threshold fuzzy matching (>= 90% confident; everything below goes to AI)
 """
 
 import logging
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -17,32 +17,21 @@ from rapidfuzz import fuzz, process
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_CONFIDENT_THRESHOLD = 90.0
+
 
 def normalize_street_name(name):
-    """
-    Normalize a Hebrew street name by:
-    1. Expanding common abbreviations (רח' -> רחוב, שד' -> שדרות, etc.)
-    2. Removing punctuation and extra whitespace
-    3. Standardizing format
-
-    Args:
-        name: Street name string (can be None or NaN)
-
-    Returns:
-        Normalized street name string, or None if input is invalid
-    """
+    """Normalize a Hebrew street name (abbreviations, punctuation, whitespace)."""
     if pd.isna(name) or name is None:
         return None
 
     name = str(name).strip()
-
     if not name:
         return None
 
     typo_fixes = [
         (r"\bסמתט\b", "סמטת"),
     ]
-
     for pattern, replacement in typo_fixes:
         name = re.sub(pattern, replacement, name)
 
@@ -61,7 +50,6 @@ def normalize_street_name(name):
         (r"\bסמט\'", "סמטת"),
         (r"\bסמט\.", "סמטת"),
     ]
-
     for pattern, replacement in abbreviations:
         name = re.sub(pattern, replacement, name)
 
@@ -74,12 +62,7 @@ def normalize_street_name(name):
 
 
 def build_lamas_aliases(lamas_df: pd.DataFrame) -> Dict[str, List[str]]:
-    """
-    Group all LAMAS street names (including synonyms) by LAMAS_id.
-
-    Returns:
-        {lamas_id: [name1, name2, ...]} sorted unique display names.
-    """
+    """Group all LAMAS street names (including synonyms) by LAMAS_id."""
     if lamas_df is None or lamas_df.empty:
         return {}
     aliases: Dict[str, List[str]] = {}
@@ -96,175 +79,68 @@ def build_lamas_aliases(lamas_df: pd.DataFrame) -> Dict[str, List[str]]:
     return aliases
 
 
-def format_city_lexicon(aliases_by_id: Dict[str, List[str]], max_entries: int = 400) -> str:
-    """
-    Compact text lexicon of all city LAMAS ids and their names/synonyms for AI context.
-    Truncates with a note if the city is very large.
-    """
-    if not aliases_by_id:
-        return '(אין נתוני למ"ס לעיר זו)'
-    items = sorted(aliases_by_id.items(), key=lambda kv: kv[0])
-    truncated = len(items) > max_entries
-    if truncated:
-        items = items[:max_entries]
-    lines = [f"ID {lid}: {', '.join(names)}" for lid, names in items]
-    text = "\n".join(lines)
-    if truncated:
-        text += f'\n… (קוצץ; סה"כ {len(aliases_by_id)} רחובות בעיר)'
-    return text
-
-
-def select_ai_candidates(
-    candidates: list[dict],
-    osm_street_name: str,
-    max_candidates: int = 8,
-    max_aliases_per_candidate: int = 3,
-    max_candidate_chars: int = 2400,
-) -> list[dict]:
-    """Keep only the highest-ranked candidates and the most relevant aliases."""
-    normalized_osm_name = normalize_street_name(osm_street_name) or str(osm_street_name)
-    selected = []
-    used_chars = 0
-
-    for candidate in candidates[:max_candidates]:
-        aliases = candidate.get("aliases") or candidate.get("names") or [
-            candidate.get("matched_alias") or candidate.get("name", "")
-        ]
-        aliases = [
-            str(alias).strip()
-            for alias in aliases
-            if alias is not None and str(alias).strip()
-        ]
-        matched_alias = candidate.get("matched_alias")
-        aliases.sort(
-            key=lambda alias: (
-                alias != matched_alias,
-                -fuzz.ratio(
-                    normalized_osm_name,
-                    normalize_street_name(alias) or alias,
-                ),
-                alias,
-            )
-        )
-
-        selected_aliases = []
-        for alias in aliases:
-            if len(selected_aliases) >= max_aliases_per_candidate:
-                break
-            bounded_alias = alias[:120]
-            if used_chars + len(bounded_alias) > max_candidate_chars:
-                break
-            selected_aliases.append(bounded_alias)
-            used_chars += len(bounded_alias)
-
-        if not selected_aliases:
-            break
-        selected.append(
-            {
-                "id": str(candidate.get("lamas_id", candidate.get("id"))),
-                "name": selected_aliases[0],
-                "names": selected_aliases,
-                "score": float(candidate.get("score", 0.0)),
-            }
-        )
-        used_chars += 40
-
-    return selected
-
-
 def find_fuzzy_candidates(
-    osm_gdf,
-    lamas_df,
-    confident_threshold: int = 70,
-    needs_ai_threshold: int = 50,
-):
-    """
-    Find fuzzy match candidates between OSM and LAMAS street data.
+    osm_gdf: pd.DataFrame,
+    lamas_df: pd.DataFrame,
+    confident_threshold: float = DEFAULT_CONFIDENT_THRESHOLD,
+) -> pd.DataFrame:
+    """Match OSM street names against city LAMAS streets with one threshold.
 
-    Matching is done per LAMAS_id: score is the max over all synonym names
-    of that ID. Candidate formatting includes every known alias for the ID.
-
-    RapidFuzz computes the three score matrices in native code; Python then
-    visits only name pairs that pass the candidate threshold.
+    Streets scoring >= ``confident_threshold`` (default 90) are marked
+    ``CONFIDENT``. Every named OSM street below the threshold is marked
+    ``NEEDS_AI`` so the whole city's remainder can be resolved by AI.
     """
+    empty_result = lambda: pd.DataFrame(
+        {
+            "osm_id": osm_gdf["osm_id"].tolist(),
+            "status": ["MISSING"] * len(osm_gdf),
+            "best_score": [0.0] * len(osm_gdf),
+            "best_LAMAS_id": [None] * len(osm_gdf),
+            "best_LAMAS_name": [None] * len(osm_gdf),
+        }
+    )
+
     unique_osm_streets = osm_gdf[["normalized_name"]].drop_duplicates().dropna()
     if unique_osm_streets.empty:
-        return pd.DataFrame(
-            {
-                "osm_id": osm_gdf["osm_id"].tolist(),
-                "status": ["MISSING"] * len(osm_gdf),
-                "best_score": [0.0] * len(osm_gdf),
-                "best_LAMAS_id": [None] * len(osm_gdf),
-                "best_LAMAS_name": [None] * len(osm_gdf),
-                "all_candidates": [None] * len(osm_gdf),
-                "candidate_details": [[] for _ in range(len(osm_gdf))],
-            }
-        )
+        return empty_result()
 
-    aliases_by_id = build_lamas_aliases(lamas_df)
     normalized_lamas_df = lamas_df.dropna(
         subset=["LAMAS_id", "normalized_name"]
     ).copy()
-
     if normalized_lamas_df.empty:
-        return pd.DataFrame(
-            {
-                "osm_id": osm_gdf["osm_id"].tolist(),
-                "status": ["MISSING"] * len(osm_gdf),
-                "best_score": [0.0] * len(osm_gdf),
-                "best_LAMAS_id": [None] * len(osm_gdf),
-                "best_LAMAS_name": [None] * len(osm_gdf),
-                "all_candidates": [None] * len(osm_gdf),
-                "candidate_details": [[] for _ in range(len(osm_gdf))],
-            }
-        )
+        return empty_result()
 
-    normalized_lamas_df["normalized_name"] = normalized_lamas_df["normalized_name"].astype(str)
+    normalized_lamas_df["normalized_name"] = normalized_lamas_df[
+        "normalized_name"
+    ].astype(str)
     normalized_lamas_df["LAMAS_id"] = normalized_lamas_df["LAMAS_id"].astype(str)
 
     unique_name_to_ids: Dict[str, List[str]] = {}
     display_name_by_id: Dict[str, str] = {}
-    display_name_by_normalized: Dict[str, str] = {}
     id_order: Dict[str, int] = {}
-    lamas_columns = normalized_lamas_df[
+    for lamas_id, normalized_name, display_name in normalized_lamas_df[
         ["LAMAS_id", "normalized_name", "LAMAS_name"]
-    ]
-    for lamas_id, normalized_name, display_name in lamas_columns.itertuples(
-        index=False, name=None
-    ):
+    ].itertuples(index=False, name=None):
         lid = str(lamas_id)
         name = str(normalized_name)
-        if name not in unique_name_to_ids:
-            unique_name_to_ids[name] = []
-        if lid not in unique_name_to_ids[name]:
-            unique_name_to_ids[name].append(lid)
+        ids = unique_name_to_ids.setdefault(name, [])
+        if lid not in ids:
+            ids.append(lid)
         if lid not in display_name_by_id and pd.notna(display_name):
             display_name_by_id[lid] = str(display_name)
-        if name not in display_name_by_normalized and pd.notna(display_name):
-            display_name_by_normalized[name] = str(display_name)
         id_order.setdefault(lid, len(id_order))
 
     lamas_name_candidates = list(unique_name_to_ids)
     osm_names = unique_osm_streets["normalized_name"].astype(str).tolist()
 
     logger.info(
-        "Processing %s unique OSM street names against %s LAMAS normalized names (%s LAMAS rows)...",
-        len(unique_osm_streets),
+        "Fuzzy matching %s unique OSM street names against %s LAMAS names (threshold=%.1f)...",
+        len(osm_names),
         len(lamas_name_candidates),
-        len(normalized_lamas_df),
+        confident_threshold,
     )
 
-    street_name_results = {}
-
-    def _fmt_candidates(matches):
-        lines = []
-        for match in matches[:8]:
-            alias_str = " | ".join(match.get("aliases") or [match["lamas_name"]])
-            lines.append(
-                f"ID: {match['lamas_id']}, Names: [{alias_str}], Score: {match['score']:.1f}"
-            )
-        return "\n".join(lines)
-
+    street_name_results: Dict[str, dict] = {}
     batch_size = 128
     for batch_start in range(0, len(osm_names), batch_size):
         batch_names = osm_names[batch_start : batch_start + batch_size]
@@ -276,103 +152,60 @@ def find_fuzzy_candidates(
             workers=1,
         )
         score_matrix *= 0.3
-        score_matrix += process.cdist(
-            batch_names,
-            lamas_name_candidates,
-            scorer=fuzz.token_sort_ratio,
-            dtype=np.float64,
-            workers=1,
-        ) * 0.3
-        score_matrix += process.cdist(
-            batch_names,
-            lamas_name_candidates,
-            scorer=fuzz.token_set_ratio,
-            dtype=np.float64,
-            workers=1,
-        ) * 0.4
+        score_matrix += (
+            process.cdist(
+                batch_names,
+                lamas_name_candidates,
+                scorer=fuzz.token_sort_ratio,
+                dtype=np.float64,
+                workers=1,
+            )
+            * 0.3
+        )
+        score_matrix += (
+            process.cdist(
+                batch_names,
+                lamas_name_candidates,
+                scorer=fuzz.token_set_ratio,
+                dtype=np.float64,
+                workers=1,
+            )
+            * 0.4
+        )
 
         for row_index, osm_name in enumerate(batch_names):
-            candidate_matches: Dict[str, dict] = {}
-            for name_index in np.flatnonzero(score_matrix[row_index] >= needs_ai_threshold):
-                lamas_name = lamas_name_candidates[name_index]
-                score = float(score_matrix[row_index, name_index])
-                for lid in unique_name_to_ids[lamas_name]:
-                    existing = candidate_matches.get(lid)
-                    if existing is None or score > existing["score"]:
-                        candidate_matches[lid] = {
-                            "score": score,
-                            "lamas_id": lid,
-                            "lamas_name": display_name_by_id.get(lid, lamas_name),
-                            "matched_alias": display_name_by_normalized.get(
-                                lamas_name, lamas_name
-                            ),
-                            "aliases": aliases_by_id.get(
-                                lid, [display_name_by_id.get(lid, lamas_name)]
-                            ),
-                        }
-
-            matches = sorted(
-                candidate_matches.values(),
-                key=lambda candidate: (
-                    -candidate["score"],
-                    id_order[candidate["lamas_id"]],
+            row_scores = score_matrix[row_index]
+            best_score = float(row_scores.max())
+            best_indices = np.flatnonzero(row_scores == best_score)
+            best_lid = min(
+                (
+                    lid
+                    for idx in best_indices
+                    for lid in unique_name_to_ids[lamas_name_candidates[idx]]
                 ),
+                key=id_order.__getitem__,
             )
-
-            if not matches:
-                status = "MISSING"
-                best_score = 0
-                best_lamas_id = None
-                best_lamas_name = None
-                all_candidates = None
-                candidate_details = []
-            elif len(matches) == 1 and matches[0]["score"] >= confident_threshold:
-                status = "CONFIDENT"
-                best_score = matches[0]["score"]
-                best_lamas_id = matches[0]["lamas_id"]
-                best_lamas_name = matches[0]["lamas_name"]
-                all_candidates = _fmt_candidates(matches)
-                candidate_details = matches
-            elif matches[0]["score"] >= confident_threshold and len(matches) > 1:
-                if matches[0]["score"] - matches[1]["score"] >= 5:
-                    status = "CONFIDENT"
-                else:
-                    status = "NEEDS_AI"
-                best_score = matches[0]["score"]
-                best_lamas_id = matches[0]["lamas_id"]
-                best_lamas_name = matches[0]["lamas_name"]
-                all_candidates = _fmt_candidates(matches)
-                candidate_details = matches
-            else:
-                status = "NEEDS_AI"
-                best_score = matches[0]["score"]
-                best_lamas_id = matches[0]["lamas_id"]
-                best_lamas_name = matches[0]["lamas_name"]
-                all_candidates = _fmt_candidates(matches)
-                candidate_details = matches
-
+            best_lamas_name = display_name_by_id.get(
+                best_lid, lamas_name_candidates[best_indices[0]]
+            )
+            status = "CONFIDENT" if best_score >= confident_threshold else "NEEDS_AI"
             street_name_results[osm_name] = {
                 "status": status,
                 "best_score": best_score,
-                "best_LAMAS_id": best_lamas_id,
+                "best_LAMAS_id": best_lid,
                 "best_LAMAS_name": best_lamas_name,
-                "all_candidates": all_candidates,
-                "candidate_details": candidate_details,
             }
 
     results = []
     for osm_id, osm_name in zip(osm_gdf["osm_id"], osm_gdf["normalized_name"]):
-
         if pd.isna(osm_name) or osm_name not in street_name_results:
             results.append(
                 {
                     "osm_id": osm_id,
                     "status": "MISSING",
-                    "best_score": 0,
+                    "best_score": 0.0,
                     "best_LAMAS_id": None,
                     "best_LAMAS_name": None,
-                    "all_candidates": None,
-                    "candidate_details": [],
                 }
             )
         else:
@@ -381,7 +214,6 @@ def find_fuzzy_candidates(
             results.append(result)
 
     candidates_df = pd.DataFrame(results)
-
     status_counts = candidates_df["status"].value_counts()
     logger.info(
         "Fuzzy matching complete: CONFIDENT=%s, NEEDS_AI=%s, MISSING=%s",
@@ -389,5 +221,4 @@ def find_fuzzy_candidates(
         status_counts.get("NEEDS_AI", 0),
         status_counts.get("MISSING", 0),
     )
-
     return candidates_df

@@ -24,19 +24,36 @@ def calculate_diagnostics(
     approved_matches = diagnostic_df_full[
         diagnostic_df_full["final_LAMAS_id"].notna()
     ]
-    confident_matches = approved_matches["normalized_name"].nunique()
-    ai_proposed_matches = 0
-    if "ai_suggested_LAMAS_id" in diagnostic_df_full:
-        ai_proposed_matches = diagnostic_df_full[
-            diagnostic_df_full["ai_suggested_LAMAS_id"].notna()
-        ]["normalized_name"].nunique()
-    geographic_review_matches = 0
+    total_matched = approved_matches["normalized_name"].nunique()
+
     if "mapping_status" in diagnostic_df_full:
+        confident_matches = diagnostic_df_full[
+            (diagnostic_df_full["mapping_status"] == "APPROVED_FUZZY")
+            & diagnostic_df_full["final_LAMAS_id"].notna()
+        ]["normalized_name"].nunique()
+        ai_resolved_matches = diagnostic_df_full[
+            (diagnostic_df_full["mapping_status"] == "APPROVED_AI")
+            & diagnostic_df_full["final_LAMAS_id"].notna()
+        ]["normalized_name"].nunique()
+        if ai_resolved_matches == 0 and "ai_suggested_LAMAS_id" in diagnostic_df_full:
+            ai_resolved_matches = diagnostic_df_full[
+                diagnostic_df_full["ai_suggested_LAMAS_id"].notna()
+            ]["normalized_name"].nunique()
         geographic_review_matches = diagnostic_df_full[
             diagnostic_df_full["mapping_status"] == "GEOGRAPHIC_REVIEW"
         ]["normalized_name"].nunique()
+    else:
+        confident_matches = total_matched
+        ai_resolved_matches = (
+            diagnostic_df_full[diagnostic_df_full["ai_suggested_LAMAS_id"].notna()][
+                "normalized_name"
+            ].nunique()
+            if "ai_suggested_LAMAS_id" in diagnostic_df_full
+            else 0
+        )
+        geographic_review_matches = 0
 
-    total_matched = confident_matches
+    ai_proposed_matches = ai_resolved_matches
     unmatched_osm_streets = total_osm_streets - total_matched
 
     matched_osm_names = set(

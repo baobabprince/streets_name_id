@@ -6,19 +6,18 @@ import pipeline
 
 class TestPipelineResolverCache(unittest.TestCase):
     def setUp(self):
-        self.original_cache = pipeline._LOCAL_RESOLVER_CACHE.copy()
-        pipeline._LOCAL_RESOLVER_CACHE.clear()
+        self.original_resolver = pipeline._LAYA_RESOLVER
+        pipeline._LAYA_RESOLVER = None
 
     def tearDown(self):
-        pipeline._LOCAL_RESOLVER_CACHE.clear()
-        pipeline._LOCAL_RESOLVER_CACHE.update(self.original_cache)
+        pipeline._LAYA_RESOLVER = self.original_resolver
 
-    def test_reuses_initialized_resolver_for_same_model(self):
+    def test_reuses_initialized_laya_resolver(self):
         resolver = Mock()
         resolver.is_available.return_value = True
         with patch("pipeline.LayaAIResolver", return_value=resolver) as resolver_class:
-            first = pipeline._get_local_resolver("laya")
-            second = pipeline._get_local_resolver("laya")
+            first = pipeline._get_laya_resolver()
+            second = pipeline._get_laya_resolver()
 
         self.assertIs(first, resolver)
         self.assertIs(second, resolver)
@@ -28,8 +27,8 @@ class TestPipelineResolverCache(unittest.TestCase):
         resolver = Mock()
         resolver.is_available.return_value = False
         with patch("pipeline.LayaAIResolver", return_value=resolver) as resolver_class:
-            self.assertIsNone(pipeline._get_local_resolver("laya"))
-            self.assertIsNone(pipeline._get_local_resolver("laya"))
+            self.assertIsNone(pipeline._get_laya_resolver())
+            self.assertIsNone(pipeline._get_laya_resolver())
 
         self.assertEqual(resolver_class.call_count, 2)
 

@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 from typing import Any, Callable
 
 import osmnx as ox
@@ -184,6 +185,12 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
                     place,
                 )
                 return pbf_gdf
+            if os.environ.get("OSM_PBF_ONLY") == "1":
+                logger.info(
+                    "Local PBF returned no named streets for %s (OSM_PBF_ONLY=1; skipping Overpass).",
+                    place,
+                )
+                return None
             logger.info("Local PBF did not return streets for %s; attempting Overpass...", place)
         except Exception as pbf_err:
             logger.warning("Local PBF extraction encountered error (%s); falling back to Overpass", pbf_err)

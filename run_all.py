@@ -48,7 +48,6 @@ def _apply_presets(args) -> None:
         args.force = True
     if getattr(args, "fast", False):
         args.use_ai = False
-        args.no_local_ai = True
         args.skip_html = True
         args.skip_dashboard = True
         args.no_intermediates = True

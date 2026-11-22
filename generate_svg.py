@@ -48,7 +48,7 @@ def create_svg_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
         mapping_status = row.get("mapping_status", "")
         if mapping_status == "GEOGRAPHIC_REVIEW":
             stroke_color, stroke_width = "#c084fc", "3"
-        elif mapping_status == "AI_PROPOSED":
+        elif mapping_status in ("APPROVED_AI", "AI_PROPOSED"):
             stroke_color, stroke_width = "#00BFFF", "3"
         else:
             stroke_color = "black" if is_matched else "red"
@@ -66,7 +66,8 @@ def create_svg_from_gdf(gdf: gpd.GeoDataFrame, place_name: str):
                 safe_name = re.sub(r'[<&">]', '', name)
                 # Include LAMAS ID in title for matched roads
                 if is_matched:
-                    LAMAS_info = f" | LAMAS ID: {row['final_LAMAS_id']} (approved)"
+                    suffix = "AI approved" if mapping_status == "APPROVED_AI" else "approved"
+                    LAMAS_info = f" | LAMAS ID: {row['final_LAMAS_id']} ({suffix})"
                 elif pd.notna(row.get("ai_suggested_LAMAS_id")):
                     LAMAS_info = (
                         f" | AI suggestion, not approved: "

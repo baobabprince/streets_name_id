@@ -2,20 +2,22 @@
 Street name mapping pipeline orchestrator.
 
 Maps OpenStreetMap street names to official LAMAS (CBS) street IDs using
-normalization, fuzzy matching, topology, and optional AI resolution.
+normalization, 90% fuzzy matching, and optional whole-city Laya AI resolution
+for everything below 90%.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
+import re
 import sys
 import traceback
 from enum import Enum
 
 import pandas as pd
+from rapidfuzz import fuzz
 
 from data_loader import (
     city_key,
@@ -25,15 +27,12 @@ from data_loader import (
     save_intermediate_df,
 )
 from diagnostics import calculate_diagnostics
-from gemini_client import API_KEY, get_ai_resolution
-from geospatial_validation import validate_candidate_geography
 from laya_ai_resolver import LayaAIResolver
-from local_ai_resolver import LocalAIResolver
-from map_of_adjacents import build_adjacency_map
 from normalization import (
+    DEFAULT_CONFIDENT_THRESHOLD,
+    build_lamas_aliases,
     find_fuzzy_candidates,
     normalize_street_name,
-    select_ai_candidates,
 )
 from OSM_streets import place_name as OSM_PLACE_NAME
 from settlement_names import canonical_key
@@ -41,26 +40,34 @@ from settlement_names import canonical_key
 logger = logging.getLogger(__name__)
 
 ISRAEL_BOUNDS = (29.0, 34.0, 33.7, 36.0)
-_LOCAL_RESOLVER_CACHE: dict[str, LayaAIResolver | LocalAIResolver] = {}
-# CSV audit outputs are always kept; bulky pickle intermediates are optional.
-ESSENTIAL_STEPS = {"diagnostic_report", "step4_candidate_scores"}
+_LAYA_RESOLVER: LayaAIResolver | None = None
+ESSENTIAL_STEPS = {"diagnostic_report"}
+
+# Conservative AI approval guardrails (Option 3: ~95-96% precision, zero magnets)
+AI_MIN_CONFIDENCE = 0.70
+AI_MIN_CORE_WRATIO = 75.0
+AI_MAX_RAW_HITS_PER_ID = 10
+AI_MAX_APPROVED_HITS_PER_ID = 2
+
+_STREET_PREFIX_RE = re.compile(
+    r"^(?:רחוב|רח|שדרות|שדרת|שד|דרך|דר|סמטת|סמטה|סמ|משעול|כיכר|ככר|שביל|"
+    r"מעלה|מעלות|טיילת|גשר|רחבת|נתיב|מדרגות|צומת|מחלף|מעבר(?:\s+לרחוב|\s+ל)?|"
+    r"חניון|פארק|גן)\s+"
+)
+_DIGIT_RE = re.compile(r"\d+")
 
 
 def _save_step(
     df: pd.DataFrame, step_name: str, identifier: str, save_intermediates: bool
 ) -> None:
-    """Skip bulky intermediate pickles unless they were explicitly requested."""
+    """Skip bulky intermediate pickles unless explicitly requested."""
     if not save_intermediates and step_name not in ESSENTIAL_STEPS:
         return
     save_intermediate_df(df, step_name, identifier)
 
 
 def _filter_lamas_by_city(LAMAS_df: pd.DataFrame, target_key: str) -> pd.DataFrame:
-    """Join LAMAS streets to a settlement using canonical city keys.
-
-    OSM and LAMAS spell city names differently; falling back to a tight fuzzy
-    key match prevents a whole city from silently producing zero LAMAS rows.
-    """
+    """Join LAMAS streets to a settlement using canonical city keys."""
     rows = LAMAS_df[LAMAS_df["city_key"] == target_key]
     if not rows.empty or not target_key:
         return rows
@@ -74,7 +81,9 @@ def _filter_lamas_by_city(LAMAS_df: pd.DataFrame, target_key: str) -> pd.DataFra
         if best:
             logger.info(
                 "Fuzzy city key match: '%s' -> '%s' (%.1f)",
-                target_key, best[0], best[1],
+                target_key,
+                best[0],
+                best[1],
             )
             return LAMAS_df[LAMAS_df["city_key"] == best[0]]
     except Exception as exc:
@@ -98,103 +107,191 @@ def _setup_logging(level: int = logging.INFO) -> None:
         )
 
 
-def _get_local_resolver(local_ai_model: str):
-    """Reuse the initialized model across settlements handled by this process."""
-    resolver = _LOCAL_RESOLVER_CACHE.get(local_ai_model)
-    if resolver is not None:
-        return resolver
+def _get_laya_resolver() -> LayaAIResolver | None:
+    """Reuse one initialized Laya model across settlements in this process."""
+    global _LAYA_RESOLVER
+    if _LAYA_RESOLVER is not None:
+        return _LAYA_RESOLVER
 
-    resolver_class = LayaAIResolver if local_ai_model == "laya" else LocalAIResolver
-    resolver = resolver_class()
+    resolver = LayaAIResolver()
     if resolver.is_available():
-        _LOCAL_RESOLVER_CACHE[local_ai_model] = resolver
+        _LAYA_RESOLVER = resolver
         return resolver
     return None
 
 
-def _build_candidate_score_report(
-    candidates_df: pd.DataFrame, osm_gdf: pd.DataFrame
-) -> pd.DataFrame:
-    """Flatten every above-threshold fuzzy candidate for quality review."""
-    osm_columns = ["osm_id", "osm_name", "normalized_name", "city"]
-    available_osm_columns = [column for column in osm_columns if column in osm_gdf]
-    osm_by_id = {
-        str(row["osm_id"]): row
-        for row in osm_gdf[available_osm_columns].to_dict("records")
-    }
-
-    records = []
-    for row in candidates_df.to_dict("records"):
-        osm_info = osm_by_id.get(str(row["osm_id"]), {})
-        candidate_details = row.get("candidate_details")
-        if not isinstance(candidate_details, list):
-            continue
-        for rank, candidate in enumerate(candidate_details, start=1):
-            records.append(
-                {
-                    "osm_id": row["osm_id"],
-                    "osm_name": osm_info.get("osm_name"),
-                    "normalized_name": osm_info.get("normalized_name"),
-                    "city": osm_info.get("city"),
-                    "fuzzy_status": row.get("status"),
-                    "best_score": row.get("best_score"),
-                    "candidate_rank": rank,
-                    "lamas_id": candidate["lamas_id"],
-                    "lamas_name": candidate["lamas_name"],
-                    "matched_alias": candidate.get("matched_alias"),
-                    "fuzzy_score": candidate["score"],
-                    "aliases_json": json.dumps(
-                        candidate.get("aliases", []), ensure_ascii=False
-                    ),
-                    "geographic_validation": candidate.get(
-                        "geographic_validation"
-                    ),
-                    "geographic_distance_m": candidate.get(
-                        "geographic_distance_m"
-                    ),
-                }
-            )
-
-    columns = [
-        "osm_id",
-        "osm_name",
-        "normalized_name",
-        "city",
-        "fuzzy_status",
-        "best_score",
-        "candidate_rank",
-        "lamas_id",
-        "lamas_name",
-        "matched_alias",
-        "fuzzy_score",
-        "aliases_json",
-        "geographic_validation",
-        "geographic_distance_m",
-    ]
-    return pd.DataFrame(records, columns=columns)
+def _clean_id(value: object) -> str:
+    """Normalize an ID value to a clean string (handling None/NaN and float '.0')."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null", "nan", "<na>"}:
+        return ""
+    if text.endswith(".0") and text[:-2].lstrip("-").isdigit():
+        text = text[:-2]
+    return text
 
 
-def _merge_ai_suggestions(
-    candidates_df: pd.DataFrame, ai_decisions_df: pd.DataFrame
+def _strip_street_prefix(name: str) -> str:
+    """Strip leading generic Hebrew street-type prefixes for core-name similarity."""
+    text = (name or "").strip()
+    prev = None
+    while prev != text:
+        prev = text
+        text = _STREET_PREFIX_RE.sub("", text).strip()
+    return text
+
+
+def _digits_compatible(osm_name: str, lamas_name: str) -> bool:
+    """Reject numeric mismatches (e.g. 'גדוד 21' vs 'גדוד 22' or '5083' vs 'רח 7083')."""
+    da = _DIGIT_RE.findall(osm_name or "")
+    db = _DIGIT_RE.findall(lamas_name or "")
+    if not da and not db:
+        return True
+    return da == db
+
+
+def _core_wratio(osm_name: str, lamas_name: str) -> float:
+    """Compute WRatio between normalized prefix-stripped OSM and LAMAS names."""
+    norm_osm = normalize_street_name(osm_name) or ""
+    norm_lamas = normalize_street_name(lamas_name) or ""
+    core_osm = _strip_street_prefix(norm_osm)
+    core_lamas = _strip_street_prefix(norm_lamas)
+    if not core_osm or not core_lamas:
+        return 0.0
+    return float(fuzz.WRatio(core_osm, core_lamas))
+
+
+def _finalize_mappings(
+    candidates_df: pd.DataFrame,
+    ai_decisions_df: pd.DataFrame,
+    lamas_name_by_id: dict[str, str] | None = None,
+    city_name: str | None = None,
+    osm_names_by_id: dict[str, str] | None = None,
+    min_ai_confidence: float = AI_MIN_CONFIDENCE,
+    min_core_wratio: float = AI_MIN_CORE_WRATIO,
+    max_raw_hits_per_id: int = AI_MAX_RAW_HITS_PER_ID,
+    max_approved_hits_per_id: int = AI_MAX_APPROVED_HITS_PER_ID,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Keep AI outputs as proposals and create approved mappings from fuzzy matches only."""
-    merged = candidates_df.merge(ai_decisions_df, on="osm_id", how="left")
-    merged["osm_id"] = merged["osm_id"].astype(str)
-    has_ai_suggestion = merged["ai_suggested_LAMAS_id"].notna()
-    has_geographic_conflict = (
-        merged["geographic_validation"] == "DISTANT_FROM_EXACT_REFERENCE"
-    )
-    merged["mapping_status"] = "UNMATCHED"
-    merged.loc[merged["status"] == "NEEDS_AI", "mapping_status"] = "NEEDS_REVIEW"
-    merged.loc[has_ai_suggestion, "mapping_status"] = "AI_PROPOSED"
-    merged.loc[has_geographic_conflict, "mapping_status"] = "GEOGRAPHIC_REVIEW"
-    merged.loc[
-        (merged["status"] == "CONFIDENT") & ~has_geographic_conflict,
-        "mapping_status",
-    ] = "APPROVED_FUZZY"
+    """Approve >=90% fuzzy matches and strictly verified Laya AI matches.
 
-    approved = merged[merged["mapping_status"] == "APPROVED_FUZZY"].copy()
-    approved["final_LAMAS_id"] = approved["best_LAMAS_id"].astype(str)
+    An AI suggestion is approved into ``final_LAMAS_id`` only if ALL hold:
+    1. Laya agreed with the top-1 fuzzy candidate (``ai_suggested_LAMAS_id == best_LAMAS_id``).
+    2. ``ai_confidence >= min_ai_confidence`` (default 0.70).
+    3. Prefix-stripped ``WRatio >= min_core_wratio`` (default 75.0).
+    4. Any digits in the OSM and LAMAS names match identically.
+    5. The matched LAMAS street name is not the settlement's own name.
+    6. Magnet protection (counted per unique normalized street name):
+       raw AI hits on that LAMAS ID <= ``max_raw_hits_per_id`` (10) AND
+       post-filter AI hits on that LAMAS ID <= ``max_approved_hits_per_id`` (2).
+    """
+    left = candidates_df.copy()
+    right = ai_decisions_df.copy()
+    left["osm_id"] = left["osm_id"].astype(str)
+    if not right.empty:
+        right["osm_id"] = right["osm_id"].astype(str)
+    merged = left.merge(right, on="osm_id", how="left")
+
+    is_fuzzy = merged["status"] == "CONFIDENT"
+    ai_ids = merged["ai_suggested_LAMAS_id"].map(_clean_id)
+    best_ids = merged["best_LAMAS_id"].map(_clean_id)
+    has_ai = (~is_fuzzy) & (ai_ids != "")
+
+    if "normalized_name" in merged.columns:
+        street_keys = merged["normalized_name"].fillna("").astype(str)
+    elif osm_names_by_id:
+        street_keys = merged["osm_id"].map(osm_names_by_id).fillna("").astype(str)
+    else:
+        street_keys = pd.Series("", index=merged.index, dtype=str)
+    # Fallback to osm_id if a row has no street key so grouping never collapses unrelated blanks
+    street_keys_for_group = street_keys.where(street_keys != "", merged["osm_id"])
+
+    # Count raw unique OSM street names pointing to each AI-suggested LAMAS ID
+    raw_hits_by_id: dict[str, int] = {}
+    if has_ai.any():
+        raw_hits_by_id = (
+            pd.DataFrame({"ai_id": ai_ids[has_ai], "street": street_keys_for_group[has_ai]})
+            .groupby("ai_id")["street"]
+            .nunique()
+            .to_dict()
+        )
+
+    target_city_key = canonical_key(city_name) if city_name else ""
+    confs = pd.to_numeric(merged["ai_confidence"], errors="coerce").fillna(0.0)
+    lamas_lookup = {_clean_id(k): v for k, v in (lamas_name_by_id or {}).items()}
+
+    candidate_ai = pd.Series(False, index=merged.index, dtype=bool)
+    reject_reasons: dict[int, str] = {}
+
+    for idx in merged.index[has_ai]:
+        ai_id = ai_ids.at[idx]
+        best_id = best_ids.at[idx]
+        conf = float(confs.at[idx])
+        osm_label = street_keys.at[idx]
+        matched_lamas_name = lamas_lookup.get(ai_id) or str(merged.at[idx, "best_LAMAS_name"] or "")
+
+        if not best_id or ai_id != best_id:
+            reject_reasons[idx] = "disagreed_with_fuzzy_top1"
+        elif conf < min_ai_confidence:
+            reject_reasons[idx] = f"low_confidence({conf:.2f}<{min_ai_confidence:.2f})"
+        elif raw_hits_by_id.get(ai_id, 0) > max_raw_hits_per_id:
+            reject_reasons[idx] = f"magnet_raw_hits({raw_hits_by_id[ai_id]}>{max_raw_hits_per_id})"
+        elif target_city_key and canonical_key(matched_lamas_name) == target_city_key:
+            reject_reasons[idx] = "settlement_name_street"
+        elif osm_label and not _digits_compatible(osm_label, matched_lamas_name):
+            reject_reasons[idx] = "digit_mismatch"
+        elif osm_label and _core_wratio(osm_label, matched_lamas_name) < min_core_wratio:
+            score = _core_wratio(osm_label, matched_lamas_name)
+            reject_reasons[idx] = f"low_core_wratio({score:.1f}<{min_core_wratio:.1f})"
+        else:
+            candidate_ai.at[idx] = True
+
+    # Post-filter magnet check: reject any LAMAS ID still claimed by > max_approved_hits_per_id unique streets
+    is_ai = candidate_ai.copy()
+    if candidate_ai.any():
+        post_hits_by_id = (
+            pd.DataFrame(
+                {"ai_id": ai_ids[candidate_ai], "street": street_keys_for_group[candidate_ai]}
+            )
+            .groupby("ai_id")["street"]
+            .nunique()
+            .to_dict()
+        )
+        for idx in merged.index[candidate_ai]:
+            ai_id = ai_ids.at[idx]
+            if post_hits_by_id.get(ai_id, 0) > max_approved_hits_per_id:
+                is_ai.at[idx] = False
+                reject_reasons[idx] = (
+                    f"magnet_post_hits({post_hits_by_id[ai_id]}>{max_approved_hits_per_id})"
+                )
+
+    if reject_reasons and "ai_reasoning" in merged.columns:
+        for idx, reason in reject_reasons.items():
+            prev = merged.at[idx, "ai_reasoning"]
+            prev_text = "" if pd.isna(prev) else str(prev).strip()
+            tag = f"[filtered: {reason}]"
+            if tag not in prev_text:
+                merged.at[idx, "ai_reasoning"] = f"{prev_text} {tag}".strip()
+
+    merged["mapping_status"] = "UNMATCHED"
+    merged.loc[is_ai, "mapping_status"] = "APPROVED_AI"
+    merged.loc[is_fuzzy, "mapping_status"] = "APPROVED_FUZZY"
+
+    if lamas_lookup and is_ai.any():
+        matched_names = ai_ids.loc[is_ai].map(lamas_lookup)
+        merged.loc[is_ai, "best_LAMAS_name"] = matched_names.where(
+            matched_names.notna(), merged.loc[is_ai, "best_LAMAS_name"]
+        )
+
+    approved_mask = is_fuzzy | is_ai
+    approved = merged[approved_mask].copy()
+    approved["final_LAMAS_id"] = (
+        best_ids.loc[approved_mask]
+        .where(approved["mapping_status"] == "APPROVED_FUZZY", ai_ids.loc[approved_mask])
+        .astype(str)
+    )
     return merged, approved
 
 
@@ -202,29 +299,18 @@ def run_pipeline(
     place: str | dict | None = None,
     force_refresh: bool = False,
     use_ai: bool = False,
-    use_local_ai: bool = True,
-    local_ai_model: str = "qwen",
-    use_gemini: bool = True,
     skip_html: bool = False,
     output_name: str | None = None,
     use_pbf: bool = True,
     lamas_df: pd.DataFrame | None = None,
     lamas_city: str | None = None,
     save_intermediates: bool = True,
+    confident_threshold: float = DEFAULT_CONFIDENT_THRESHOLD,
 ) -> PipelineStatus:
-    """Run the full street-mapping pipeline for a settlement."""
+    """Run the street-mapping pipeline for a settlement."""
     _setup_logging()
     logger.info("--- Starting Street Mapping Orchestrator ---")
 
-    if local_ai_model not in {"qwen", "laya"}:
-        raise ValueError("local_ai_model must be 'qwen' or 'laya'")
-
-    if use_gemini and not API_KEY:
-        logger.warning(
-            "GEMINI_API_KEY environment variable not set. Cloud AI resolution will be skipped."
-        )
-    elif not use_gemini:
-        logger.info("Gemini fallback is disabled for this run.")
     if not use_ai:
         logger.info("AI resolution is disabled for this run (use_ai=False).")
 
@@ -250,8 +336,6 @@ def run_pipeline(
         logger.info("Using place: %s", chosen_place_str)
         file_identifier = output_name if output_name else chosen_place_str
 
-        # A batch already fetched the national LAMAS table once; reuse it
-        # instead of re-reading the pickle for every settlement.
         LAMAS_df = (
             lamas_df.copy()
             if lamas_df is not None
@@ -261,12 +345,8 @@ def run_pipeline(
             place_obj_for_osm, force_refresh=force_refresh, use_pbf=use_pbf
         )
 
-        if osm_gdf is None:
+        if osm_gdf is None or len(osm_gdf) == 0:
             logger.warning("No OSM data available for %s", chosen_place_str)
-            return PipelineStatus.NO_DATA
-
-        if len(osm_gdf) == 0:
-            logger.warning("OSM data for %s is empty (no streets found)", chosen_place_str)
             return PipelineStatus.NO_DATA
 
         try:
@@ -292,14 +372,12 @@ def run_pipeline(
             )
 
         if "city" not in osm_gdf.columns:
-            city_label = chosen_place_str.split(",")[0].strip()
-            osm_gdf["city"] = city_label
+            osm_gdf["city"] = chosen_place_str.split(",")[0].strip()
 
         if "city" in LAMAS_df.columns:
             LAMAS_df["city"] = normalize_city(LAMAS_df["city"])
         osm_gdf["city"] = normalize_city(osm_gdf["city"])
         if lamas_city:
-            # Keep the authoritative LAMAS settlement label in every output.
             osm_gdf["city"] = lamas_city
         LAMAS_df["city_key"] = city_key(LAMAS_df["city"])
         target_city_key = canonical_key(lamas_city or osm_gdf["city"].iloc[0])
@@ -312,7 +390,7 @@ def run_pipeline(
         logger.debug(traceback.format_exc())
         return PipelineStatus.FAILURE
 
-    logger.info("[Step 2/7] Normalizing street names...")
+    logger.info("[Step 2/5] Normalizing street names...")
     LAMAS_df["normalized_name"] = LAMAS_df["LAMAS_name"].apply(normalize_street_name)
     osm_gdf["normalized_name"] = osm_gdf["osm_name"].apply(normalize_street_name)
 
@@ -326,16 +404,18 @@ def run_pipeline(
     LAMAS_df = LAMAS_df.dropna(subset=["normalized_name"]).copy()
     osm_gdf = osm_gdf.dropna(subset=["normalized_name"]).copy()
 
+    if osm_gdf.empty:
+        logger.warning(
+            "OSM data for %s has no named streets after normalization.",
+            chosen_place_str,
+        )
+        return PipelineStatus.NO_DATA
+
     _save_step(LAMAS_df, "step2_lamas_normalized", file_identifier, save_intermediates)
     _save_step(osm_gdf, "step2_osm_normalized", file_identifier, save_intermediates)
 
-    logger.info("[Step 3/7] Building Adjacency Map (Topology)...")
-    map_of_adjacents = build_adjacency_map(osm_gdf)
-
-    logger.info("[Step 4/7] Running Fuzzy Matching and Candidate Creation...")
+    logger.info("[Step 3/5] Running Fuzzy Matching (threshold=%.1f%%)...", confident_threshold)
     osm_city_label = osm_gdf["city"].iloc[0]
-    logger.info("Filtering LAMAS data for city: '%s'", osm_city_label)
-
     lamas_city_df = _filter_lamas_by_city(LAMAS_df, target_city_key).copy()
     if lamas_city_df.empty:
         logger.warning(
@@ -345,187 +425,75 @@ def run_pipeline(
     else:
         logger.info(
             "Matched '%s' to %d LAMAS street records (canonical city key '%s')",
-            osm_city_label, len(lamas_city_df), target_city_key,
+            osm_city_label,
+            len(lamas_city_df),
+            target_city_key,
         )
 
-    candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
-    candidates_df = validate_candidate_geography(
-        osm_gdf, candidates_df, map_of_adjacents
+    candidates_df = find_fuzzy_candidates(
+        osm_gdf, lamas_city_df, confident_threshold=confident_threshold
     )
-    _save_step(candidates_df, "step4_candidates", file_identifier, save_intermediates)
-    candidate_scores_df = _build_candidate_score_report(candidates_df, osm_gdf)
-    _save_step(
-        candidate_scores_df, "step4_candidate_scores", file_identifier, save_intermediates
-    )
+    _save_step(candidates_df, "step3_candidates", file_identifier, save_intermediates)
 
-    logger.info("[Step 5/7] (Optional) Invoking AI for ambiguous cases...")
+    logger.info("[Step 4/5] (Optional) Running whole-city Laya AI matching for <%.0f%% streets...", confident_threshold)
     ai_results: list[dict] = []
+    lamas_aliases = build_lamas_aliases(lamas_city_df)
+    lamas_name_by_id = {lid: names[0] for lid, names in lamas_aliases.items() if names}
 
-    if use_ai:
-        local_resolver = None
-        if use_local_ai:
-            try:
-                logger.info("Initializing local %s AI resolver...", local_ai_model)
-                local_resolver = _get_local_resolver(local_ai_model)
-                if local_resolver is None:
-                    logger.info(
-                        "Local AI unavailable; the configured cloud fallback will be used if enabled."
-                    )
-                else:
-                    logger.info("Local AI initialized successfully.")
-            except Exception as e:
-                logger.warning("Failed to initialize Local AI: %s", e)
-                local_resolver = None
-
+    if use_ai and lamas_aliases:
         osm_gdf_in_city = osm_gdf[osm_gdf["city"] == osm_city_label]
-
-        ai_candidates_to_process = candidates_df[
-            (
-                (candidates_df["status"] == "NEEDS_AI")
-                | (
-                    candidates_df["geographic_validation"]
-                    == "DISTANT_FROM_EXACT_REFERENCE"
-                )
-            )
+        unmatched_rows = candidates_df[
+            (candidates_df["status"] != "CONFIDENT")
             & (candidates_df["osm_id"].isin(osm_gdf_in_city["osm_id"]))
         ].merge(osm_gdf_in_city[["osm_id", "normalized_name"]], on="osm_id")
-
-        unique_ai_streets = ai_candidates_to_process.drop_duplicates(
-            subset=["normalized_name"]
-        )
-        osm_ids_by_name = (
-            osm_gdf_in_city.groupby("normalized_name", sort=False)["osm_id"]
-            .agg(list)
-            .to_dict()
-        )
-        osm_name_by_id = dict(
-            zip(osm_gdf_in_city["osm_id"], osm_gdf_in_city["normalized_name"])
-        )
-        osm_name_order = {
-            name: order
-            for order, name in enumerate(
-                osm_gdf_in_city["normalized_name"].dropna().drop_duplicates()
-            )
-        }
-        logger.info(
-            "Found %s unique street names requiring AI resolution.",
-            len(unique_ai_streets),
+        unmatched_names = (
+            unmatched_rows["normalized_name"].dropna().drop_duplicates().tolist()
         )
 
-        ai_decision_cache: dict[str, dict] = {}
+        if unmatched_names:
+            try:
+                resolver = _get_laya_resolver()
+            except Exception as exc:
+                logger.warning("Failed to initialize Laya AI: %s", exc)
+                resolver = None
 
-        for _, row in unique_ai_streets.iterrows():
-            normalized_street_name = row["normalized_name"]
-            representative_osm_id = row["osm_id"]
-            lamas_candidates = select_ai_candidates(
-                row["candidate_details"], normalized_street_name
-            )
-
-            all_adjacent_ids: set = set()
-            for osm_id in osm_ids_by_name.get(normalized_street_name, []):
-                all_adjacent_ids.update(map_of_adjacents.get(osm_id, []))
-
-            adjacent_names = sorted(
-                {
-                    osm_name_by_id[osm_id]
-                    for osm_id in all_adjacent_ids
-                    if osm_id in osm_name_by_id
-                    and pd.notna(osm_name_by_id[osm_id])
-                },
-                key=osm_name_order.get,
-            )
-
-            city_name = osm_gdf_in_city["city"].iloc[0]
-
-            ai_decision_id = None
-            confidence = None
-            reasoning = ""
-            method = "none"
-
-            if local_resolver:
+            if resolver is not None:
                 logger.info(
-                    "Consulting Local AI for street: '%s'...", normalized_street_name
+                    "Sending %d unmatched OSM streets and %d city LAMAS streets to Laya...",
+                    len(unmatched_names),
+                    len(lamas_aliases),
                 )
-                local_result = local_resolver.resolve_street(
-                    representative_osm_id,
-                    normalized_street_name,
-                    city_name,
-                    lamas_candidates,
-                    adjacent_names[:8],
+                city_decisions = resolver.resolve_city(
+                    osm_city_label, unmatched_names, lamas_aliases
                 )
-
-                ai_decision_id = local_result.get("lamas_id")
-                confidence = local_result.get("confidence", 0.0)
-                reasoning = local_result.get("reasoning", "")
-                method = local_result.get("method", "local_ai")
-
-                if ai_decision_id is None:
-                    logger.info(
-                        "Local AI found no match for '%s'. Confidence: %s",
-                        normalized_street_name,
-                        confidence,
+                valid_ids = set(lamas_aliases)
+                for row in unmatched_rows.itertuples(index=False):
+                    decision = city_decisions.get(row.normalized_name)
+                    if not decision:
+                        continue
+                    lamas_id = decision.get("lamas_id")
+                    reasoning = decision.get("reasoning", "")
+                    if lamas_id is not None:
+                        lamas_id = str(lamas_id).strip()
+                        if lamas_id.lower() in {"", "none", "null", "nan"}:
+                            lamas_id = None
+                        elif lamas_id not in valid_ids:
+                            logger.warning(
+                                "Laya returned LAMAS ID %s not in city '%s'; discarding.",
+                                lamas_id,
+                                osm_city_label,
+                            )
+                            reasoning = "AI returned an ID outside the city LAMAS list"
+                            lamas_id = None
+                    ai_results.append(
+                        {
+                            "osm_id": row.osm_id,
+                            "ai_suggested_LAMAS_id": lamas_id,
+                            "ai_confidence": decision.get("confidence"),
+                            "ai_reasoning": reasoning,
+                            "ai_method": decision.get("method", "local_laya"),
+                        }
                     )
-                else:
-                    logger.info(
-                        "Local AI matched '%s' to %s. Confidence: %s",
-                        normalized_street_name,
-                        ai_decision_id,
-                        confidence,
-                    )
-
-            if (
-                (ai_decision_id is None or method == "none")
-                and use_gemini
-                and API_KEY
-            ):
-                if method.startswith("local_"):
-                    logger.info(
-                        "Falling back to Gemini API for '%s'...",
-                        normalized_street_name,
-                    )
-
-                prompt = (
-                    f"OSM Street Name: '{normalized_street_name}'. "
-                    f"City: '{city_name}'. "
-                    f"Adjacent Streets: {', '.join(adjacent_names[:8]) if adjacent_names else 'None'}. "
-                    "LAMAS candidates ranked by fuzzy score (at most 8; up to 3 "
-                    "relevant aliases each): "
-                    f"{json.dumps(lamas_candidates, ensure_ascii=False)}. "
-                    "Choose a candidate ID or None. Return a suggestion only; "
-                    "the result will not be automatically approved."
-                )
-                ai_decision_id = get_ai_resolution(prompt, representative_osm_id)
-                method = "gemini"
-                confidence = None
-
-            if ai_decision_id is not None:
-                ai_decision_id = str(ai_decision_id).strip()
-                if ai_decision_id.lower() in {"", "none", "null", "nan"}:
-                    ai_decision_id = None
-                elif ai_decision_id not in {
-                    candidate["id"] for candidate in lamas_candidates
-                }:
-                    logger.warning(
-                        "AI returned LAMAS ID %s outside the candidate list for '%s'; "
-                        "discarding the suggestion.",
-                        ai_decision_id,
-                        normalized_street_name,
-                    )
-                    reasoning = "AI returned an ID outside the candidate list"
-                    ai_decision_id = None
-
-            ai_decision_cache[normalized_street_name] = {
-                "ai_suggested_LAMAS_id": ai_decision_id,
-                "ai_confidence": confidence,
-                "ai_reasoning": reasoning,
-                "ai_method": method,
-            }
-
-        for _, row in ai_candidates_to_process.iterrows():
-            street_name = row["normalized_name"]
-            cached_result = ai_decision_cache.get(street_name)
-            if cached_result:
-                ai_results.append({"osm_id": row["osm_id"], **cached_result})
 
     ai_decisions_df = pd.DataFrame(
         ai_results,
@@ -537,14 +505,20 @@ def run_pipeline(
             "ai_method",
         ],
     )
-    _save_step(ai_decisions_df, "step5_ai_decisions", file_identifier, save_intermediates)
+    _save_step(ai_decisions_df, "step4_ai_decisions", file_identifier, save_intermediates)
 
-    logger.info("[Step 6/7] Merging results to create final diagnostic table...")
-
-    ai_decisions_merged, final_mapping_df = _merge_ai_suggestions(
-        candidates_df, ai_decisions_df
+    logger.info("[Step 5/5] Finalizing diagnostic table and outputs...")
+    osm_names_by_id = dict(
+        zip(osm_gdf["osm_id"].astype(str), osm_gdf["normalized_name"].fillna("").astype(str))
     )
-    ai_decisions_merged["osm_id"] = ai_decisions_merged["osm_id"].astype(str)
+    merged_df, final_mapping_df = _finalize_mappings(
+        candidates_df,
+        ai_decisions_df,
+        lamas_name_by_id=lamas_name_by_id,
+        city_name=osm_city_label,
+        osm_names_by_id=osm_names_by_id,
+    )
+    merged_df["osm_id"] = merged_df["osm_id"].astype(str)
     osm_gdf["osm_id"] = osm_gdf["osm_id"].astype(str)
 
     diagnostic_cols = [
@@ -554,15 +528,11 @@ def run_pipeline(
         "best_score",
         "best_LAMAS_id",
         "best_LAMAS_name",
-        "all_candidates",
-        "geographic_validation",
-        "geographic_distance_m",
         "ai_suggested_LAMAS_id",
         "ai_confidence",
         "ai_reasoning",
         "ai_method",
     ]
-
     osm_cols_for_diag = ["osm_id", "osm_name", "normalized_name", "city", "geometry"]
     if "osm_name_original" in osm_gdf.columns:
         osm_cols_for_diag.insert(2, "osm_name_original")
@@ -570,20 +540,22 @@ def run_pipeline(
         osm_cols_for_diag.insert(2, "name:he")
 
     diagnostic_df_full = osm_gdf[osm_cols_for_diag].merge(
-        ai_decisions_merged[diagnostic_cols], on="osm_id", how="left"
+        merged_df[diagnostic_cols], on="osm_id", how="left"
     )
     diagnostic_df_full = diagnostic_df_full.merge(
         final_mapping_df[["osm_id", "final_LAMAS_id"]], on="osm_id", how="left"
     )
 
-    # Attach the CBS metadata behind the matched id.  ``official_code`` is only
-    # unique inside a city, so ``final_LAMAS_key`` (city_code:official_code) is
-    # the unambiguous identifier; ``street_code``/status distinguish the
-    # official row from synonym rows.
     metadata_columns = [
-        column for column in (
-            "LAMAS_key", "city_code", "official_code", "street_code",
-            "street_name_status", "is_official", "id_source",
+        column
+        for column in (
+            "LAMAS_key",
+            "city_code",
+            "official_code",
+            "street_code",
+            "street_name_status",
+            "is_official",
+            "id_source",
         )
         if column in lamas_city_df.columns
     ]
@@ -592,21 +564,24 @@ def run_pipeline(
             ["LAMAS_id", *metadata_columns]
         ].copy()
         meta["LAMAS_id"] = meta["LAMAS_id"].astype("string")
-        meta = meta.rename(columns={
-            "LAMAS_id": "final_LAMAS_id",
-            "LAMAS_key": "final_LAMAS_key",
-            "city_code": "final_city_code",
-            "official_code": "final_official_code",
-            "street_code": "final_street_code",
-            "street_name_status": "final_street_name_status",
-            "is_official": "final_is_official",
-            "id_source": "final_id_source",
-        })
-        diagnostic_df_full["final_LAMAS_id"] = (
-            diagnostic_df_full["final_LAMAS_id"].astype("string")
+        meta = meta.rename(
+            columns={
+                "LAMAS_id": "final_LAMAS_id",
+                "LAMAS_key": "final_LAMAS_key",
+                "city_code": "final_city_code",
+                "official_code": "final_official_code",
+                "street_code": "final_street_code",
+                "street_name_status": "final_street_name_status",
+                "is_official": "final_is_official",
+                "id_source": "final_id_source",
+            }
         )
+        diagnostic_df_full["final_LAMAS_id"] = diagnostic_df_full[
+            "final_LAMAS_id"
+        ].astype("string")
         overlap = [
-            column for column in meta.columns
+            column
+            for column in meta.columns
             if column != "final_LAMAS_id" and column in diagnostic_df_full.columns
         ]
         diagnostic_df_full = diagnostic_df_full.drop(columns=overlap).merge(
@@ -615,35 +590,30 @@ def run_pipeline(
 
     _save_step(diagnostic_df_full, "diagnostic_report", file_identifier, save_intermediates)
 
-    logger.info("PIPELINE COMPLETED")
     named_osm_count = diagnostic_df_full["normalized_name"].nunique()
+    fuzzy_matched_count = diagnostic_df_full.loc[
+        diagnostic_df_full["mapping_status"] == "APPROVED_FUZZY", "normalized_name"
+    ].nunique()
+    ai_matched_count = diagnostic_df_full.loc[
+        diagnostic_df_full["mapping_status"] == "APPROVED_AI", "normalized_name"
+    ].nunique()
     matched_count = diagnostic_df_full.loc[
         diagnostic_df_full["final_LAMAS_id"].notna(), "normalized_name"
     ].nunique()
-    ai_proposal_count = diagnostic_df_full.loc[
-        diagnostic_df_full["ai_suggested_LAMAS_id"].notna(), "normalized_name"
-    ].nunique()
-    geographic_review_count = diagnostic_df_full.loc[
-        diagnostic_df_full["mapping_status"] == "GEOGRAPHIC_REVIEW",
-        "normalized_name",
-    ].nunique()
     unmatched_count = named_osm_count - matched_count
     logger.info(
-        "Approved fuzzy matches: %s | AI proposals (not approved): %s | "
-        "Geographic reviews: %s | Without approved mapping: %s",
+        "PIPELINE COMPLETED | Fuzzy (>=%.0f%%): %s | Laya AI: %s | Total matched: %s | Unmatched: %s",
+        confident_threshold,
+        fuzzy_matched_count,
+        ai_matched_count,
         matched_count,
-        ai_proposal_count,
-        geographic_review_count,
         unmatched_count,
     )
 
-    logger.info("[Step 6.5/7] Calculating diagnostic summary...")
-    lamas_in_city_df = _filter_lamas_by_city(LAMAS_df, target_city_key)
-    diagnostics = calculate_diagnostics(lamas_in_city_df, diagnostic_df_full, osm_gdf)
+    diagnostics = calculate_diagnostics(lamas_city_df, diagnostic_df_full, osm_gdf)
     logger.info("Diagnostic Summary: %s", diagnostics)
 
     if not skip_html:
-        logger.info("[Step 7/7] Generating HTML visualization...")
         try:
             from generate_html import create_html_from_gdf
 
@@ -659,27 +629,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Map OSM street names to LAMAS IDs.")
     parser.add_argument("place", nargs="?", help="Settlement name")
     parser.add_argument("--refresh", action="store_true", help="Refresh downloaded data")
-    parser.add_argument("--no-ai", action="store_true", help="Disable AI resolution")
-    parser.add_argument(
-        "--no-local-ai", action="store_true", help="Skip local model resolution"
-    )
+    parser.add_argument("--no-ai", action="store_true", help="Disable Laya AI resolution")
     parser.add_argument(
         "--no-pbf",
         action="store_true",
         help="Disable local PBF extraction and use live Overpass API",
     )
     parser.add_argument(
-        "--local-ai-model",
-        choices=("qwen", "laya"),
-        default="qwen",
-        help="Local model to use (default: qwen)",
-    )
-    parser.add_argument(
-        "--no-gemini", action="store_true", help="Disable Gemini cloud fallback"
-    )
-    parser.add_argument(
         "--output-name",
-        help="Name outputs separately, e.g. for comparing model runs",
+        help="Name outputs separately, e.g. for comparing runs",
     )
     parser.add_argument(
         "--lamas-city",
@@ -688,7 +646,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-intermediates",
         action="store_true",
-        help="Skip bulky intermediate pickles (CSV audit reports are still saved)",
+        help="Skip bulky intermediate pickles (diagnostic CSV is still saved)",
     )
     args = parser.parse_args()
 
@@ -696,10 +654,7 @@ if __name__ == "__main__":
         place=args.place,
         force_refresh=args.refresh,
         use_ai=not args.no_ai,
-        use_local_ai=not args.no_local_ai,
         use_pbf=not args.no_pbf,
-        local_ai_model=args.local_ai_model,
-        use_gemini=not args.no_gemini,
         output_name=args.output_name,
         lamas_city=args.lamas_city,
         save_intermediates=not args.no_intermediates,

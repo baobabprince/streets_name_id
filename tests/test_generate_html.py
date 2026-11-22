@@ -33,14 +33,14 @@ class TestGenerateHtml(unittest.TestCase):
         }
 
         original_dir = os.getcwd()
-        try:
-            with tempfile.TemporaryDirectory() as output_dir:
+        with tempfile.TemporaryDirectory() as output_dir:
+            try:
                 os.chdir(output_dir)
                 create_html_from_gdf(gdf, "יישוב בדיקה", diagnostics)
                 with open("HTML/יישוב_בדיקה_roads.html", encoding="utf-8") as html_file:
                     html = html_file.read()
-        finally:
-            os.chdir(original_dir)
+            finally:
+                os.chdir(original_dir)
 
         class GovMapLinkParser(HTMLParser):
             def __init__(self):
@@ -116,28 +116,28 @@ class TestGenerateHtml(unittest.TestCase):
         )
 
         original_dir = os.getcwd()
-        try:
-            with tempfile.TemporaryDirectory() as output_dir:
+        with tempfile.TemporaryDirectory() as output_dir:
+            try:
                 os.chdir(output_dir)
                 create_html_from_gdf(gdf, "יישוב בדיקה")
                 with open("HTML/יישוב_בדיקה_roads.html", encoding="utf-8") as html_file:
                     html = html_file.read()
-        finally:
-            os.chdir(original_dir)
+            finally:
+                os.chdir(original_dir)
 
         self.assertEqual(html.count('class="street-path"'), 3)
         self.assertEqual(html.count('vector-effect="non-scaling-stroke"'), 3)
         self.assertEqual(html.count(f'stroke="{COLOR_PERFECT}"'), 1)
 
-    def test_ai_suggestions_are_displayed_as_unapproved(self):
+    def test_ai_approved_matches_are_displayed_with_lamas_id(self):
         gdf = gpd.GeoDataFrame(
             {
-                "osm_name": ["רחוב מוצע"],
-                "final_LAMAS_id": [None],
+                "osm_name": ["רחוב ליה"],
+                "best_LAMAS_name": ["רחוב הרצל"],
+                "final_LAMAS_id": ["123"],
                 "ai_suggested_LAMAS_id": ["123"],
-                "ai_confidence": [0.8],
-                "mapping_status": ["AI_PROPOSED"],
-                "geographic_validation": ["NO_EXACT_NAME_REFERENCE"],
+                "ai_confidence": [0.88],
+                "mapping_status": ["APPROVED_AI"],
                 "geometry": [LineString([(34.8, 32.0), (34.801, 32.001)])],
             },
             crs="EPSG:4326",
@@ -154,8 +154,8 @@ class TestGenerateHtml(unittest.TestCase):
             os.chdir(original_dir)
 
         self.assertIn('data-status="ai"', html)
-        self.assertIn("הצעת AI (לא מאושרת): 123", html)
-        self.assertIn("לא מאושרת", html)
+        self.assertIn("מזהה: 123", html)
+        self.assertIn("התאמת AI (מאושרת)", html)
 
     def test_page_embeds_compact_records_instead_of_per_path_metadata(self):
         gdf = gpd.GeoDataFrame(
@@ -174,14 +174,14 @@ class TestGenerateHtml(unittest.TestCase):
         )
 
         original_dir = os.getcwd()
-        try:
-            with tempfile.TemporaryDirectory() as output_dir:
+        with tempfile.TemporaryDirectory() as output_dir:
+            try:
                 os.chdir(output_dir)
                 create_html_from_gdf(gdf, "יישוב בדיקה")
                 with open("HTML/יישוב_בדיקה_roads.html", encoding="utf-8") as html_file:
                     html = html_file.read()
-        finally:
-            os.chdir(original_dir)
+            finally:
+                os.chdir(original_dir)
 
         self.assertIn('id="street-records"', html)
         self.assertEqual(html.count("data-rec="), 2)

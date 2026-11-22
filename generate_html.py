@@ -74,7 +74,7 @@ def _street_visual(row):
 
     if mapping_status == "GEOGRAPHIC_REVIEW":
         return "geo-review", COLOR_GEO_REVIEW, 4.6, "8,4"
-    if mapping_status == "AI_PROPOSED":
+    if mapping_status in ("APPROVED_AI", "AI_PROPOSED"):
         return "ai", COLOR_AI, 4.6, "none"
     if is_matched:
         if best_score is not None and best_score < 100:
@@ -133,8 +133,8 @@ def _build_diagnostics_html(diagnostics: dict, place_name: str) -> str:
                 <div class="value metric">{diagnostics.get('confident_matches', 'N/A')}</div>
             </div>
             <div class="diagnostics-card">
-                <div class="label">הצעות AI (לא מאושרות)</div>
-                <div class="value metric">{diagnostics.get('ai_proposed_matches', diagnostics.get('ai_resolved_matches', 'N/A'))}</div>
+                <div class="label">התאמות AI</div>
+                <div class="value metric">{diagnostics.get('ai_resolved_matches', diagnostics.get('ai_proposed_matches', 'N/A'))}</div>
             </div>
             <div class="diagnostics-card">
                 <div class="label">סה״כ התאמות מאושרות</div>
@@ -261,8 +261,16 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
         final_lamas_id = _clean(row.get("final_LAMAS_id"))
         mapping_status = _clean(row.get("mapping_status"))
         best_score = _score_value(row.get("best_score"))
-        ai_suggestion = _clean(row.get("ai_suggested_LAMAS_id"))
-        ai_confidence = _score_value(row.get("ai_confidence"))
+        ai_suggestion = (
+            _clean(row.get("ai_suggested_LAMAS_id"))
+            if mapping_status in ("APPROVED_AI", "AI_PROPOSED")
+            else ""
+        )
+        ai_confidence = (
+            _score_value(row.get("ai_confidence"))
+            if mapping_status in ("APPROVED_AI", "AI_PROPOSED")
+            else None
+        )
 
         if not osm_name:
             status = "unnamed"
@@ -305,7 +313,12 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
                 tooltip_lines.append(f"ציון: {best_score:.1f}")
             if final_lamas_id:
                 tooltip_lines.append(f"מזהה: {final_lamas_id}")
-                tooltip_lines.append("התאמה מאושרת")
+                if mapping_status == "APPROVED_AI":
+                    tooltip_lines.append("התאמת AI (מאושרת)")
+                    if ai_confidence is not None:
+                        tooltip_lines.append(f"ביטחון המודל: {float(ai_confidence):.2f}")
+                else:
+                    tooltip_lines.append("התאמה מאושרת")
         elif ai_suggestion:
             tooltip_lines.append(f"הצעת AI (לא מאושרת): {ai_suggestion}")
             if ai_confidence is not None:

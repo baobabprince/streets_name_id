@@ -1,6 +1,6 @@
 # Street Name Synonym Mapper
 
-Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Central Bureau of Statistics / CBS) street IDs for Israeli settlements. It combines name normalization, fuzzy matching, topological (adjacency) context, and a two-tier AI resolver (local model + Gemini).
+Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Central Bureau of Statistics / CBS) street IDs for Israeli settlements. It combines Hebrew-aware normalization, 90% fuzzy matching, and optional whole-city Laya AI resolution for everything below 90%.
 
 **Live dashboard:** [baobabprince.github.io/streets_name_id](https://baobabprince.github.io/streets_name_id/)
 
@@ -14,15 +14,8 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 - **One consolidated match store** — positive *and* negative settlement resolutions are kept in `data/settlement_matches.json` (one atomic write per run), with a CSV audit trail in `batch_reports/settlement_match_report.csv`
 - **One command for everything** — `python run_all.py` fetches, matches, processes, reports and rebuilds the dashboard in a single run
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
-- **Fuzzy matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz) (weighted ratio / token_sort / token_set)
-- **Topological context** — adjacency graph of connected OSM streets for AI prompts
-- **Two-tier AI resolution**
-  - Local model (optional, if torch/transformers available)
-  - Cloud fallback: Google Gemini (`GEMINI_API_KEY`)
-- **AI review separation** — AI results are suggestions and do not populate the
-  approved LAMAS mapping or approved-match coverage
-- **Candidate audit trail** — exports every fuzzy candidate above the configured
-  score threshold, with its score, aliases, rank, and geographic evidence
+- **Fuzzy matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz) (weighted ratio / token_sort / token_set, ≥90% auto-matched)
+- **Whole-city Laya AI matching** — optional local `convaiinnovations/laya-multilingual` model resolves every OSM street below 90% against the city's LAMAS streets and writes confirmed matches directly to `final_LAMAS_id`
 - **Batch processing** with parallel workers
 - **Interactive HTML reports** — per-settlement maps + master index dashboard
 
@@ -39,9 +32,7 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 | `data_loader.py` | Cache + fetch LAMAS / OSM (in-memory + pickle caches) |
 | `normalization.py` | Street-name normalize + fuzzy candidates |
 | `diagnostics.py` | Match / coverage statistics |
-| `gemini_client.py` | Gemini API client |
-| `local_ai_resolver.py` | Optional local Qwen-based resolver |
-| `laya_ai_resolver.py` | Optional local Laya decision-model resolver |
+| `laya_ai_resolver.py` | Optional local Laya decision-model resolver (whole-city matching) |
 | `batch_process_settlements.py` | Batch runner / shared orchestration implementation |
 | `generate_html.py` / `map_template.html` | Per-city interactive street map |
 | `generate_index.py` | National dashboard (`index.html`) |
@@ -57,16 +48,6 @@ python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
-
-**Optional — Cloud AI:**
-
-```bash
-export GEMINI_API_KEY="YOUR_API_KEY_HERE"
-# optional model override:
-export GEMINI_MODEL="gemini-2.5-flash-preview-09-2025"
-```
-
-> Local AI pulls large `torch` / `transformers` wheels. For fuzzy-only runs you can skip them if install is slow.
 
 **Optional — offline OSM PBF support (`osmium` executable):**
 
@@ -101,15 +82,12 @@ fresh extract and retries once before falling back to Overpass.
 pip install "laya>=0.4.35,<0.5"
 ```
 
-The Laya option uses its multilingual checkpoint for a single-choice decision
-between the LAMAS candidates. The model weights download from Hugging Face on
-first use. Its score is a model confidence, not measured street-matching
-accuracy; review the diagnostic report before relying on its matches.
-The resolver is reused across settlements handled by the same batch worker.
-For bounded prompts, AI receives at most eight ranked candidates, up to three
-relevant aliases per candidate, and limited adjacent-street context rather than
-the full city lexicon. AI output is a suggestion for review, not an approved
-match; the map and coverage statistics keep suggestions separate.
+When `--use-ai` is enabled, every OSM street scoring below 90% in fuzzy matching
+is sent together with the city's LAMAS street list to `LayaAIResolver`
+(`convaiinnovations/laya-multilingual`). The model weights download from Hugging
+Face on first use and the resolver is reused across settlements in the same
+process. Matches returned by Laya are written directly to `final_LAMAS_id`
+(`mapping_status = APPROVED_AI`) and included in coverage statistics.
 
 ## Usage
 
@@ -167,39 +145,30 @@ flags (without the strict exit code / presets).
 python pipeline.py "Tel Aviv-Yafo"
 python pipeline.py "Haifa" --no-ai
 python pipeline.py "Eilat" --refresh
-python pipeline.py "אלעד" --no-local-ai
-python pipeline.py "חיפה" --local-ai-model laya --no-gemini --output-name haifa-laya
+python pipeline.py "חיפה" --output-name haifa-laya
 ```
 
 | Flag | Meaning |
 |------|---------|
 | `--refresh` | Ignore cache; re-download OSM/LAMAS |
-| `--no-ai` | Fuzzy matching only |
-| `--no-local-ai` | Skip local model; use Gemini if key is set |
+| `--no-ai` | Fuzzy matching only (skip Laya AI) |
 | `--no-pbf` | Disable local PBF extraction; query live Overpass API instead |
-| `--local-ai-model laya` | Use Laya's multilingual local decision model instead of Qwen |
-| `--no-gemini` | Do not send unresolved decisions to Gemini |
-| `--output-name NAME` | Save outputs under a separate name for comparison |
-
-To compare local models on the same settlement, run the pipeline once with
-`--local-ai-model qwen --no-gemini --output-name haifa-qwen`, then again with
-`--local-ai-model laya --no-gemini --output-name haifa-laya`. Compare the
-diagnostic reports and maps in `data/` and `HTML/`. This compares model
-decisions, not accuracy; measuring accuracy requires a set of manually
-verified street-to-LAMAS matches.
+| `--output-name NAME` | Save outputs under a separate name |
+| `--no-intermediates` | Skip bulky intermediate pickles |
 
 ### Batch (same CLI, without the presets)
 
 ```bash
-python batch_process_settlements.py --workers 4 --use-ai
+python batch_process_settlements.py --workers 4
+python batch_process_settlements.py --cities --use-ai
 python batch_process_settlements.py --limit 5
 python batch_process_settlements.py --dry-run
 ```
 
 | Flag | Meaning |
 |------|---------|
-| `--workers N` | Parallel processes (default 1); `1` also reuses the LAMAS table in-process |
-| `--use-ai` | Enable AI (off by default in batch) |
+| `--workers N` | Parallel processes (default 1); forced to 1 when `--use-ai` is enabled |
+| `--use-ai` | Enable Laya AI for streets below 90% fuzzy match (off by default in batch) |
 | `--limit N` | First N settlements only |
 | `--skip-html` | Skip HTML map generation |
 | `--force` | Reprocess even if already done |
@@ -211,8 +180,6 @@ python batch_process_settlements.py --dry-run
 | `--only-file PATH` | Settlement names from a file (one per line or comma-separated) |
 | `--cities` | Process exactly the 83 cities listed in `config/israel_83_cities_lamas.json` |
 | `--non-cities` | Process every LAMAS settlement except those 83 cities |
-| `--local-ai-model laya` | Use Laya for local AI decisions (implies `--use-ai`) |
-| `--no-gemini` | Keep all unresolved decisions local |
 
 ### Tuning settlement matching
 
@@ -374,30 +341,21 @@ generated by the pipeline compute the centre directly from their geometry.
    fallback + LAMAS-centre distance checks, with a Nominatim fallback only for
    unresolved names, all persisted in one store
 3. **Normalize streets** — abbreviations, punctuation, Hebrew preference
-   (`name:he`); LAMAS rows are joined by canonical city key, not by a fragile
-   free-text city label
-4. **Topology** — adjacency map of OSM segments
-5. **Match** — confident / needs-AI / missing by fuzzy score thresholds; exact
-   name matches provide OSM-only geographic anchors for checking proximity and
-   direct topology connections
-6. **AI (optional)** — local model, then Gemini, with a bounded candidate list
-   and neighbor context; suggestions never become approved mappings
-7. **Report** — diagnostic CSV, candidate-score CSV, and interactive HTML map
-
-LAMAS street records do not include geometry. Geographic checks therefore use
-exact-name OSM matches as reference lines; candidate segments directly connected
-to an anchor or within 250 m are marked supported. Candidates without such a
-reference are marked unverified, and candidates farther away are flagged for
-geographic review rather than automatically approved.
+   (`name:he`); LAMAS rows are joined by canonical city key
+4. **Fuzzy match (≥90%)** — rapidfuzz weighted score against city LAMAS streets
+   and synonyms; streets ≥90% are approved directly
+5. **Whole-city Laya AI (optional)** — every street below 90% is matched against
+   the city's LAMAS streets via Laya; confirmed matches are written directly to
+   `final_LAMAS_id`
+6. **Report** — diagnostic CSV and interactive HTML map
 
 Threshold tuning is documented in `THRESHOLD_GUIDE.md`.
 
 ## Outputs
 
 - `data/` — pickle caches (national OSM extracts, LAMAS, per-settlement OSM),
-  `data/settlement_matches.json` (consolidated settlement resolutions),
-  `diagnostic_report_*.csv` and `step4_candidate_scores_*.csv` (all fuzzy
-  candidates above the score threshold). Bulky step-1..5 pickles are optional
+  `data/settlement_matches.json` (consolidated settlement resolutions), and
+  `diagnostic_report_*.csv`. Bulky intermediate pickles are optional
   (`--no-intermediates`).
 - `HTML/` — per-settlement interactive street inspectors (`*_roads.html`)
 - `batch_reports/` — batch summaries, `settlement_match_report.csv` and

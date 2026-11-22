@@ -7,100 +7,113 @@ from laya_ai_resolver import LayaAIResolver
 
 
 class TestLayaAIResolver(unittest.TestCase):
-    def make_resolver(self, prediction):
+    def make_resolver(self, prediction=None, side_effect=None, chunk_size=15):
         agent = Mock()
-        agent.predict.return_value = prediction
+        if side_effect is not None:
+            agent.predict.side_effect = side_effect
+        else:
+            agent.predict.return_value = prediction
         laya_module = ModuleType("laya")
         laya_module.Agent = Mock(return_value=agent)
         with patch.dict(sys.modules, {"laya": laya_module}):
-            resolver = LayaAIResolver()
+            resolver = LayaAIResolver(chunk_size=chunk_size)
         return resolver, agent, laya_module.Agent
 
-    def test_selects_lamas_candidate_and_uses_its_probability(self):
+    def test_resolve_city_matches_streets_against_city_lamas_list(self):
         resolver, agent, agent_factory = self.make_resolver(
             {
                 "answers": {
                     "street_match": {
-                        "choice": "candidate_2",
-                        "probabilities": {"candidate_2": 0.82},
+                        "choice": "street_2",
+                        "probabilities": {"street_2": 0.88},
                     }
                 }
             }
         )
 
-        result = resolver.resolve_street(
-            "osm-1",
-            "רחוב הרצל",
+        decisions = resolver.resolve_city(
             "חיפה",
-            [
-                {"id": "101", "name": "הנביאים"},
-                {"id": "202", "name": "הרצל", "names": ["הרצל", "הרצליה"]},
-            ],
-            ["בלפור"],
+            ["רחוב הרצל", "רחוב הרצל"],
+            {
+                "101": ["הנביאים"],
+                "202": ["הרצל", "הרצליה"],
+            },
         )
 
-        self.assertEqual(agent_factory.call_args.args[0], "convaiinnovations/laya-multilingual")
-        self.assertEqual(result["lamas_id"], "202")
-        self.assertEqual(result["confidence"], 0.82)
+        self.assertEqual(
+            agent_factory.call_args.args[0], "convaiinnovations/laya-multilingual"
+        )
+        self.assertEqual(agent.predict.call_count, 1)
+        self.assertEqual(decisions["רחוב הרצל"]["lamas_id"], "202")
+        self.assertEqual(decisions["רחוב הרצל"]["confidence"], 0.88)
+        self.assertEqual(decisions["רחוב הרצל"]["method"], "local_laya")
+
         state, questions = agent.predict.call_args.args
-        self.assertEqual(state["רחובות סמוכים ב-OSM"], ["בלפור"])
-        self.assertNotIn("לקסיקון למ״ס בעיר", state)
-        self.assertIn("הרצליה", questions["street_match"]["criteria"]["candidate_2"])
-        self.assertIn("כינויים", questions["street_match"]["instructions"])
+        self.assertEqual(state["יישוב"], "חיפה")
+        self.assertEqual(state["שם הרחוב ב-OSM"], "רחוב הרצל")
+        self.assertIn("הרצליה", questions["street_match"]["criteria"]["street_2"])
         self.assertIn("no_match", questions["street_match"]["criteria"])
 
-    def test_no_match_choice_returns_no_lamas_id(self):
+    def test_no_match_choice_returns_none(self):
         resolver, _, _ = self.make_resolver(
-            {"answers": {"street_match": {"choice": "no_match", "confidence": 0.9}}}
+            {"answers": {"street_match": {"choice": "no_match", "confidence": 0.91}}}
         )
 
-        result = resolver.resolve_street(
-            "osm-2",
-            "שם לא קשור",
-            "חיפה",
-            [{"id": "101", "name": "הרצל"}],
-            [],
-        )
+        result = resolver.resolve_street("חיפה", "שם לא קשור", {"101": ["הרצל"]})
 
         self.assertIsNone(result["lamas_id"])
-        self.assertEqual(result["confidence"], 0.9)
+        self.assertEqual(result["confidence"], 0.91)
         self.assertEqual(result["method"], "local_laya")
 
-    def test_empty_candidates_does_not_call_model(self):
+    def test_empty_inputs_do_not_call_model(self):
         resolver, agent, _ = self.make_resolver({})
 
-        result = resolver.resolve_street("osm-3", "הרצל", "חיפה", [], [])
-
-        self.assertIsNone(result["lamas_id"])
+        self.assertEqual(resolver.resolve_city("חיפה", [], {"101": ["הרצל"]}), {})
+        self.assertEqual(resolver.resolve_city("חיפה", ["הרצל"], {}), {})
         agent.predict.assert_not_called()
 
-    def test_bounds_candidates_aliases_and_adjacent_context(self):
-        resolver, agent, _ = self.make_resolver(
-            {"answers": {"street_match": {"choice": "no_match", "confidence": 0.9}}}
+    def test_resolve_city_batches_multiple_streets_with_predict_batch(self):
+        resolver, agent, _ = self.make_resolver()
+        agent.predict_batch = Mock(
+            return_value=[
+                {"answers": {"street_match": {"choice": "street_2", "probabilities": {"street_2": 0.9}}}},
+                {"answers": {"street_match": {"choice": "no_match", "probabilities": {"no_match": 0.85}}}},
+            ]
         )
-        candidates = [
-            {
-                "id": str(index),
-                "names": [f"שם {index}-{alias}" for alias in range(10)],
-                "score": 80.0,
-            }
-            for index in range(12)
-        ]
 
-        resolver.resolve_street(
-            "osm-4",
-            "רחוב בדיקה",
+        decisions = resolver.resolve_city(
             "חיפה",
-            candidates,
-            [f"סמוך {index}" for index in range(12)],
+            ["שד בן גוריון", "רחוב חסר"],
+            {"101": ["הרצל"], "202": ["בן גוריון"]},
         )
 
-        state, _ = agent.predict.call_args.args
-        self.assertEqual(len(state["מועמדי למ״ס"]), 8)
-        self.assertTrue(
-            all(len(candidate["names"]) <= 3 for candidate in state["מועמדי למ״ס"])
-        )
-        self.assertEqual(len(state["רחובות סמוכים ב-OSM"]), 8)
+        agent.predict_batch.assert_called_once()
+        self.assertEqual(decisions["שד בן גוריון"]["lamas_id"], "202")
+        self.assertIsNone(decisions["רחוב חסר"]["lamas_id"])
+
+    def test_large_city_chunks_all_lamas_streets_and_runs_final_round(self):
+        # 5 LAMAS streets with chunk_size=2 -> chunks [01,02], [03,04], [05],
+        # winners from chunk 1 (02) and chunk 2 (03), then final round picks 03.
+        responses = [
+            {"answers": {"street_match": {"choice": "street_2", "probabilities": {"street_2": 0.7}}}},
+            {"answers": {"street_match": {"choice": "street_1", "probabilities": {"street_1": 0.85}}}},
+            {"answers": {"street_match": {"choice": "no_match", "probabilities": {"no_match": 0.95}}}},
+            {"answers": {"street_match": {"choice": "street_2", "probabilities": {"street_2": 0.92}}}},
+        ]
+        resolver, agent, _ = self.make_resolver(side_effect=responses, chunk_size=2)
+        lamas_streets = {
+            "01": ["אלף"],
+            "02": ["בית"],
+            "03": ["גימל"],
+            "04": ["דלת"],
+            "05": ["הא"],
+        }
+
+        result = resolver.resolve_street("חיפה", "גימל החדש", lamas_streets)
+
+        self.assertEqual(agent.predict.call_count, 4)
+        self.assertEqual(result["lamas_id"], "03")
+        self.assertEqual(result["confidence"], 0.92)
 
 
 if __name__ == "__main__":

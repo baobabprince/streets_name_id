@@ -48,12 +48,12 @@ class TestNormalizeStreetName(unittest.TestCase):
             "city": ["תל אביב-יפו", "תל אביב-יפו", "תל אביב-יפו"],
         })
 
-        candidates = find_fuzzy_candidates(osm_gdf, lamas_df, confident_threshold=70, needs_ai_threshold=50)
+        candidates = find_fuzzy_candidates(osm_gdf, lamas_df, confident_threshold=90)
 
         exact_match = candidates[candidates["osm_id"] == 10].iloc[0]
         self.assertEqual(exact_match["status"], "CONFIDENT")
         self.assertEqual(exact_match["best_LAMAS_id"], "101")
-        self.assertIn("שדרות רוטשילד", exact_match["all_candidates"])
+        self.assertEqual(exact_match["best_LAMAS_name"], "שדרות רוטשילד")
 
     def test_fuzzy_candidates_keep_unnamed_osm_rows_as_missing(self):
         osm_gdf = pd.DataFrame({"osm_id": [10], "normalized_name": [None]})

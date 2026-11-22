@@ -12,26 +12,26 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from pipeline import calculate_diagnostics
 
 class TestPipelineStats(unittest.TestCase):
-    def test_ai_proposals_are_not_counted_as_approved_matches(self):
+    def test_ai_approved_matches_are_counted_in_total_matched(self):
         lamas_data = pd.DataFrame(
             {
-                "LAMAS_name": ["רחוב מאושר", "רחוב מוצע"],
-                "LAMAS_id": ["101", "202"],
-                "city": ["יישוב בדיקה", "יישוב בדיקה"],
+                "LAMAS_name": ["רחוב מאושר", "רחוב ליה", "רחוב חסר"],
+                "LAMAS_id": ["101", "202", "303"],
+                "city": ["יישוב בדיקה", "יישוב בדיקה", "יישוב בדיקה"],
             }
         )
         diagnostic_data = pd.DataFrame(
             {
-                "normalized_name": ["מאושר", "מוצע"],
+                "normalized_name": ["מאושר", "ליה"],
                 "status": ["CONFIDENT", "NEEDS_AI"],
-                "mapping_status": ["APPROVED_FUZZY", "AI_PROPOSED"],
-                "final_LAMAS_id": ["101", None],
+                "mapping_status": ["APPROVED_FUZZY", "APPROVED_AI"],
+                "final_LAMAS_id": ["101", "202"],
                 "ai_suggested_LAMAS_id": [None, "202"],
             }
         )
         osm_gdf = gpd.GeoDataFrame(
             {
-                "normalized_name": ["מאושר", "מוצע"],
+                "normalized_name": ["מאושר", "ליה"],
                 "geometry": [Point(34.8, 32.0), Point(34.81, 32.0)],
             },
             crs="EPSG:4326",
@@ -39,10 +39,11 @@ class TestPipelineStats(unittest.TestCase):
 
         diagnostics = calculate_diagnostics(lamas_data, diagnostic_data, osm_gdf)
 
-        self.assertEqual(diagnostics["total_matched"], 1)
+        self.assertEqual(diagnostics["total_matched"], 2)
         self.assertEqual(diagnostics["confident_matches"], 1)
-        self.assertEqual(diagnostics["ai_proposed_matches"], 1)
-        self.assertEqual(diagnostics["unmatched_osm_streets"], 1)
+        self.assertEqual(diagnostics["ai_resolved_matches"], 1)
+        self.assertEqual(diagnostics["unmatched_osm_streets"], 0)
+        self.assertEqual(diagnostics["unmatched_lamas_count"], 1)
 
     def test_unmatched_lamas_street_with_multiple_names(self):
         """

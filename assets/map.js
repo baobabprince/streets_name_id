@@ -18,7 +18,7 @@
   var LABELS = {
     perfect: "מאושר מדויק",
     partial: "מאושר חלקי",
-    ai: "הצעת AI",
+    ai: "התאמת AI",
     "geo-review": "בדיקה גאוגרפית",
     unmatched: "ללא התאמה מאושרת",
     unnamed: "רחוב ללא שם"
@@ -173,7 +173,7 @@
   var approved = 0;
   records.forEach(function (rec) {
     counts[rec.status] = (counts[rec.status] || 0) + 1;
-    if (rec.status === "perfect" || rec.status === "partial") approved += 1;
+    if (rec.status === "perfect" || rec.status === "partial" || (rec.status === "ai" && rec.lamasId)) approved += 1;
     if (rec.score != null && !isNaN(rec.score)) {
       var b = Math.max(0, Math.min(9, Math.floor(rec.score / 10)));
       scoreBuckets[b] += 1;
@@ -224,7 +224,7 @@
   function collectGapNames() {
     var approved = Object.create(null);
     records.forEach(function (rec) {
-      if (rec.name && (rec.status === "perfect" || rec.status === "partial")) {
+      if (rec.name && (rec.status === "perfect" || rec.status === "partial" || (rec.status === "ai" && rec.lamasId))) {
         approved[normalize(rec.name)] = true;
       }
     });
@@ -444,9 +444,9 @@
     var dl = document.getElementById("sc-meta");
     dl.innerHTML = "";
     var metaRows = [];
-    var approvedStatus = rec.status === "perfect" || rec.status === "partial";
+    var approvedStatus = rec.status === "perfect" || rec.status === "partial" || (rec.status === "ai" && !!rec.lamasId);
     if (rec.lamasId) metaRows.push([approvedStatus ? "מזהה למ״ס" : "מועמד מוביל (לא מאושר)", rec.lamasId]);
-    if (rec.ai) metaRows.push(["הצעת AI (לא מאושרת)", rec.ai]);
+    if (rec.ai && rec.ai !== rec.lamasId) metaRows.push(["הצעת AI (לא מאושרת)", rec.ai]);
     if (rec.geo) metaRows.push(["אימות גאוגרפי", rec.geo]);
     if (rec.distance) metaRows.push(["מרחק מעוגן", Math.round(parseFloat(rec.distance)) + " מ׳"]);
     if (rec.note && metaRows.length < 4) metaRows.push(["הערה", rec.note]);

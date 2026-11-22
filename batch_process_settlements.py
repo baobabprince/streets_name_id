@@ -88,12 +88,9 @@ def filter_to_official_cities(settlements: List[str]) -> List[str]:
 def worker_wrapper(
     settlement_name: str,
     place: str | Dict[str, Any],
-    use_ai: bool,
-    use_local_ai: bool,
+    use_ai: bool = False,
     skip_html: bool = False,
     use_pbf: bool = True,
-    local_ai_model: str = "qwen",
-    use_gemini: bool = True,
     save_intermediates: bool = True,
     lamas_df: Optional[pd.DataFrame] = None,
     force_refresh: bool = False,
@@ -116,12 +113,9 @@ def worker_wrapper(
             place=place,
             force_refresh=force_refresh,
             use_ai=use_ai,
-            use_local_ai=use_local_ai,
             skip_html=skip_html,
             output_name=settlement_name,
             use_pbf=use_pbf,
-            local_ai_model=local_ai_model,
-            use_gemini=use_gemini,
             lamas_df=lamas_df,
             lamas_city=settlement_name,
             save_intermediates=save_intermediates,
@@ -157,13 +151,10 @@ class BatchProcessor:
     def __init__(
         self,
         use_ai: bool = False,
-        use_local_ai: bool = True,
         skip_html: bool = False,
         quiet: bool = False,
         workers: int = 1,
         use_pbf: bool = True,
-        local_ai_model: str = "qwen",
-        use_gemini: bool = True,
         save_intermediates: bool = True,
         matches: Optional[Dict[str, Dict[str, Any]]] = None,
         unresolved: Optional[Dict[str, str]] = None,
@@ -172,13 +163,10 @@ class BatchProcessor:
         force_refresh: bool = False,
     ):
         self.use_ai = use_ai
-        self.use_local_ai = use_local_ai
         self.skip_html = skip_html
         self.quiet = quiet
         self.workers = max(1, workers)
         self.use_pbf = use_pbf
-        self.local_ai_model = local_ai_model
-        self.use_gemini = use_gemini
         self.save_intermediates = save_intermediates
         self.matches = matches or {}
         self.unresolved = unresolved or {}
@@ -288,11 +276,8 @@ class BatchProcessor:
     def _worker_kwargs(self) -> Dict[str, Any]:
         return dict(
             use_ai=self.use_ai,
-            use_local_ai=self.use_local_ai,
             skip_html=self.skip_html,
             use_pbf=self.use_pbf,
-            local_ai_model=self.local_ai_model,
-            use_gemini=self.use_gemini,
             save_intermediates=self.save_intermediates,
             force_refresh=self.force_refresh,
         )
@@ -505,14 +490,6 @@ class BatchProcessor:
         return self.generate_summary_report()
 
 
-class _LocalAIModelAction(argparse.Action):
-    """Record the chosen local AI model and implicitly enable AI resolution."""
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        setattr(namespace, self.dest, values)
-        setattr(namespace, "use_ai", True)
-
-
 def build_cli_parser(**kwargs) -> argparse.ArgumentParser:
     kwargs.setdefault(
         "description", "Fetch, match and process every LAMAS settlement in one run"
@@ -530,9 +507,7 @@ Examples:
         **kwargs,
     )
     parser.add_argument("--use-ai", action="store_true",
-                        help="Enable AI resolution for ambiguous street matches")
-    parser.add_argument("--no-local-ai", action="store_true",
-                        help="Disable Local AI resolution")
+                        help="Enable Laya AI resolution for streets below 90%% fuzzy match")
     parser.add_argument("--limit", type=int, metavar="N",
                         help="Limit processing to first N settlements (for testing)")
     parser.add_argument("--force", action="store_true",
@@ -559,11 +534,6 @@ Examples:
                         help="Comma-separated settlement names to process")
     parser.add_argument("--only-file", metavar="PATH",
                         help="File with settlement names (one per line or comma-separated)")
-    parser.add_argument("--local-ai-model", choices=("qwen", "laya"), default="qwen",
-                        action=_LocalAIModelAction,
-                        help="Local model to use for AI resolution (implies --use-ai; default: qwen)")
-    parser.add_argument("--no-gemini", action="store_true",
-                        help="Disable Gemini cloud fallback")
     parser.add_argument("--no-pbf", action="store_true",
                         help="Disable local OSM PBF extraction and use live Overpass API")
     parser.add_argument("--refresh", action="store_true",
@@ -666,13 +636,9 @@ def run_everything(args) -> Dict[str, Any]:
         _refresh_dashboard()
         return {"dashboard_only": True}
 
-    # Local AI models are heavy: never run several instances in parallel.
-    if (
-        getattr(args, "use_ai", False)
-        and not getattr(args, "no_local_ai", False)
-        and getattr(args, "workers", 1) > 1
-    ):
-        print("WARNING: Forcing workers=1 because Local AI is enabled.")
+    # Laya model is loaded in-process: keep workers=1 so it is reused once.
+    if getattr(args, "use_ai", False) and getattr(args, "workers", 1) > 1:
+        print("WARNING: Forcing workers=1 because Laya AI is enabled.")
         args.workers = 1
 
     print("Fetching LAMAS data (cached after the first run)...")
@@ -715,13 +681,10 @@ def run_everything(args) -> Dict[str, Any]:
 
     processor = BatchProcessor(
         use_ai=getattr(args, "use_ai", False),
-        use_local_ai=not getattr(args, "no_local_ai", False),
         skip_html=getattr(args, "skip_html", False),
         quiet=getattr(args, "quiet", False),
         workers=getattr(args, "workers", 1),
         use_pbf=not getattr(args, "no_pbf", False),
-        local_ai_model=getattr(args, "local_ai_model", "qwen"),
-        use_gemini=not getattr(args, "no_gemini", False),
         save_intermediates=not getattr(args, "no_intermediates", False),
         matches=resolution.matches,
         unresolved=resolution.unresolved,

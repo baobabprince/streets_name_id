@@ -17,7 +17,6 @@ class TestBatchSkipHtml(unittest.TestCase):
             "יישוב",
             "יישוב, Israel",
             use_ai=False,
-            use_local_ai=False,
             skip_html=True,
         )
 
@@ -29,7 +28,6 @@ class TestBatchSkipHtml(unittest.TestCase):
             "יישוב",
             "יישוב, Israel",
             use_ai=False,
-            use_local_ai=False,
         )
 
         self.assertFalse(result["pipeline_success"])
@@ -50,24 +48,19 @@ class TestBatchSkipHtml(unittest.TestCase):
             "אבו גוש",
             place,
             use_ai=False,
-            use_local_ai=False,
         )
 
         self.assertEqual(run_pipeline.call_args.kwargs["place"], place)
 
     @patch("batch_process_settlements.run_pipeline", return_value=PipelineStatus.SUCCESS)
-    def test_worker_passes_model_and_cloud_fallback_options(self, run_pipeline):
+    def test_worker_passes_use_ai_to_pipeline(self, run_pipeline):
         worker_wrapper(
             "יישוב",
             "יישוב, Israel",
             use_ai=True,
-            use_local_ai=True,
-            local_ai_model="laya",
-            use_gemini=False,
         )
 
-        self.assertEqual(run_pipeline.call_args.kwargs["local_ai_model"], "laya")
-        self.assertFalse(run_pipeline.call_args.kwargs["use_gemini"])
+        self.assertTrue(run_pipeline.call_args.kwargs["use_ai"])
 
     def test_city_filter_selects_exactly_the_configured_83_cities(self):
         with open(OFFICIAL_CITIES_FILE, "r", encoding="utf-8") as file:
