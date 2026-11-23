@@ -369,7 +369,23 @@
         )),
     );
   }
+  // Dates are pre-formatted by the builder; missing values are reported as
+  // "not recorded" rather than estimated.
+  function setupDates() {
+    const source = data.sourceDates;
+    const parts = [
+      `מועד יצירת העמוד המקורי: ${source?.generated || "לא תועד"}`,
+    ];
+    if (source?.osm) parts.push(`נתוני OSM: ${source.osm}`);
+    if (source?.lamas) parts.push(`נתוני למ״ס: ${source.lamas}`);
+    $("source-dates").textContent = parts.join(" · ");
+    const built = data.builtAt;
+    $("built-at").textContent = built?.display
+      ? `מועד בניית התצוגה: ${built.display}${built.zone ? ` (${built.zone})` : ""}`
+      : "מועד בניית התצוגה: לא תועד";
+  }
   function setupOverview() {
+    setupDates();
     const d = data.meta.diagnostics;
     const approved = views.approved.items.length;
     const official = data.approvedOfficialCount;

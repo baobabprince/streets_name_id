@@ -7,12 +7,17 @@ survey-grade geometry source. Run from any directory with:
     python scripts/build_comparison_prototype.py
 """
 import json
+import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
 from pyproj import Transformer
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from provenance import build_time, display_dates, format_local, zone_label  # noqa: E402
 SOURCE = ROOT / "HTML/פתח_תקווה_roads.html"
 OUTPUT = ROOT / "prototype/data.json"
 
@@ -70,6 +75,11 @@ class PageData(HTMLParser):
             self.in_missing_list = False
 
 
+def _built_at():
+    stamp = build_time()
+    return {"iso": stamp, "display": format_local(stamp), "zone": zone_label(stamp)}
+
+
 def build(source=SOURCE):
     page = PageData()
     page.feed(source.read_text(encoding="utf-8"))
@@ -94,7 +104,9 @@ def build(source=SOURCE):
     return {
         "meta": meta,
         "source": "../HTML/פתח_תקווה_roads.html",
-        "sourceDates": None,
+        # Recorded by the pipeline in the source page; None for older pages.
+        "sourceDates": display_dates(meta.get("provenance")),
+        "builtAt": _built_at(),
         "geometryNote": "שחזור מקואורדינטות העמוד הקיים ומרכז מעוגל; דיוק מיקום בקירוב של מטר.",
         "records": records,
         "geometry": geometries,

@@ -3,6 +3,7 @@
 Requires playwright. Optional PROJECT_URL and CHROMIUM_EXECUTABLE.
 External requests are blocked intentionally; these checks verify local behavior.
 """
+import re
 import hashlib
 import json
 import os
@@ -28,6 +29,12 @@ def main():
         assert response.status == 200
         assert "no-store" in response.headers.get("cache-control", "")
         expect(page.locator("h1")).to_contain_text("התאמת רחובות OSM")
+        dates = page.locator(".snapshot-dates")
+        expect(dates).to_contain_text("הדף נוצר")
+        expect(dates.locator("time").first).to_have_attribute("datetime", re.compile(r"^\d{4}-\d{2}-\d{2}T"))
+        expect(dates).to_contain_text("הרצת אצווה אחרונה")
+        expect(dates).to_contain_text("מתוך 859 דפי יישוב")
+        expect(page.locator(".project-footer time")).to_be_visible()
         expect(page.locator("#city-table tbody tr")).to_have_count(12)
         payload = json.loads(page.locator("#dash-data").text_content())
         assert payload["totals"]["cities"] == len(payload["cities"]) == 859

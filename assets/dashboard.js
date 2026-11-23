@@ -237,6 +237,8 @@
     seg.setAttribute("aria-label", "פילוח סטטוסים עבור " + city.name);
     a.querySelector(".cc-total").textContent =
       fmt(city.osm) + " רחובות · " + fmt(city.lamas) + " רחובות רשמיים";
+    var date = dateLine(city, "cc-date");
+    if (date) a.querySelector(".cc-name").insertAdjacentHTML("beforeend", date);
     return a;
   }
 
@@ -259,7 +261,9 @@
           city.href +
           '">' +
           escapeHtml(city.name) +
-          "</a></td>" +
+          "</a>" +
+          dateLine(city, "t-date") +
+          "</td>" +
           '<td><div class="t-coverage">' +
           (city.tier === "missing"
             ? '<b style="color:var(--muted)">—</b><span style="color:var(--muted-2);font-size:.72rem">ללא מאגר</span>'
@@ -302,6 +306,25 @@
       })
       .join("");
     el.tableBody.innerHTML = rows;
+  }
+
+  // Only pages generated with recorded provenance carry dates; older pages
+  // show nothing rather than an estimated time.
+  function dateLine(city, className) {
+    var dates = city.dates;
+    if (!dates || !dates.generated) return "";
+    var title = [];
+    if (dates.osm) title.push("נתוני OSM: " + dates.osm);
+    if (dates.lamas) title.push("נתוני למ״ס: " + dates.lamas);
+    return (
+      '<small class="' +
+      className +
+      '"' +
+      (title.length ? ' title="' + escapeHtml(title.join(" · ")) + '"' : "") +
+      ">נוצר " +
+      escapeHtml(dates.generated) +
+      "</small>"
+    );
   }
 
   function escapeHtml(value) {

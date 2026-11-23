@@ -1,4 +1,7 @@
 import json
+import re
+from datetime import datetime
+from unittest import mock
 import os
 import tempfile
 import unittest
@@ -133,13 +136,45 @@ class TestGenerateIndex(unittest.TestCase):
         self.assertEqual(petah["ai_approved"], 9)
         self.assertEqual(petah["ai_pending"], 0)
         self.assertEqual(petah["ai_unknown"], 0)
-        with tempfile.TemporaryDirectory() as tmp:
+        checked_in = (root / "index.html").read_text(encoding="utf-8")
+        stamp = re.search(r'"generated_at": "([^"]+)"', checked_in).group(1)
+        epoch = str(int(datetime.fromisoformat(stamp).timestamp()))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": epoch}):
             html = build_dashboard(cities, str(Path(tmp) / "index.html"), data_out=None)
-        self.assertEqual(html, (root / "index.html").read_text(encoding="utf-8"))
+        # With the creation stamp pinned, the rebuild must be byte-identical.
+        self.assertEqual(html, checked_in)
+        self.assertIn("הדף נוצר", html)
+        self.assertIn("הרצת אצווה אחרונה", html)
         self.assertNotIn("@@", html)
         self.assertIn("city_code:official_code", html)
         self.assertIn("לא ייבוא אוטומטי", html)
         self.assertIn("אין בכך אישור של קהילת OSM", html)
+
+    def test_page_creation_dates_are_read_only_when_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write_pages(directory)
+            meta = {"place": "עיר מתועדת", "diagnostics": {"total_osm_streets": 2, "total_matched": 1},
+                    "provenance": {"generated_at": "2026-11-23T13:05:00+00:00",
+                                   "osm": {"osm_snapshot_at": "2026-11-19T20:21:00+00:00"},
+                                   "lamas": {"retrieved_at": "2026-11-20T08:00:00+00:00"}}}
+            (directory / "dated_roads.html").write_text(
+                '<html><body><script id="page-meta" type="application/json">'
+                + json.dumps(meta, ensure_ascii=False) + "</script></body></html>", encoding="utf-8")
+            cities = scan_settlements(str(directory))
+            with mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"}):
+                html = build_dashboard(cities, str(directory / "index.html"), data_out=None)
+        dated = next(c for c in cities if c["name"] == "עיר מתועדת")
+        self.assertEqual(dated["dates"], {"generated_at": "2026-11-23T13:05:00+00:00",
+                                          "generated": "23.11.2026, 15:05",
+                                          "osm": "19.11.2026", "lamas": "20.11.2026"})
+        self.assertTrue(all("dates" not in c for c in cities if c is not dated))
+        totals = aggregate(cities)
+        self.assertEqual(totals["dated_pages"], 1)
+        self.assertEqual(totals["newest_page_at"], "2026-11-23T13:05:00+00:00")
+        self.assertIn('<time datetime="2023-11-14T22:13:20+00:00">15.11.2023, 00:13</time>', html)
+        self.assertIn("1 מתוך 3 דפי יישוב", html)
+        self.assertIn("מועדי היצירה המתועדים: 23.11.2026.", html)
 
     def test_embedded_data_is_escaped_and_not_recursively_templated(self):
         with tempfile.TemporaryDirectory() as tmp:

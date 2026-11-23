@@ -19,7 +19,12 @@ class ComparisonPrototypeTests(unittest.TestCase):
         cls.data = builder.build()
 
     def test_checked_in_fixture_is_reproducible(self):
-        self.assertEqual(self.data, json.loads((ROOT / "prototype/data.json").read_text(encoding="utf-8")))
+        checked_in = json.loads((ROOT / "prototype/data.json").read_text(encoding="utf-8"))
+        # The build stamp is the only intentionally time-dependent field.
+        self.assertTrue(checked_in.pop("builtAt"))
+        rebuilt = dict(self.data)
+        rebuilt.pop("builtAt")
+        self.assertEqual(rebuilt, checked_in)
 
     def test_both_coverage_denominators_reconcile(self):
         records = self.data["records"]
@@ -63,7 +68,16 @@ class ComparisonPrototypeTests(unittest.TestCase):
             self.assertEqual(digest, expected, f"Run python scripts/stamp_comparison_assets.py after editing {path}")
 
     def test_no_invented_source_dates(self):
+        # The current Petah Tikva page predates provenance recording.
         self.assertIsNone(self.data["sourceDates"])
+
+    def test_build_stamp_honours_source_date_epoch(self):
+        from unittest import mock
+
+        with mock.patch.dict("os.environ", {"SOURCE_DATE_EPOCH": "1700000000"}):
+            built = builder.build()["builtAt"]
+        self.assertEqual(built["iso"], "2023-11-14T22:13:20+00:00")
+        self.assertEqual(built["display"], "15.11.2023, 00:13")
 
 
 if __name__ == "__main__":

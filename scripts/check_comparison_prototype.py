@@ -7,6 +7,7 @@ Optional: COMPARISON_URL, CHROMIUM_EXECUTABLE, COMPARISON_SCREENSHOT.
 External map/font requests are deliberately blocked: this checks local
 functionality and fallbacks, NOT availability of OSM tiles or GovMap embedding.
 """
+import re
 import os
 import csv
 import io
@@ -342,6 +343,8 @@ def main():
         page.locator('#legend button').first.click()
         expect(page.locator("#map-count")).to_have_text("832")
         page.locator("#reset").click()
+        expect(page.locator("#source-dates")).to_contain_text("מועד יצירת העמוד המקורי: לא תועד")
+        expect(page.locator("#built-at")).to_contain_text(re.compile(r"מועד בניית התצוגה: \d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}"))
         page.locator("h1").click()
         page.keyboard.press("/")
         expect(page.locator("#search")).to_be_focused()

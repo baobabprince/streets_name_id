@@ -21,6 +21,7 @@ import pandas as pd
 from shapely.geometry import LineString, MultiLineString
 
 from data_loader import safe_place_name as _safe_place_name
+from provenance import page_provenance, page_sources_html, page_stamp_html
 
 # Match-status palette — must stay in sync with assets/map.js
 COLOR_PERFECT = "#35d0a1"
@@ -196,7 +197,7 @@ def _govmap_center(gdf):
         return None
 
 
-def _page_meta(gdf, place_name, diagnostics, counts, match_pct):
+def _page_meta(gdf, place_name, diagnostics, counts, match_pct, provenance=None):
     """Small JSON summary embedded in the page (and reused by the dashboard)."""
     diag = {}
     if diagnostics:
@@ -223,6 +224,8 @@ def _page_meta(gdf, place_name, diagnostics, counts, match_pct):
     center = _govmap_center(gdf)
     if center:
         payload["govmap"] = center
+    if provenance:
+        payload["provenance"] = provenance
     return json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
 
 
@@ -230,7 +233,17 @@ def _records_json(records) -> str:
     return json.dumps(records, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
 
 
-def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: dict = None):
+def create_html_from_gdf(
+    gdf: gpd.GeoDataFrame,
+    place_name: str,
+    diagnostics: dict = None,
+    provenance: dict | None = None,
+):
+    """Render one settlement page.
+
+    ``provenance`` describes the OSM/LAMAS inputs (see ``provenance.py``); the
+    page creation time is stamped here, when the file is written.
+    """
     place_name = display_place_name(place_name)
     if gdf.empty:
         print("Input GeoDataFrame is empty. No HTML will be generated.")
@@ -390,14 +403,17 @@ def create_html_from_gdf(gdf: gpd.GeoDataFrame, place_name: str, diagnostics: di
     with open(template_path, encoding="utf-8") as tf:
         template = tf.read()
 
+    page_provenance_block = page_provenance(provenance)
     html_content = (
         template
+        .replace("@@PAGE_STAMP@@", page_stamp_html(page_provenance_block))
+        .replace("@@PAGE_SOURCES@@", page_sources_html(page_provenance_block))
         .replace("@@PLACE_NAME@@", escape(str(place_name)))
         .replace("@@WIDTH@@", f"{width:.1f}")
         .replace("@@HEIGHT@@", f"{height:.1f}")
         .replace("@@SVG_PATHS@@", "\n".join(svg_paths))
         .replace("@@DIAGNOSTICS@@", diag_html)
-        .replace("@@PAGE_META@@", _page_meta(gdf, place_name, diagnostics, counts, match_pct))
+        .replace("@@PAGE_META@@", _page_meta(gdf, place_name, diagnostics, counts, match_pct, page_provenance_block))
         .replace("@@RECORDS@@", _records_json(records))
         .replace("@@MATCH_PCT@@", str(match_pct))
         .replace("@@COVERAGE@@", coverage_html)

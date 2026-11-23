@@ -19,10 +19,17 @@ import glob
 import json
 import os
 import re
-from datetime import datetime
 from html import escape
 from pathlib import Path
 from urllib.parse import quote
+
+from provenance import (
+    build_time,
+    display_dates,
+    format_local,
+    parse_iso,
+    zone_label,
+)
 
 HTML_DIR = "HTML"
 OUTPUT_FILE = "index.html"
@@ -174,7 +181,7 @@ def parse_page(path: str) -> dict | None:
     else:
         tier = "poor"
 
-    return {
+    record = {
         "name": name,
         "file": os.path.basename(path),
         "href": f"{HTML_DIR}/{quote(os.path.basename(path), safe='')}",
@@ -191,6 +198,10 @@ def parse_page(path: str) -> dict | None:
         "counts": status_counts,
         "tier": tier,
     }
+    dates = _page_dates(meta)
+    if dates:  # legacy pages have no recorded creation time; never guess one
+        record["dates"] = dates
+    return record
 
 
 def scan_settlements(html_dir: str = HTML_DIR) -> list[dict]:
@@ -212,22 +223,35 @@ def scan_settlements(html_dir: str = HTML_DIR) -> list[dict]:
     return cities
 
 
-def _last_updated() -> str:
+def _last_batch_run() -> str | None:
+    """Timestamp of the newest batch summary, exactly as it was recorded.
+
+    Batch summaries store naive host-local times; they are shown as recorded
+    without converting or claiming a time zone.
+    """
     stamps = []
     for path in glob.glob("batch_reports/batch_summary_*.json"):
         try:
             with open(path, encoding="utf-8") as handle:
-                stamps.append(json.load(handle).get("timestamp", ""))
+                stamp = json.load(handle).get("timestamp", "")
         except Exception:
             continue
-    stamp = max([s for s in stamps if s], default="")
-    try:
-        dt = datetime.fromisoformat(stamp)
-    except ValueError:
-        return "עדכון אחרון: לא ידוע"
-    months = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט",
-              "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"]
-    return f"עודכן ב-{dt.day} ב{months[dt.month - 1]} {dt.year}"
+        if parse_iso(stamp):
+            stamps.append(stamp)
+    return max(stamps, key=lambda value: parse_iso(value).replace(tzinfo=None), default=None)
+
+
+def _page_dates(meta: dict) -> dict | None:
+    return display_dates(meta.get("provenance"))
+
+
+def _time_html(value: str | None, missing: str = "לא תועד") -> str:
+    text = format_local(value)
+    if not text:
+        return escape(missing)
+    zone = zone_label(value)
+    return (f'<time datetime="{escape(value)}">{escape(text)}</time>'
+            + (f"<small> {escape(zone)}</small>" if zone else ""))
 
 
 def aggregate(cities: list[dict]) -> dict:
@@ -264,6 +288,10 @@ def aggregate(cities: list[dict]) -> dict:
         1 for city in cities if city["tier"] not in ("missing", "none")
     )
     totals["missing_data"] = tiers.get("missing", 0) + tiers.get("none", 0)
+    dated = [c["dates"]["generated_at"] for c in cities if c.get("dates", {}).get("generated_at")]
+    totals["dated_pages"] = len(dated)
+    totals["newest_page_at"] = max(dated, key=lambda v: parse_iso(v), default=None)
+    totals["oldest_page_at"] = min(dated, key=lambda v: parse_iso(v), default=None)
     return totals
 
 
@@ -397,17 +425,32 @@ def _example_match(cities: list[dict]) -> str:
     return '<aside class="evidence-card"><h2>קישור שניתן לבדיקה</h2><p>שם ב־OSM, שם רשמי, קוד רחוב ושיטת ההתאמה — יחד, בהקשר של היישוב.</p><a href="#cities">לנתוני היישובים ←</a></aside>'
 
 
+def _page_range_html(totals: dict) -> str:
+    if not totals.get("dated_pages"):
+        return "דפי היישובים הקיימים נוצרו לפני שתועד מועד היצירה; הוא יוצג בכל דף שייווצר מחדש."
+    oldest = format_local(totals["oldest_page_at"], with_time=False)
+    newest = format_local(totals["newest_page_at"], with_time=False)
+    span = oldest if oldest == newest else f"{oldest}–{newest}"
+    return f"מועדי היצירה המתועדים: {escape(span)}."
+
+
 def build_dashboard(cities: list[dict], output: str = OUTPUT_FILE, data_out: str | None = DATA_FILE) -> str:
     totals = aggregate(cities)
     method = _method_defaults()
-    updated = _last_updated()
-    payload = {"schema_version": 2, "updated": updated, "totals": totals,
+    generated_at = build_time()
+    batch_run = _last_batch_run()
+    payload = {"schema_version": 3, "generated_at": generated_at, "batch_run": batch_run,
+               "totals": totals,
                "method_defaults": method, "cities": cities}
     payload_json = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
     if data_out:
         Path(data_out).write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
     replacements = {
-        "PAYLOAD": payload_json, "UPDATED": escape(updated),
+        "PAYLOAD": payload_json,
+        "GENERATED_AT": _time_html(generated_at),
+        "BATCH_RUN": _time_html(batch_run, "לא נמצא סיכום"),
+        "DATED_PAGES": _fmt(totals["dated_pages"]),
+        "PAGE_RANGE": _page_range_html(totals),
         "CITIES": _fmt(totals["cities"]), "OSM": _fmt(totals["osm"]),
         "MATCHED": _fmt(totals["matched"]), "UNMATCHED": _fmt(totals["unmatched"]),
         "AI_APPROVED": _fmt(totals["ai_approved"]),
