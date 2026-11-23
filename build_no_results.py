@@ -30,6 +30,10 @@ def main(out="no_results.json"):
     if os.path.exists(path):
         nodata = {l.strip() for l in open(path, encoding="utf-8") if l.strip() and not l.startswith("##")}
 
+    retried = set()
+    if os.path.exists("batch_reports/retry_pending.txt"):
+        retried = {l.strip() for l in open("batch_reports/retry_pending.txt", encoding="utf-8") if l.strip()}
+
     items = []
     for _, r in rep.iterrows():
         name = r["settlement"]
@@ -37,9 +41,11 @@ def main(out="no_results.json"):
             continue
         if r["status"] != "matched":
             cat, detail = "unresolved", str(r.get("reason") or "")
-        elif name in nodata:
+        elif name in nodata or name in retried:
+            # processed (or retried) and still no page: OSM has no named streets
+            # inside the settlement area (nearest named street is outside it)
             cache = f"data/osm_data_{name}__Israel.pkl"
-            cat, detail = ("no_named_streets" if os.path.exists(cache) else "no_osm_streets"), ""
+            cat, detail = ("no_named_streets" if (os.path.exists(cache) or name in retried) else "no_osm_streets"), ""
         else:
             cat, detail = "pending", ""
         items.append({"name": name, "category": cat, "reason": REASONS[cat],
