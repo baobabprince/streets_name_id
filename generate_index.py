@@ -276,6 +276,49 @@ def _attention(cities: list[dict], limit: int = 8) -> list[dict]:
     return pool[:limit]
 
 
+NO_RESULTS_FILE = "no_results.json"
+
+
+def _no_results_section() -> str:
+    """Collapsible list of settlements that have no street page at all."""
+    try:
+        with open(NO_RESULTS_FILE, encoding="utf-8") as handle:
+            items = json.load(handle)
+    except (OSError, ValueError):
+        return ""
+    if not items:
+        return ""
+    order = ["unresolved", "no_osm_streets", "no_named_streets", "pending"]
+    groups = {key: [i for i in items if i["category"] == key] for key in order}
+    blocks = []
+    for key in order:
+        rows = groups[key]
+        if not rows:
+            continue
+        lis = "".join(
+            f'<li><span>{escape(i["name"])}</span>'
+            f'<small>{_fmt(i["lamas"])} רחובות בלמ״ס</small></li>'
+            for i in rows
+        )
+        blocks.append(
+            f'<details class="nr-group"><summary>{escape(rows[0]["reason"])} '
+            f'<b>({_fmt(len(rows))})</b></summary><ul class="nr-list">{lis}</ul></details>'
+        )
+    return (
+        '<section class="no-results" id="no-results">'
+        '<div class="shell"><h2>יישובים ללא תוצאות</h2>'
+        f'<p>{_fmt(len(items))} יישובים אין להם עדיין עמוד מפת רחובות. '
+        'ליד כל יישוב מצוין מספר הרחובות הרשומים עבורו בלמ״ס.</p>'
+        + "".join(blocks) + "</div></section>"
+        '<style>.no-results{margin:3rem 0}.no-results details{margin:.5rem 0;'
+        'border:1px solid var(--line-strong,#ccc);border-radius:10px;padding:.6rem 1rem}'
+        '.no-results summary{cursor:pointer;font-weight:600}'
+        '.nr-list{columns:3 220px;list-style:none;padding:0;margin:.8rem 0 0}'
+        '.nr-list li{display:flex;justify-content:space-between;gap:.5rem;padding:.15rem 0;break-inside:avoid}'
+        '.nr-list small{opacity:.65}</style>'
+    )
+
+
 def build_dashboard(cities: list[dict], output: str = OUTPUT_FILE, data_out: str | None = DATA_FILE) -> str:
     totals = aggregate(cities)
     circumference, offset, coverage_text = _ring(totals["coverage"])
@@ -585,6 +628,8 @@ def build_dashboard(cities: list[dict], output: str = OUTPUT_FILE, data_out: str
     </div>
   </section>
 </div>
+
+{_no_results_section()}
 
 <footer class="site-footer">
   <div class="shell foot-grid">
