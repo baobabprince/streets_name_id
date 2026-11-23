@@ -54,7 +54,8 @@ def normalize_street_name(name):
         name = re.sub(pattern, replacement, name)
 
     name = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\-]", " ", name)
-    name = re.sub(r"[.,;:!?\'\"(){}[\]]", "", name)
+    name = re.sub(r"[.,;:!?\'\"{}[\]]", "", name)
+    name = re.sub(r"[()]", " ", name)
     name = re.sub(r"\s+", " ", name)
     name = name.strip()
 
