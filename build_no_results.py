@@ -51,11 +51,11 @@ def main(out="no_results.json"):
         items.append({"name": name, "category": cat, "reason": REASONS[cat],
                       "detail": re.sub(r"\s+", " ", detail)[:120],
                       "lamas": int(counts.get(canonical_key(name), 0))})
-    # A partial (retry) run overwrites the match report; keep earlier unresolved entries.
+    # A partial (retry) run overwrites the match report; keep earlier entries.
     if os.path.exists(out):
         have = {i["name"] for i in items}
         for old in json.load(open(out, encoding="utf-8")):
-            if old["category"] == "unresolved" and old["name"] not in have and old["name"] not in pages:
+            if old["category"] in ("unresolved", "no_named_streets") and old["name"] not in have and old["name"] not in pages:
                 items.append(old)
     items.sort(key=lambda i: (i["category"], -i["lamas"], i["name"]))
     json.dump(items, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
