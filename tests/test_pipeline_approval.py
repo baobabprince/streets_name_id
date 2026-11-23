@@ -277,6 +277,43 @@ class TestPipelineApproval(unittest.TestCase):
         self.assertEqual(diagnostic.iloc[0]["final_city_code"], "3000")
         self.assertEqual(diagnostic.iloc[0]["final_official_code"], "1457")
 
+    def test_source_provenance_reaches_page_renderer(self):
+        osm_gdf = gpd.GeoDataFrame(
+            {
+                "osm_id": ["osm-1"],
+                "osm_name": ["רחוב ארוך"],
+                "city": ["עיר בדיקה"],
+                "geometry": [LineString([(34.80, 32.00), (34.801, 32.00)])],
+            },
+            crs="EPSG:4326",
+        )
+        osm_gdf.attrs["provenance"] = {"source": "pbf", "osm_snapshot_at": "2026-11-19T20:21:00+00:00"}
+        lamas_df = pd.DataFrame(
+            {
+                "LAMAS_id": ["1457"],
+                "LAMAS_name": ["רחוב ארוך"],
+                "city": ["עיר בדיקה"],
+                "city_code": ["3000"],
+                "official_code": ["1457"],
+                "street_code": ["1457"],
+                "street_name_status": ["official"],
+                "is_official": [True],
+                "LAMAS_key": ["3000:1457"],
+            }
+        )
+        lamas_df.attrs["provenance"] = {"source": "data.gov.il", "retrieved_at": "2026-11-20T08:00:00+00:00"}
+        with (
+            patch.object(pipeline, "load_or_fetch_LAMAS", return_value=lamas_df),
+            patch.object(pipeline, "load_or_fetch_osm", return_value=osm_gdf),
+            patch.object(pipeline, "save_intermediate_df"),
+            patch("generate_html.create_html_from_gdf") as render,
+        ):
+            status = pipeline.run_pipeline("עיר בדיקה", use_ai=False)
+        self.assertEqual(status, PipelineStatus.SUCCESS)
+        sources = render.call_args.kwargs["provenance"]
+        self.assertEqual(sources["osm"]["osm_snapshot_at"], "2026-11-19T20:21:00+00:00")
+        self.assertEqual(sources["lamas"]["retrieved_at"], "2026-11-20T08:00:00+00:00")
+
 
 if __name__ == "__main__":
     unittest.main()

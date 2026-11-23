@@ -4,6 +4,8 @@ import os
 from typing import Any, Callable
 
 import osmnx as ox
+
+from provenance import utc_now
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import LineString, box
@@ -179,6 +181,11 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
             from osm_pbf_loader import fetch_pbf_street_data
             pbf_gdf = fetch_pbf_street_data(place)
             if pbf_gdf is not None and not pbf_gdf.empty:
+                try:
+                    from osm_pbf_loader import national_streets_provenance
+                    pbf_gdf.attrs["provenance"] = national_streets_provenance()
+                except Exception as exc:  # provenance is informative only
+                    logger.debug("Could not read PBF provenance: %s", exc)
                 logger.info(
                     "Successfully loaded %s road segments from local PBF for %s",
                     len(pbf_gdf),
@@ -200,6 +207,7 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
         ox.settings.useful_tags_way.append("name:he")
 
     # 1. Download and simplify the full street network for the requested place.
+    overpass_retrieved_at = utc_now()
     try:
         if isinstance(place, dict):
             G = _graph_from_place_dict(place)
@@ -265,6 +273,7 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
 
     # 4. כיווץ ה-GeoDataFrame לדרכים בלבד (נאבד חלק מהתכונות של הגרף, אך זה מתאים למיפוי)
     logger.info("Fetched %s OSM road segments for %s", len(osm_gdf), place)
+    osm_gdf.attrs["provenance"] = {"source": "overpass", "retrieved_at": overpass_retrieved_at}
     return osm_gdf
 
 # טעינת נתוני OSM (יכול לקחת מספר דקות!)

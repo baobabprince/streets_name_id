@@ -6,6 +6,7 @@ import time
 import requests
 import pandas as pd
 
+from provenance import cached_file_provenance, utc_now, write_sidecar
 from settlement_names import canonical_key
 
 LAMAS_API_URL = "https://data.gov.il/api/3/action/datastore_search"
@@ -147,7 +148,19 @@ _normalize_lamas_data = normalize_lamas_data
 
 def _load_csv_cache():
     df = pd.read_csv(CACHE_FILE, dtype=str)
-    return normalize_lamas_data(df)
+    df = normalize_lamas_data(df)
+    df.attrs["provenance"] = _source_provenance(
+        cached_file_provenance(CACHE_FILE) or {}
+    )
+    return df
+
+
+def _source_provenance(extra: dict) -> dict:
+    return {
+        "source": "data.gov.il",
+        "resource_id": RESOURCE_ID,
+        **{key: value for key, value in extra.items() if key not in {"source", "resource_id"}},
+    }
 
 
 def _csv_cache_is_fresh():
@@ -213,6 +226,7 @@ def fetch_all_LAMAS_data(force_refresh=False):
             print(f"שגיאה בטעינת קובץ המטמון: {e}, מנסה להוריד מחדש...")
 
     print("מתחיל בשליפת נתוני הלמ\"ס המלאים (כולל שמות נרדפים)...")
+    retrieved_at = utc_now()
     all_records = []
     offset = 0
     total = None
@@ -282,12 +296,14 @@ def fetch_all_LAMAS_data(force_refresh=False):
     if all_records:
         LAMAS_raw_df = pd.DataFrame(all_records)
         LAMAS_df = normalize_lamas_data(LAMAS_raw_df)
+        LAMAS_df.attrs["provenance"] = _source_provenance({"retrieved_at": retrieved_at})
 
         # שמירה לקובץ מקומי
         try:
             os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
             LAMAS_df.to_csv(CACHE_FILE, index=False)
             print(f"הנתונים נשמרו לקובץ מקומי: {CACHE_FILE}")
+            write_sidecar(CACHE_FILE, LAMAS_df.attrs["provenance"])
         except Exception as e:
             print(f"שגיאה בשמירת קובץ המטמון: {e}")
 

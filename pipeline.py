@@ -369,6 +369,12 @@ def run_pipeline(
             logger.warning("No OSM data available for %s", chosen_place_str)
             return PipelineStatus.NO_DATA
 
+        # Captured before any transformation: when each source was obtained.
+        source_provenance = {
+            "osm": dict(osm_gdf.attrs.get("provenance") or {}) or None,
+            "lamas": dict(LAMAS_df.attrs.get("provenance") or {}) or None,
+        }
+
         try:
             total_bounds = osm_gdf.total_bounds
             avg_lon = (total_bounds[0] + total_bounds[2]) / 2
@@ -648,7 +654,12 @@ def run_pipeline(
             from generate_html import create_html_from_gdf
 
             os.makedirs("HTML", exist_ok=True)
-            create_html_from_gdf(diagnostic_df_full, file_identifier, diagnostics)
+            create_html_from_gdf(
+                diagnostic_df_full,
+                file_identifier,
+                diagnostics,
+                provenance=source_provenance,
+            )
         except Exception as e:
             logger.warning("Failed to generate HTML visualization: %s", e)
 

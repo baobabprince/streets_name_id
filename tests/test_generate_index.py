@@ -1,10 +1,13 @@
 import json
+import re
+from datetime import datetime
+from unittest import mock
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
-from generate_index import aggregate, build_dashboard, parse_page, scan_settlements
+from generate_index import aggregate, build_dashboard, parse_page, scan_settlements, _method_defaults
 
 
 NEW_PAGE = """<!DOCTYPE html><html lang="he"><head><title>x</title>
@@ -82,10 +85,106 @@ class TestGenerateIndex(unittest.TestCase):
         self.assertEqual(totals["coverage"], 46.7)
         self.assertEqual(totals["buckets"][3], 1)  # legacy city, 30%
         self.assertEqual(totals["buckets"][8], 1)  # new city, 80%
-        self.assertIn("כל הרחובות", html)
+        self.assertIn("התאמת רחובות OSM", html)
+        for removed in ("תמונת אמת אחת", "קישור שאפשר לבדוק", "הקשר לפני הכול", "אפשר לבחון את ההחלטה", 'class="value-strip"', 'class="hero-principles"', "קופסה שחורה"):
+            self.assertNotIn(removed, html)
         self.assertIn('id="dash-data"', html)
         self.assertEqual(len(payload["cities"]), 2)
         self.assertEqual(payload["totals"]["osm"], 15)
+
+    def test_ai_approval_requires_record_evidence_not_legacy_field_name(self):
+        records = [
+            ["ai", "א", "רשמי א", "101", 88.5, "101", .9],
+            ["ai", "ב", "רשמי ב", "", 80, "102", .8],
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            page = Path(tmp) / "ai.html"
+            page.write_text(NEW_PAGE.replace('type="application/json">[]', 'type="application/json">' + json.dumps(records)), encoding="utf-8")
+            city = parse_page(str(page))
+        self.assertEqual(city["ai"], 2)
+        self.assertEqual(city["ai_approved"], 1)
+        self.assertEqual(city["ai_pending"], 1)
+        self.assertEqual(city["ai_unknown"], 0)
+
+    def test_legacy_ai_status_is_unknown_and_not_double_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write_pages(directory)
+            cities = scan_settlements(str(directory))
+        totals = aggregate(cities)
+        self.assertEqual(totals["ai"], 3)
+        self.assertEqual(totals["ai_unknown"], 3)
+        self.assertEqual(totals["ai_approved"], 0)
+        self.assertEqual(totals["open"], 8)  # AI is not subtracted again.
+        self.assertEqual(totals["matched"] + totals["unmatched"], totals["osm"])
+        self.assertIsNone(totals["lamas_coverage"])  # names / codes is not coverage
+
+    def test_current_ai_defaults_are_exposed_without_loading_models(self):
+        method = _method_defaults()
+        self.assertEqual(method["DEFAULT_CONFIDENT_THRESHOLD"], 90.0)
+        self.assertEqual(method["AI_MIN_CONFIDENCE"], .70)
+        self.assertEqual(method["AI_MIN_CORE_WRATIO"], 75.0)
+        self.assertEqual(method["AI_MAX_RAW_HITS_PER_ID"], 10)
+        self.assertEqual(method["AI_MAX_APPROVED_HITS_PER_ID"], 2)
+
+    def test_production_index_is_reproducible_and_ai_stats_reconcile(self):
+        root = Path(__file__).resolve().parents[1]
+        cities = scan_settlements(str(root / "HTML"))
+        totals = aggregate(cities)
+        self.assertEqual(totals["ai_approved"] + totals["ai_pending"] + totals["ai_unknown"], totals["ai"])
+        petah = next(c for c in cities if c["name"] == "פתח תקווה")
+        self.assertEqual(petah["ai_approved"], 9)
+        self.assertEqual(petah["ai_pending"], 0)
+        self.assertEqual(petah["ai_unknown"], 0)
+        checked_in = (root / "index.html").read_text(encoding="utf-8")
+        stamp = re.search(r'"generated_at": "([^"]+)"', checked_in).group(1)
+        epoch = str(int(datetime.fromisoformat(stamp).timestamp()))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": epoch}):
+            html = build_dashboard(cities, str(Path(tmp) / "index.html"), data_out=None)
+        # With the creation stamp pinned, the rebuild must be byte-identical.
+        self.assertEqual(html, checked_in)
+        self.assertIn("הדף נוצר", html)
+        self.assertIn("הרצת אצווה אחרונה", html)
+        self.assertNotIn("@@", html)
+        self.assertIn("city_code:official_code", html)
+        self.assertIn("לא ייבוא אוטומטי", html)
+        self.assertIn("אין בכך אישור של קהילת OSM", html)
+
+    def test_page_creation_dates_are_read_only_when_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write_pages(directory)
+            meta = {"place": "עיר מתועדת", "diagnostics": {"total_osm_streets": 2, "total_matched": 1},
+                    "provenance": {"generated_at": "2026-11-23T13:05:00+00:00",
+                                   "osm": {"osm_snapshot_at": "2026-11-19T20:21:00+00:00"},
+                                   "lamas": {"retrieved_at": "2026-11-20T08:00:00+00:00"}}}
+            (directory / "dated_roads.html").write_text(
+                '<html><body><script id="page-meta" type="application/json">'
+                + json.dumps(meta, ensure_ascii=False) + "</script></body></html>", encoding="utf-8")
+            cities = scan_settlements(str(directory))
+            with mock.patch.dict(os.environ, {"SOURCE_DATE_EPOCH": "1700000000"}):
+                html = build_dashboard(cities, str(directory / "index.html"), data_out=None)
+        dated = next(c for c in cities if c["name"] == "עיר מתועדת")
+        self.assertEqual(dated["dates"], {"generated_at": "2026-11-23T13:05:00+00:00",
+                                          "generated": "23.11.2026, 15:05",
+                                          "osm": "19.11.2026", "lamas": "20.11.2026"})
+        self.assertTrue(all("dates" not in c for c in cities if c is not dated))
+        totals = aggregate(cities)
+        self.assertEqual(totals["dated_pages"], 1)
+        self.assertEqual(totals["newest_page_at"], "2026-11-23T13:05:00+00:00")
+        self.assertIn('<time datetime="2023-11-14T22:13:20+00:00">15.11.2023, 00:13</time>', html)
+        self.assertIn("1 מתוך 3 דפי יישוב", html)
+        self.assertIn("מועדי היצירה המתועדים: 23.11.2026.", html)
+
+    def test_embedded_data_is_escaped_and_not_recursively_templated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._write_pages(directory)
+            cities = scan_settlements(str(directory))
+            cities[0]["name"] = '@@CITIES@@</script><script>alert(1)</script>'
+            html = build_dashboard(cities, str(directory / "index.html"), data_out=None)
+        self.assertNotIn('</script><script>alert(1)</script>', html)
+        self.assertIn('@@CITIES@@\\u003c/script>', html)
 
     def test_parse_page_handles_missing_geometry(self):
         with tempfile.TemporaryDirectory() as tmp:

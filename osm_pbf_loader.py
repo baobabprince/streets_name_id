@@ -38,6 +38,14 @@ from settlement_names import (
     place_is_settlement,
 )
 
+from provenance import (
+    file_mtime,
+    pbf_replication_timestamp,
+    read_sidecar,
+    utc_now,
+    write_sidecar,
+)
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -162,6 +170,31 @@ def _osmium_install_instructions() -> str:
     return "see https://osmcode.org/osmium-tool/manual.html#installation"
 
 
+def pbf_source_provenance(pbf_path: str = DEFAULT_PBF_PATH) -> Dict[str, Any]:
+    """Describe the PBF file the national caches are being built from."""
+    return {
+        "source": "pbf",
+        "pbf_file": os.path.basename(pbf_path),
+        "osm_snapshot_at": pbf_replication_timestamp(pbf_path),
+        "pbf_file_at": file_mtime(pbf_path),
+        "extracted_at": utc_now(),
+    }
+
+
+def national_streets_provenance(streets_pkl: str = DEFAULT_STREETS_PKL) -> Dict[str, Any]:
+    """Provenance of the national named-streets cache used for PBF lookups.
+
+    Caches built before provenance was recorded only report their write time;
+    the current PBF header is deliberately not used for them, because the
+    cache may have been extracted from an older file.
+    """
+    recorded = read_sidecar(streets_pkl)
+    if recorded:
+        return {**recorded, "source": "pbf"}
+    written = file_mtime(streets_pkl)
+    return {"source": "pbf", "cache_written_at": written} if written else {"source": "pbf"}
+
+
 def extract_pbf_to_cache(
     pbf_path: str = DEFAULT_PBF_PATH,
     streets_pkl: str = DEFAULT_STREETS_PKL,
@@ -260,6 +293,7 @@ def extract_pbf_to_cache(
         streets_gdf = gpd.GeoDataFrame(records, crs="EPSG:4326")
         streets_gdf.to_pickle(streets_pkl)
         logger.info("Saved %d named street segments to %s", len(streets_gdf), streets_pkl)
+        write_sidecar(streets_pkl, pbf_source_provenance(pbf_path))
 
         # Cleanup intermediate files
         for tmp in (highways_pbf, highways_seq):

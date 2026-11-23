@@ -25,6 +25,7 @@ import re
 from html import escape
 from pathlib import Path
 
+from provenance import page_sources_html, page_stamp_html
 from generate_html import (
     COLOR_AI,
     COLOR_GEO_REVIEW,
@@ -328,12 +329,18 @@ def convert_page(page_path: Path) -> tuple[str, dict]:
     center = govmap_center(name)
     if center:
         meta["govmap"] = {"x": int(center[0]), "y": int(center[1])}
+    # Keep provenance recorded by the pipeline; never invent a creation time.
+    old_provenance = _existing_provenance(raw)
+    if old_provenance:
+        meta["provenance"] = old_provenance
     meta_json = json.dumps(meta, ensure_ascii=False).replace("<", "\\u003c")
     records_json = json.dumps(records, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
 
     template = TEMPLATE.read_text(encoding="utf-8")
     html = (
         template
+        .replace("@@PAGE_STAMP@@", page_stamp_html(old_provenance))
+        .replace("@@PAGE_SOURCES@@", page_sources_html(old_provenance))
         .replace("@@PLACE_NAME@@", escape(name))
         .replace("@@WIDTH@@", width)
         .replace("@@HEIGHT@@", height)
@@ -348,6 +355,17 @@ def convert_page(page_path: Path) -> tuple[str, dict]:
     )
     return html, {"name": name, "segments": len(paths_out), "coverage": match_pct,
                   "counts": counts}
+
+
+def _existing_provenance(raw: str) -> dict | None:
+    match = re.search(r'<script id="page-meta" type="application/json">(.*?)</script>', raw, re.S)
+    if not match:
+        return None
+    try:
+        value = json.loads(match.group(1)).get("provenance")
+    except (ValueError, AttributeError):
+        return None
+    return value if isinstance(value, dict) and value else None
 
 
 def main() -> None:

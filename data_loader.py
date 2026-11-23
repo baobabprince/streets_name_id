@@ -14,8 +14,10 @@ import pandas as pd
 import requests
 
 from lamas_streets import CACHE_MAX_AGE_DAYS as LAMAS_CACHE_MAX_AGE_DAYS
+from lamas_streets import RESOURCE_ID as LAMAS_RESOURCE_ID
 from lamas_streets import fetch_all_LAMAS_data, normalize_lamas_data
 from OSM_streets import fetch_osm_street_data
+from provenance import cached_file_provenance, clear_sidecar, write_sidecar
 from settlement_names import canonical_key
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,37 @@ def _file_signature(path: str) -> tuple[str, float, int]:
 
 def _ensure_lamas_schema(df: pd.DataFrame) -> pd.DataFrame:
     """Upgrade legacy pickles to the canonical-id schema on every read."""
-    return normalize_lamas_data(df)
+    attrs = dict(getattr(df, "attrs", None) or {})
+    normalized = normalize_lamas_data(df)
+    if attrs and isinstance(normalized, pd.DataFrame):
+        normalized.attrs.update(attrs)
+    return normalized
+
+
+def lamas_provenance() -> dict:
+    """When the cached LAMAS table was retrieved (or at least written)."""
+    return {
+        "source": "data.gov.il",
+        "resource_id": LAMAS_RESOURCE_ID,
+        **(cached_file_provenance(LAMAS_CACHE) or {}),
+    }
+
+
+def osm_cache_path(place: str | dict) -> str:
+    if isinstance(place, dict):
+        place = place.get("display_name", "unknown_place")
+    return OSM_CACHE_TEMPLATE.format(place=safe_place_name(place))
+
+
+def osm_provenance(place: str | dict) -> dict | None:
+    """Recorded origin of the cached OSM streets for ``place``."""
+    return cached_file_provenance(osm_cache_path(place))
+
+
+def _with_provenance(df, provenance):
+    if provenance and hasattr(df, "attrs"):
+        df.attrs["provenance"] = dict(provenance)
+    return df
 
 
 def city_key(series: pd.Series) -> pd.Series:
@@ -113,7 +145,7 @@ def load_or_fetch_LAMAS(
         memory_cached = _LAMAS_MEMORY_CACHE.get(signature)
         if memory_cached is not None and _is_valid_lamas_data(memory_cached):
             logger.debug("Loading LAMAS data from in-memory cache")
-            return memory_cached.copy()
+            return _with_provenance(memory_cached.copy(), lamas_provenance())
         try:
             logger.info("Loading LAMAS data from cache: %s", LAMAS_CACHE)
             cached_df = _ensure_lamas_schema(pd.read_pickle(LAMAS_CACHE))
@@ -121,13 +153,15 @@ def load_or_fetch_LAMAS(
                 raise ValueError("LAMAS cache is empty or missing required columns")
             _LAMAS_MEMORY_CACHE.clear()
             _LAMAS_MEMORY_CACHE[signature] = cached_df
-            return cached_df.copy()
+            return _with_provenance(cached_df.copy(), lamas_provenance())
         except Exception as e:
             logger.warning("Failed to read LAMAS cache, will re-fetch: %s", e)
 
     logger.info("Fetching LAMAS data from API...")
     try:
-        df = _ensure_lamas_schema(fetch_all_LAMAS_data(force_refresh=force_refresh))
+        raw = fetch_all_LAMAS_data(force_refresh=force_refresh)
+        fetched_provenance = dict(getattr(raw, "attrs", {}).get("provenance") or {})
+        df = _ensure_lamas_schema(raw)
         if not _is_valid_lamas_data(df):
             raise ValueError("LAMAS fetch returned empty data or missing required columns")
     except (requests.exceptions.RequestException, ValueError) as fetch_error:
@@ -146,11 +180,18 @@ def load_or_fetch_LAMAS(
                 )
                 _LAMAS_MEMORY_CACHE.clear()
                 _LAMAS_MEMORY_CACHE[_file_signature(LAMAS_CACHE)] = cached_df
-                return cached_df.copy()
+                return _with_provenance(cached_df.copy(), lamas_provenance())
         raise
 
+    provenance = {
+        "source": "data.gov.il",
+        "resource_id": LAMAS_RESOURCE_ID,
+        **fetched_provenance,
+    }
+    _with_provenance(df, provenance)
     try:
         df.to_pickle(LAMAS_CACHE)
+        write_sidecar(LAMAS_CACHE, provenance)
         logger.info("Cached LAMAS data to %s", LAMAS_CACHE)
     except Exception as e:
         logger.warning("Failed to write LAMAS cache: %s", e)
@@ -189,14 +230,14 @@ def load_or_fetch_osm(
         if memory_cached is not None and _is_valid_osm_data(memory_cached):
             logger.debug("Loading OSM data from in-memory cache: %s", cache_path)
             _OSM_MEMORY_CACHE.move_to_end(signature)
-            return memory_cached.copy()
+            return _with_provenance(memory_cached.copy(), cached_file_provenance(cache_path))
         try:
             logger.info("Loading OSM data from cache: %s", cache_path)
             cached_gdf = pd.read_pickle(cache_path)
             if not _is_valid_osm_data(cached_gdf):
                 raise ValueError("OSM cache is empty or missing required columns")
             _remember_osm(signature, cached_gdf)
-            return cached_gdf.copy()
+            return _with_provenance(cached_gdf.copy(), cached_file_provenance(cache_path))
         except Exception as e:
             logger.warning("Failed to read OSM cache, will re-fetch: %s", e)
 
@@ -220,11 +261,16 @@ def load_or_fetch_osm(
                     cache_path,
                 )
                 _remember_osm(_file_signature(cache_path), cached_gdf)
-                return cached_gdf.copy()
+                return _with_provenance(cached_gdf.copy(), cached_file_provenance(cache_path))
         raise
 
+    provenance = dict(getattr(gdf, "attrs", {}).get("provenance") or {})
     try:
         gdf.to_pickle(cache_path)
+        if provenance:
+            write_sidecar(cache_path, provenance)
+        else:  # never let an older fetch's metadata describe new data
+            clear_sidecar(cache_path)
         logger.info("Cached OSM data to %s", cache_path)
     except Exception as e:
         logger.warning("Failed to write OSM cache: %s", e)
