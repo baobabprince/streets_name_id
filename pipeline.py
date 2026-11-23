@@ -33,6 +33,7 @@ from normalization import (
     build_lamas_aliases,
     find_fuzzy_candidates,
     normalize_street_name,
+    strip_street_prefix,
 )
 from OSM_streets import place_name as OSM_PLACE_NAME
 from settlement_names import canonical_key
@@ -49,11 +50,6 @@ AI_MIN_CORE_WRATIO = 75.0
 AI_MAX_RAW_HITS_PER_ID = 10
 AI_MAX_APPROVED_HITS_PER_ID = 2
 
-_STREET_PREFIX_RE = re.compile(
-    r"^(?:רחוב|רח|שדרות|שדרת|שד|דרך|דר|סמטת|סמטה|סמ|משעול|כיכר|ככר|שביל|"
-    r"מעלה|מעלות|טיילת|גשר|רחבת|נתיב|מדרגות|צומת|מחלף|מעבר(?:\s+לרחוב|\s+ל)?|"
-    r"חניון|פארק|גן)\s+"
-)
 _DIGIT_RE = re.compile(r"\d+")
 
 
@@ -134,16 +130,6 @@ def _clean_id(value: object) -> str:
     return text
 
 
-def _strip_street_prefix(name: str) -> str:
-    """Strip leading generic Hebrew street-type prefixes for core-name similarity."""
-    text = (name or "").strip()
-    prev = None
-    while prev != text:
-        prev = text
-        text = _STREET_PREFIX_RE.sub("", text).strip()
-    return text
-
-
 def _digits_compatible(osm_name: str, lamas_name: str) -> bool:
     """Reject numeric mismatches (e.g. 'גדוד 21' vs 'גדוד 22' or '5083' vs 'רח 7083')."""
     da = _DIGIT_RE.findall(osm_name or "")
@@ -157,8 +143,8 @@ def _core_wratio(osm_name: str, lamas_name: str) -> float:
     """Compute WRatio between normalized prefix-stripped OSM and LAMAS names."""
     norm_osm = normalize_street_name(osm_name) or ""
     norm_lamas = normalize_street_name(lamas_name) or ""
-    core_osm = _strip_street_prefix(norm_osm)
-    core_lamas = _strip_street_prefix(norm_lamas)
+    core_osm = strip_street_prefix(norm_osm)
+    core_lamas = strip_street_prefix(norm_lamas)
     if not core_osm or not core_lamas:
         return 0.0
     return float(fuzz.WRatio(core_osm, core_lamas))
