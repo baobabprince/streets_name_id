@@ -13,6 +13,8 @@ from a local checkout.
 from __future__ import annotations
 
 import argparse
+import ast
+import hashlib
 import glob
 import json
 import os
@@ -27,10 +29,10 @@ OUTPUT_FILE = "index.html"
 DATA_FILE = "dashboard_data.json"
 
 TIERS = {
-    "excellent": "מצוין",
-    "good": "טוב",
-    "fair": "בינוני",
-    "poor": "דורש טיפול",
+    "excellent": "כיסוי 90% ומעלה",
+    "good": "כיסוי 70–90%",
+    "fair": "כיסוי 40–70%",
+    "poor": "כיסוי מתחת ל־40%",
     "missing": "ללא מאגר להשוואה",
     "none": "אין נתונים",
 }
@@ -41,6 +43,8 @@ _DIAG_PAIR = re.compile(
 _PAGE_META = re.compile(
     r'<script id="page-meta" type="application/json">(.*?)</script>', re.S
 )
+_RECORDS = re.compile(r'<script id="street-records"[^>]*>(.*?)</script>', re.S)
+ROOT = Path(__file__).resolve().parent
 _H1 = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S)
 _STATUS = re.compile(r'data-status="([a-z-]+)"')
 
@@ -109,6 +113,26 @@ def parse_page(path: str) -> dict | None:
             if key in status_counts:
                 status_counts[key] = int(value)
 
+    # Diagnostic ai_proposed_matches historically also includes approved AI.
+    # Only final IDs in record metadata establish approval; do not infer it
+    # from the legacy field name or double-count AI on top of matched totals.
+    ai_approved = ai_pending = 0
+    records_match = _RECORDS.search(raw)
+    try:
+        records = json.loads(records_match.group(1)) if records_match else []
+    except (ValueError, TypeError):
+        records = []
+    for record in records if isinstance(records, list) else []:
+        if not isinstance(record, list) or len(record) < 4 or record[0] != "ai":
+            continue
+        final_id = str(record[3] or "").strip()
+        if final_id and final_id.lower() not in {"none", "nan", "<na>"}:
+            ai_approved += 1
+        else:
+            ai_pending += 1
+    ai = max(ai, ai_approved + ai_pending)
+    ai_unknown = max(0, ai - ai_approved - ai_pending)
+
     # --- display name ---
     name = str(meta.get("place") or "").strip()
     if not name:
@@ -159,6 +183,9 @@ def parse_page(path: str) -> dict | None:
         "matched": int(matched),
         "unmatched": int(unmatched),
         "ai": int(ai),
+        "ai_approved": ai_approved,
+        "ai_pending": ai_pending,
+        "ai_unknown": ai_unknown,
         "geo": int(geo),
         "coverage": coverage,
         "counts": status_counts,
@@ -216,9 +243,12 @@ def aggregate(cities: list[dict]) -> dict:
                      ("perfect", "partial", "ai", "geo-review", "unmatched", "unnamed")},
     }
     totals["coverage"] = round(totals["matched"] / totals["osm"] * 100, 1) if totals["osm"] else 0.0
-    totals["lamas_coverage"] = round(totals["matched"] / totals["lamas"] * 100, 1) if totals["lamas"] else 0.0
-    open_streets = max(totals["osm"] - totals["matched"] - totals["ai"] - totals["geo"], 0)
-    totals["open"] = open_streets
+    # OSM names and official codes are different units; their ratio is not
+    # official-list coverage. AI approvals are already part of matched.
+    totals["lamas_coverage"] = None
+    for field in ("ai_approved", "ai_pending", "ai_unknown"):
+        totals[field] = sum(c.get(field, 0) for c in cities)
+    totals["open"] = totals["unmatched"]
     tiers = {key: 0 for key in TIERS}
     for city in cities:
         tiers[city["tier"]] += 1
@@ -250,11 +280,11 @@ def _ring(coverage: float) -> tuple[str, str, str]:
 
 def _donut_style(totals: dict) -> tuple[str, int]:
     parts = [
-        ("matched", "var(--perfect)"),
-        ("ai", "var(--ai)"),
-        ("geo", "var(--geo)"),
+        ("non_ai_matched", "var(--perfect)"),
+        ("ai_approved", "var(--ai)"),
         ("open", "var(--surface-3)"),
     ]
+    totals = {**totals, "non_ai_matched": max(totals["matched"] - totals.get("ai_approved", 0), 0)}
     total = totals["osm"] or 1
     stops = []
     acc = 0.0
@@ -319,341 +349,82 @@ def _no_results_section() -> str:
     )
 
 
+def _asset_url(path: str) -> str:
+    """Invalidate browser/CDN caches whenever a local asset changes."""
+    digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()[:16]
+    return f"{path}?v={digest}"
+
+
+def _method_defaults() -> dict:
+    """Read documented numeric defaults without importing the GIS/model stack."""
+    wanted = {"DEFAULT_CONFIDENT_THRESHOLD", "AI_MIN_CONFIDENCE", "AI_MIN_CORE_WRATIO",
+              "AI_MAX_RAW_HITS_PER_ID", "AI_MAX_APPROVED_HITS_PER_ID"}
+    result = {}
+    for filename in ("normalization.py", "pipeline.py"):
+        tree = ast.parse((ROOT / filename).read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in wanted:
+                        result[target.id] = node.value.value
+    if set(result) != wanted:
+        raise ValueError("Method defaults changed; update the homepage documentation")
+    return result
+
+
+def _example_match(cities: list[dict]) -> str:
+    """Use a real, inspectable record, never a fabricated example or code."""
+    city = next((c for c in cities if c["name"] == "פתח תקווה"), None)
+    if city:
+        source = ROOT / HTML_DIR / city["file"]
+        if source.exists():
+            match = _RECORDS.search(source.read_text(encoding="utf-8"))
+            try:
+                records = json.loads(match.group(1)) if match else []
+            except (ValueError, TypeError):
+                records = []
+            if not isinstance(records, list):
+                records = []
+            record = next((r for r in records if isinstance(r, list) and len(r) >= 7 and r[0] == "ai" and r[3]), None)
+            if record:
+                return f'''<aside class="evidence-card" aria-label="דוגמת התאמה אמיתית מפתח תקווה">
+                  <div class="evidence-top"><span class="source-dot"></span> מתוך הנתונים · {escape(city['name'])}<span class="ai-label">בסיוע AI</span></div>
+                  <div class="evidence-names"><span>השם ב־OpenStreetMap</span><strong>{escape(str(record[1]))}</strong><span class="match-arrow" aria-hidden="true">↓</span><span>השם הרשמי בלמ״ס</span><strong>{escape(str(record[2]))}</strong></div>
+                  <div class="evidence-values"><div><span>קוד רחוב ביישוב</span><b>{escape(str(record[3]))}</b></div><div><span>ציון התאמת שמות</span><b dir="ltr">{escape(str(record[4]))}<small> / 100</small></b></div><div><span>ביטחון שדיווח AI</span><b>{escape(str(record[6]))}</b></div></div>
+                  <p>הקישור עבר את סינון התהליך. זו אינה עדות לבדיקה אנושית או להוספת הקוד ל־OSM. ציון השמות וביטחון המודל הם מדדים שונים.</p>
+                  <a class="example-link" href="prototype/">לבדיקת הנתונים בחדר ההשוואה <span>←</span><small>פתח תקווה · אב־טיפוס</small></a>
+                </aside>'''
+    return '<aside class="evidence-card"><h2>קישור שניתן לבדיקה</h2><p>שם ב־OSM, שם רשמי, קוד רחוב ושיטת ההתאמה — יחד, בהקשר של היישוב.</p><a href="#cities">לנתוני היישובים ←</a></aside>'
+
+
 def build_dashboard(cities: list[dict], output: str = OUTPUT_FILE, data_out: str | None = DATA_FILE) -> str:
     totals = aggregate(cities)
-    circumference, offset, coverage_text = _ring(totals["coverage"])
-    donut, matched_pct = _donut_style(totals)
+    method = _method_defaults()
     updated = _last_updated()
-    buckets = totals["buckets"]
-    max_bucket = max(buckets) or 1
-    tier_counts = totals["tiers"]
-
-    dist_bars = []
-    labels = ["0–10", "10–20", "20–30", "30–40", "40–50", "50–60", "60–70", "70–80", "80–90", "90–100"]
-    for index, count in enumerate(buckets):
-        height = max(2.0, count / max_bucket * 100)
-        dist_bars.append(
-            f'<button class="col" type="button" data-bucket="{index * 10}" '
-            f'title="{labels[index]}%: {count} יישובים" aria-label="{labels[index]} אחוזי כיסוי, {count} יישובים">'
-            f'<span class="bar" style="height:{height:.2f}%"><span class="n">{count}</span></span>'
-            f"</button>"
-        )
-
-    attention_items = "".join(
-        f'<a class="attention-item" href="{escape(city["href"])}">'
-        f'<span><span class="name">{escape(city["name"])}</span>'
-        f'<span class="meta">{_fmt(city["unmatched"])} ללא התאמה · {_fmt(city["osm"])} רחובות</span></span>'
-        f'<span class="pct">{city["coverage"]:.0f}%</span>'
-        f"</a>"
-        for city in _attention(cities)
-    )
-
-    tier_options = "".join(
-        f'<option value="{key}">{TIERS[key]}</option>' for key in ("excellent", "good", "fair", "poor", "missing")
-    )
-
-    payload = {
-        "updated": updated,
-        "totals": totals,
-        "cities": [
-            {
-                "name": city["name"],
-                "file": city["file"],
-                "href": city["href"],
-                "osm": city["osm"],
-                "lamas": city["lamas"],
-                "matched": city["matched"],
-                "unmatched": city["unmatched"],
-                "ai": city["ai"],
-                "geo": city["geo"],
-                "coverage": city["coverage"],
-                "tier": city["tier"],
-                "counts": city["counts"],
-            }
-            for city in cities
-        ],
-    }
+    payload = {"schema_version": 2, "updated": updated, "totals": totals,
+               "method_defaults": method, "cities": cities}
     payload_json = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
     if data_out:
-        with open(data_out, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False, indent=1))
-
-    html = f"""<!DOCTYPE html>
-<html lang="he" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>סקר התאמת רחובות — OSM ↔ למ״ס | ישראל</title>
-<meta name="description" content="לוח בקרה ארצי להשוואת שמות רחובות בין OpenStreetMap למאגר הרשמי (למ״ס) ב-{_fmt(totals['cities'])} יישובים.">
-<meta property="og:title" content="סקר התאמת רחובות — OSM ↔ למ״ס">
-<meta property="og:description" content="{_fmt(totals['osm'])} רחובות, {_fmt(totals['matched'])} התאמות מאושרות, {coverage_text}% כיסוי ארצי.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="assets/base.css">
-<link rel="stylesheet" href="assets/dashboard.css">
-</head>
-<body class="dashboard-page">
-<a class="skip-link" href="#cities">דלג לחיפוש יישובים</a>
-
-<div class="shell">
-  <header class="masthead">
-    <span class="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M4 6l5-2 6 2 5-2v14l-5 2-6-2-5 2z"/><path d="M9 4v14M15 6v14"/>
-      </svg>
-    </span>
-    <div class="brand-text">
-      <strong>סקר התאמת רחובות</strong>
-      <span>OpenStreetMap ↔ מאגר הרחובות הרשמי (למ״ס)</span>
-    </div>
-    <span class="spacer"></span>
-    <span class="updated-pill"><span class="live-dot"></span>{escape(updated)}</span>
-    <button class="icon-btn" id="theme-toggle" type="button" title="מצב בהיר / כהה" aria-label="החלפת ערכת צבעים">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-    </button>
-  </header>
-
-  <section class="hero">
-    <div class="hero-grid">
-      <div>
-        <span class="hero-badge">🇮🇱 מפת נתונים ארצית · {_fmt(totals['cities'])} יישובים</span>
-        <h1>כל הרחובות.<br><span class="grad">תמונת אמת אחת.</span></h1>
-        <p class="lede">
-          כמה מהרחובות בישראל כבר מופו בין OpenStreetMap למאגר הרשמי? בחרו יישוב,
-          ראו את הכיסוי, את הרחובות שדורשים טיפול ואת ההצעות שממתינות לבדיקה —
-          הכל על גבי מפה אינטראקטיבית.
-        </p>
-        <div class="hero-actions">
-          <a class="btn btn-primary" href="#cities">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-            חיפוש יישוב
-          </a>
-          <button class="btn btn-ghost" type="button" data-sort-preset="unmatched" data-dir="desc">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01"/><path d="M10.3 3.9L2.6 17a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
-            היישובים שדורשים טיפול
-          </button>
-        </div>
-        <p class="hero-caption">מבוסס על <code>OpenStreetMap</code> ועל קובצי הרחובות של הלשכה המרכזית לסטטיסטיקה · התאמות AI מוצגות כהצעה בלבד</p>
-      </div>
-
-      <aside class="score-card" aria-label="ציון כיסוי ארצי">
-        <div class="score-main">
-          <div class="ring">
-            <svg viewBox="0 0 154 154" aria-hidden="true">
-              <defs>
-                <linearGradient id="ringGradient" x1="0" y1="0" x2="1" y2="1">
-                  <stop offset="0%" stop-color="#4f8cff"/>
-                  <stop offset="55%" stop-color="#8b5cf6"/>
-                  <stop offset="100%" stop-color="#35d0a1"/>
-                </linearGradient>
-              </defs>
-              <circle class="track" cx="77" cy="77" r="64" fill="none" stroke-width="11"/>
-              <circle class="value" cx="77" cy="77" r="64" fill="none" stroke-width="11"
-                      stroke-dasharray="{circumference}" stroke-dashoffset="{offset}"
-                      data-offset="{offset}"/>
-            </svg>
-            <div class="ring-label">
-              <span class="big metric">{coverage_text}%</span>
-              <span class="small">כיסוי התאמות מאושרות</span>
-            </div>
-          </div>
-          <div class="score-side">
-            <h2>התמונה הארצית</h2>
-            <p>אחוז הרחובות ב-OSM שקיבלו מזהה רשמי מאושר</p>
-            <div class="mini-row"><span>רחובות שנבדקו</span><b>{_fmt(totals['osm'])}</b></div>
-            <div class="mini-row"><span>התאמות מאושרות</span><b>{_fmt(totals['matched'])}</b></div>
-            <div class="mini-row"><span>ממתינים לבדיקה</span><b>{_fmt(totals['unmatched'])}</b></div>
-          </div>
-        </div>
-        <div class="score-foot">
-          <div><b>{_fmt(tier_counts['excellent'])}</b><span>יישובים מעל 90%</span></div>
-          <div><b>{_fmt(tier_counts['poor'])}</b><span>מתחת ל-40%</span></div>
-          <div><b>{_fmt(tier_counts['missing'])}</b><span>ללא מאגר להשוואה</span></div>
-        </div>
-      </aside>
-    </div>
-  </section>
-
-  <section class="kpi-row" aria-label="מדדים מרכזיים">
-    <article class="kpi">
-      <div class="kpi-top"><span class="kpi-label">יישובים במדד</span>
-        <span class="kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V7l7-4 7 4v14M9 9h.01M9 13h.01M15 9h.01M15 13h.01"/></svg></span>
-      </div>
-      <div class="kpi-value metric">{_fmt(totals['cities'])}</div>
-      <div class="kpi-foot"><span>{_fmt(totals['comparable'])} עם מאגר רשמי · {_fmt(totals['missing_data'])} ללא מאגר</span></div>
-    </article>
-    <article class="kpi">
-      <div class="kpi-top"><span class="kpi-label">רחובות ב-OSM</span>
-        <span class="kpi-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V6a2 2 0 0 1 2-2h4v17M14 21V3h4a2 2 0 0 1 2 2v16"/><path d="M8 8h.01M8 12h.01M8 16h.01"/></svg></span>
-      </div>
-      <div class="kpi-value metric">{_fmt(totals['osm'])}</div>
-      <div class="kpi-foot"><span>רחובות בעלי שם שנבדקו</span></div>
-    </article>
-    <article class="kpi">
-      <div class="kpi-top"><span class="kpi-label">התאמות מאושרות</span>
-        <span class="kpi-icon" style="background:var(--perfect-soft);color:var(--perfect)" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg></span>
-      </div>
-      <div class="kpi-value metric">{_fmt(totals['matched'])}</div>
-      <div class="kpi-foot"><span class="up">{coverage_text}%</span> מכיסוי הרחובות</div>
-    </article>
-    <article class="kpi">
-      <div class="kpi-top"><span class="kpi-label">ממתינים לטיפול</span>
-        <span class="kpi-icon" style="background:var(--unmatched-soft);color:var(--unmatched)" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5m0 3h.01"/></svg></span>
-      </div>
-      <div class="kpi-value metric">{_fmt(totals['unmatched'])}</div>
-      <div class="kpi-foot"><span class="warn">{_fmt(totals['ai'])} הצעות AI</span> ממתינות לבדיקה</div>
-    </article>
-  </section>
-
-  <section class="analytics" aria-label="ניתוח ארצי">
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <h2>פיזור הכיסוי בין היישובים</h2>
-          <p>לחיצה על עמודה מסננת את רשימת היישובים באותו טווח</p>
-        </div>
-      </div>
-      <div class="dist" id="dist-chart">
-        {''.join(dist_bars)}
-      </div>
-      <div class="dist-axis" aria-hidden="true">
-        {''.join(f'<span>{label}</span>' for label in labels)}
-      </div>
-    </article>
-
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <h2>הרכב הרחובות</h2>
-          <p>חלוקה של כל הרחובות שנבדקו בארץ</p>
-        </div>
-      </div>
-      <div class="mix">
-        <div class="mix-donut" style="background:{donut}" role="img" aria-label="פילוח ארצי: {matched_pct}% מאושרים">
-          <div class="mix-center"><b class="metric">{matched_pct}%</b><span>מאושרים</span></div>
-        </div>
-        <div class="mix-legend">
-          <div class="row"><i style="background:var(--perfect)"></i><span>התאמה מאושרת</span><b>{_fmt(totals['matched'])}</b></div>
-          <div class="row"><i style="background:var(--ai)"></i><span>הצעת AI</span><b>{_fmt(totals['ai'])}</b></div>
-          <div class="row"><i style="background:var(--geo)"></i><span>בדיקה גאוגרפית</span><b>{_fmt(totals['geo'])}</b></div>
-          <div class="row"><i style="background:var(--surface-3);box-shadow:inset 0 0 0 1px var(--line-strong)"></i><span>ללא התאמה / ללא מענה</span><b>{_fmt(totals['open'])}</b></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="card attention">
-      <div class="card-head">
-        <div>
-          <h2>דרוש טיפול</h2>
-          <p>היישובים עם הכיסוי הנמוך ביותר (מעל 20 רחובות) — כאן כדאי להתחיל</p>
-        </div>
-        <button class="btn btn-ghost" type="button" data-sort-preset="coverage" data-dir="asc">לכל הרשימה</button>
-      </div>
-      <div class="attention-grid">{attention_items}</div>
-    </article>
-  </section>
-
-  <section class="explorer" id="cities">
-    <div class="explorer-head">
-      <div>
-        <h2>כל היישובים</h2>
-        <p>חיפוש, סינון לפי רמת כיסוי ופתיחה של מפת הרחובות המלאה</p>
-      </div>
-    </div>
-
-    <div class="explorer-toolbar">
-      <label class="field" for="city-search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-        <input id="city-search" type="search" placeholder="חיפוש יישוב… (לחצו /)" autocomplete="off" aria-label="חיפוש יישוב">
-      </label>
-      <div class="filters" role="group" aria-label="סינון לפי רמת כיסוי">
-        <button class="chip" type="button" data-tier="all" data-tone="all" aria-pressed="true"><span class="dot"></span>הכל<span class="count">{_fmt(totals['cities'])}</span></button>
-        <button class="chip" type="button" data-tier="excellent" data-tone="perfect" aria-pressed="false"><span class="dot"></span>מעל 90%<span class="count">{_fmt(tier_counts['excellent'])}</span></button>
-        <button class="chip" type="button" data-tier="good" data-tone="ai" aria-pressed="false"><span class="dot"></span>70–90%<span class="count">{_fmt(tier_counts['good'])}</span></button>
-        <button class="chip" type="button" data-tier="fair" data-tone="partial" aria-pressed="false"><span class="dot"></span>40–70%<span class="count">{_fmt(tier_counts['fair'])}</span></button>
-        <button class="chip" type="button" data-tier="poor" data-tone="unmatched" aria-pressed="false"><span class="dot"></span>מתחת ל-40%<span class="count">{_fmt(tier_counts['poor'])}</span></button>
-        <button class="chip" type="button" data-tier="missing" data-tone="unnamed" aria-pressed="false"><span class="dot"></span>ללא מאגר<span class="count">{_fmt(tier_counts['missing'])}</span></button>
-      </div>
-      <span class="spacer"></span>
-      <select class="select" id="sort-select" aria-label="מיון היישובים">
-        <option value="streets:desc">היקף הרחובות</option>
-        <option value="coverage:desc">כיסוי גבוה → נמוך</option>
-        <option value="coverage:asc">כיסוי נמוך → גבוה</option>
-        <option value="unmatched:desc">הכי הרבה ללא התאמה</option>
-        <option value="name:asc">שם היישוב</option>
-      </select>
-      <div class="view-toggle" role="group" aria-label="תצוגה">
-        <button type="button" data-view="grid" aria-pressed="true" title="תצוגת כרטיסים" aria-label="תצוגת כרטיסים">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
-        </button>
-        <button type="button" data-view="table" aria-pressed="false" title="תצוגת טבלה" aria-label="תצוגת טבלה">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-        </button>
-      </div>
-    </div>
-
-    <div class="results-line" id="results-line" hidden>
-      <span><b id="results-count">0</b> יישובים תואמים</span>
-      <button class="clear-filter" id="clear-filters" type="button">איפוס הסינון</button>
-    </div>
-
-    <div class="city-grid" id="city-grid" aria-live="polite"></div>
-
-    <div class="city-table-wrap" id="city-table-wrap" hidden>
-      <table class="city-table" id="city-table">
-        <thead>
-          <tr>
-            <th>יישוב</th>
-            <th>כיסוי רחובות</th>
-            <th>רחובות OSM</th>
-            <th>מאושרים</th>
-            <th>ללא התאמה</th>
-            <th>הצעות AI</th>
-            <th>רמה</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-
-    <div class="empty-state" id="explorer-empty" hidden>
-      <strong>לא נמצאו יישובים</strong>
-      נסו לשנות את החיפוש, לאפס את הסינון או לבחור טווח כיסוי אחר.
-    </div>
-
-    <div class="load-more-row" id="load-more-wrap" hidden>
-      <button class="btn btn-ghost" id="load-more" type="button">טעינת יישובים נוספים</button>
-    </div>
-  </section>
-</div>
-
-{_no_results_section()}
-
-<footer class="site-footer">
-  <div class="shell foot-grid">
-    <p>
-      סקר התאמת הרחובות משווה שמות רחובות ב-OpenStreetMap למזהים רשמיים של הלשכה המרכזית לסטטיסטיקה (למ״ס).
-      התאמות אוטומטיות מסומנות כהצעה בלבד עד לאישור; כל מזהה ניתן לבדיקה בממשק המפורט של היישוב.
-    </p>
-    <div class="foot-links">
-      <a href="https://github.com/baobabprince/streets_name_id" target="_blank" rel="noopener">מאגר הקוד</a>
-      <a href="README.md">תיעוד השיטה</a>
-    </div>
-  </div>
-</footer>
-
-<script id="dash-data" type="application/json">{payload_json}</script>
-<script src="assets/dashboard.js" defer></script>
-</body>
-</html>
-"""
-
-    with open(output, "w", encoding="utf-8") as handle:
-        handle.write(html)
-    print(f"Generated {output}: {len(cities)} settlements, {totals['osm']} streets, "
-          f"{totals['coverage']}% coverage")
+        Path(data_out).write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    replacements = {
+        "PAYLOAD": payload_json, "UPDATED": escape(updated),
+        "CITIES": _fmt(totals["cities"]), "OSM": _fmt(totals["osm"]),
+        "MATCHED": _fmt(totals["matched"]), "UNMATCHED": _fmt(totals["unmatched"]),
+        "AI_APPROVED": _fmt(totals["ai_approved"]),
+        "AI_PENDING": _fmt(totals["ai_pending"]), "AI_UNKNOWN": _fmt(totals["ai_unknown"]),
+        "COVERAGE": f"{totals['coverage']:.1f}", "EXAMPLE": _example_match(cities),
+        "NO_RESULTS": _no_results_section(),
+        "BASE_CSS": _asset_url("assets/base.css"),
+        "DASH_CSS": _asset_url("assets/dashboard.css"),
+        "HOME_CSS": _asset_url("assets/project-home.css"),
+        "DASH_JS": _asset_url("assets/dashboard.js"),
+    }
+    replacements.update({key: str(value) for key, value in method.items()})
+    template = (ROOT / "dashboard_template.html").read_text(encoding="utf-8")
+    # One-pass substitution prevents names/data from becoming template tokens.
+    html = re.sub(r"@@([A-Z_]+)@@", lambda m: replacements[m[1]], template)
+    Path(output).write_text(html, encoding="utf-8")
+    print(f"Generated {output}: {len(cities)} settlements, {totals['osm']} OSM names, {totals['coverage']}% linked")
     return html
 
 

@@ -4,6 +4,31 @@ Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Centr
 
 **Live dashboard:** [baobabprince.github.io/streets_name_id](https://baobabprince.github.io/streets_name_id/)
 
+## Project homepage
+
+The Hebrew index presents the output as **inspectable proposals for linking OSM
+streets to official CBS street codes**, not as verified edits already present in
+OSM. It explains the matching stages, AI guardrails, identifier scope and review
+considerations, alongside the searchable settlement data.
+
+- Source template: `dashboard_template.html`; presentation: `assets/project-home.css`.
+- Rebuild after editing the template, explorer JS/CSS or settlement data:
+  `python generate_index.py --data-out ''`. Local asset URLs are content-hashed
+  to avoid mixed HTML/JavaScript versions in browsers and on static hosts.
+- Preview the homepage and the Petah Tikva comparison prototype together:
+  `python scripts/serve_project.py --port 8000` (open `/`; the prototype is at
+  `/prototype/`). The preview binds to `0.0.0.0` and disables response caching.
+- Only AI records with an explicit final street ID count as AI links that passed
+  filtering. Historical aggregate AI counts without per-record approval evidence
+  are disclosed separately; approved AI is not added a second time to matched
+  totals. Matching coverage is not a measured accuracy or OSM adoption rate.
+- Numerical algorithm defaults displayed on the homepage are read from the
+  current Python source without importing GIS packages or loading the model.
+  The page explicitly distinguishes these defaults from historical run settings.
+- Checks: `python -m unittest discover -s tests -p 'test_generate_index.py' -v`.
+  Optional Playwright browser check: `python scripts/check_project_home.py` with
+  the preview running (supports `PROJECT_URL` and `CHROMIUM_EXECUTABLE`).
+
 ## Features
 
 - **Automated data fetching** from local OSM PBF extracts (or live Overpass fallback via osmnx) and data.gov.il (LAMAS)
