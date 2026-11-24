@@ -165,19 +165,30 @@ def main(argv=None):
         paths = [args.html_dir / f"{safe_place_name(name)}_roads.html" for name in args.names]
     else:
         paths = sorted(args.html_dir.glob("*.html"))
-    converted = skipped = 0
+    upgraded = refreshed = unchanged = skipped = 0
     for path in paths:
         if not path.exists():
             print(f"missing: {path}", file=sys.stderr)
             skipped += 1
             continue
+        before = path.read_text(encoding="utf-8")
         html = convert(path)
         if html is None:
             skipped += 1
             continue
+        if html == before:
+            unchanged += 1
+            continue
         path.write_text(html, encoding="utf-8")
-        converted += 1
-    print(f"Converted {converted} pages; skipped {skipped}")
+        if 'id="room-data"' in before:
+            refreshed += 1
+        else:
+            upgraded += 1
+    print(f"Pages in {args.html_dir.resolve()}:")
+    print(f"  upgraded from the earlier layout: {upgraded}")
+    print(f"  already comparison-room, re-rendered with changes: {refreshed}")
+    print(f"  already comparison-room, up to date (not rewritten): {unchanged}")
+    print(f"  skipped (single-street / not a results page / missing): {skipped}")
     return 0
 
 
