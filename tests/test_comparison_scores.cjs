@@ -6,7 +6,7 @@ const {
   summarizeScores,
   matchesScore,
   compareScores,
-} = require("../prototype/score-tools.js");
+} = require("../assets/score-tools.js");
 
 test("numeric score parsing keeps zero and decimals, not missing or invalid values", () => {
   for (const value of [

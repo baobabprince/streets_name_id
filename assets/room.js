@@ -1,4 +1,6 @@
-/* One-settlement comparison-room prototype. No matching or write-back occurs here. */
+/* Settlement comparison room: OSM match layer, GovMap reference and the full
+   findings table. All data is embedded in the page; no matching or write-back
+   occurs here. */
 (function () {
   "use strict";
   const $ = (id) => document.getElementById(id);
@@ -8,7 +10,7 @@
     $("app-status").textContent = "אירעה שגיאה בכלי הטבלה — הפעולה לא הושלמה.";
     $("fatal").hidden = false;
     $("fatal").textContent =
-      "פעולה בטבלה נכשלה. גרסה 2 אמורה להציג 989 שמות עם טעינת העמוד. נא לפתוח את התצוגה המקדימה החדשה.";
+      "פעולה בטבלה נכשלה. רענון העמוד אמור לטעון מחדש את כל הנתונים.";
   });
   const number = (n) => new Intl.NumberFormat("he-IL").format(n);
   const styles = {
@@ -223,11 +225,12 @@
     return node;
   }
   function govUrl(name) {
-    const params = new URLSearchParams({
-      c: `${data.meta.govmap.x},${data.meta.govmap.y}`,
-      z: name ? "12" : "7",
-    });
-    if (name) params.set("q", `${name}, ${data.meta.place}`);
+    const params = new URLSearchParams();
+    const centre = data.meta.govmap;
+    if (centre) params.set("c", `${centre.x},${centre.y}`);
+    params.set("z", name || !centre ? "12" : "7");
+    if (name || !centre)
+      params.set("q", name ? `${name}, ${data.meta.place}` : data.meta.place);
     return `https://www.govmap.gov.il/?${params}`;
   }
   function navigateGov(name = "") {
@@ -238,6 +241,18 @@
     $("gov-context").textContent = name
       ? `חיפוש: ${name} · התוצאה תלויה ב־GovMap`
       : "תצוגת היישוב · ללא סנכרון עם OSM";
+  }
+  function aiDescription() {
+    const ai = entries.filter((e) =>
+      ["approved-ai", "proposal"].includes(e.status),
+    );
+    const approved = ai.filter((e) => e.status === "approved-ai").length;
+    const base =
+      "התאמות AI: מאושרות והצעות מסומנות בנפרד לפי קיום מזהה סופי.";
+    if (!ai.length) return `${base} ביישוב זה אין התאמות AI.`;
+    if (approved === ai.length)
+      return `${base} ביישוב זה כל ${number(ai.length)} התאמות ה־AI מאושרות.`;
+    return `${base} ביישוב זה ${number(approved)} מתוך ${number(ai.length)} התאמות ה־AI מאושרות.`;
   }
   function setupModels() {
     entries = data.records.map((r, i) => ({
@@ -314,8 +329,7 @@
         items: entries.filter((e) =>
           ["approved-ai", "proposal"].includes(e.status),
         ),
-        description:
-          "התאמות AI: מאושרות והצעות מסומנות בנפרד לפי קיום מזהה סופי. בנתוני יישוב זה כל 9 התאמות ה־AI מאושרות.",
+        description: aiDescription(),
       },
       "geo-review": {
         label: "בדיקה גאוגרפית",
@@ -369,42 +383,35 @@
         )),
     );
   }
-  // Dates are pre-formatted by the builder; missing values are reported as
-  // "not recorded" rather than estimated.
-  function setupDates() {
-    const source = data.sourceDates;
-    const parts = [
-      `מועד יצירת העמוד המקורי: ${source?.generated || "לא תועד"}`,
-    ];
-    if (source?.osm) parts.push(`נתוני OSM: ${source.osm}`);
-    if (source?.lamas) parts.push(`נתוני למ״ס: ${source.lamas}`);
-    $("source-dates").textContent = parts.join(" · ");
-    const built = data.builtAt;
-    $("built-at").textContent = built?.display
-      ? `מועד בניית התצוגה: ${built.display}${built.zone ? ` (${built.zone})` : ""}`
-      : "מועד בניית התצוגה: לא תועד";
-  }
   function setupOverview() {
-    setupDates();
-    const d = data.meta.diagnostics;
+    const d = data.meta.diagnostics || {};
     const approved = views.approved.items.length;
     const official = data.approvedOfficialCount;
+    const totalOsm = d.total_osm_streets ?? entries.length;
+    const totalOfficial = d.total_lamas_streets ?? officialEntries.length;
+    const pct = (part, whole) =>
+      whole ? ((100 * part) / whole).toFixed(1) : null;
     $("snapshot-osm").textContent = number(views.unmatched.items.length);
     $("snapshot-official").textContent = number(
       views["official-missing"].items.length,
     );
-    $("osm-total").textContent = number(d.total_osm_streets);
-    $("official-total").textContent = number(d.total_lamas_streets);
-    const osmPct = ((100 * approved) / d.total_osm_streets).toFixed(1);
-    const officialPct = ((100 * official) / d.total_lamas_streets).toFixed(1);
-    $("osm-coverage").textContent = `${osmPct}%`;
-    $("official-coverage").textContent = `${officialPct}%`;
-    $("osm-bar").style.width = `${osmPct}%`;
-    $("official-bar").style.width = `${officialPct}%`;
+    $("osm-total").textContent = number(totalOsm);
+    $("official-total").textContent = number(totalOfficial);
+    const osmPct = pct(approved, totalOsm);
+    const officialPct = pct(official, totalOfficial);
+    $("osm-coverage").textContent = osmPct === null ? "—" : `${osmPct}%`;
+    $("official-coverage").textContent =
+      officialPct === null ? "—" : `${officialPct}%`;
+    $("osm-bar").style.width = `${osmPct || 0}%`;
+    $("official-bar").style.width = `${officialPct || 0}%`;
     $("osm-ratio").textContent =
-      `${number(approved)} מתוך ${number(d.total_osm_streets)} שמות · כולל AI מאושר`;
-    $("official-ratio").textContent =
-      `${number(official)} מתוך ${number(d.total_lamas_streets)} קודים רשמיים`;
+      `${number(approved)} מתוך ${number(totalOsm)} שמות · כולל AI מאושר`;
+    $("official-ratio").textContent = totalOfficial
+      ? `${number(official)} מתוך ${number(totalOfficial)} קודים רשמיים`
+      : "אין רחובות ברשימת למ״ס להשוואה";
+    if (data.missingOfficialListed < data.missingOfficialTotal)
+      $("official-missing-note").textContent =
+        `ברשימה מוצגים ${number(data.missingOfficialListed)} מתוך ${number(data.missingOfficialTotal)} שמות למ״ס ללא התאמה; בעמוד הקודם נשמרו רק אלה. הרצה מחדש של היישוב תציג את הרשימה המלאה.`;
     const counts = entries.reduce(
       (a, e) => ((a[e.status] = (a[e.status] || 0) + 1), a),
       {},
@@ -467,7 +474,7 @@
       if (!tileLoaded) $("tile-warning").hidden = false;
     }, 7000);
     layers = entries.map((entry, i) => {
-      const layer = L.polyline(data.geometry[i], {
+      const layer = L.polyline(data.geometry[i] || [], {
         color: styles[entry.status][1],
         weight: 3,
         opacity: 0.9,
@@ -482,7 +489,14 @@
       return layer;
     });
     cityBounds = L.featureGroup(layers).getBounds();
-    map.fitBounds(cityBounds, { padding: [15, 15] });
+    if (cityBounds.isValid()) map.fitBounds(cityBounds, { padding: [15, 15] });
+    else {
+      cityBounds = null;
+      map.setView([31.5, 34.9], 8);
+      $("tile-warning").hidden = false;
+      $("tile-warning").textContent =
+        "לעמוד זה אין גאומטריית רחובות להצגה. הטבלה והחיפוש פעילים.";
+    }
   }
   function paintMap() {
     // A map-library or tile failure must never disable the data table.
@@ -650,6 +664,7 @@
     const bounds = L.featureGroup(
       state.selected.ids.map((i) => layers[i]),
     ).getBounds();
+    if (!bounds.isValid()) return;
     map.fitBounds(bounds, { padding: [65, 65], maxZoom: 17 });
     if (scroll)
       $("osm-map").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -664,7 +679,7 @@
         ? "השוואת שמות"
         : "לא נקבעה התאמה מאושרת";
     const segments = entry.ids.reduce(
-      (total, id) => total + data.geometry[id].length,
+      (total, id) => total + (data.geometry[id] || []).length,
       0,
     );
     const fields = [
@@ -710,7 +725,7 @@
       $("technical").append(item);
     });
     $("technical-source").textContent =
-      `מקור: נתוני העמוד הקיים של ${data.meta.place}. ציון התאמת השמות אינו ביטחון מודל ה־AI ואינו אחוז ודאות.${entry.ids.length > 1 ? " בקוד מקובץ הציון והסטטוס מתייחסים להתאמה בעלת הציון הנמוך הזמין." : ""} מיקום הרחובות שוחזר בקירוב של מטר.`;
+      `מקור: תוצאות ההתאמה של ${data.meta.place}. ציון התאמת השמות אינו ביטחון מודל ה־AI ואינו אחוז ודאות.${entry.ids.length > 1 ? " בקוד מקובץ הציון והסטטוס מתייחסים להתאמה בעלת הציון הנמוך הזמין." : ""} ${data.geometryNote || ""}`.trim();
   }
   function select(entry) {
     state.selected = entry;
@@ -719,7 +734,9 @@
     $("selected-osm").textContent = entry.osm || "לא זוהה רחוב בנתוני OSM";
     $("selected-official").textContent = entry.official || "לא זוהה שם רשמי";
     $("selected-reason").textContent = reason(entry);
-    $("locate-osm").disabled = !entry.ids.length;
+    $("locate-osm").disabled = !entry.ids.some(
+      (id) => data.geometry[id] && data.geometry[id].length,
+    );
     $("selected-score").replaceChildren(scoreDisplay(entry));
     renderTechnical(entry);
     render();
@@ -768,7 +785,7 @@
     const url = URL.createObjectURL(blob);
     const anchor = el("a");
     anchor.href = url;
-    anchor.download = "petah-tikva-comparison.csv";
+    anchor.download = `${String(data.meta.place).replace(/[\\/:*?"<>|\s]+/g, "_")}-streets.csv`;
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
@@ -882,12 +899,37 @@
       }
     });
   }
+  function embedded(id) {
+    const node = $(id);
+    if (!node) throw new Error(`Missing embedded data: ${id}`);
+    return JSON.parse(node.textContent);
+  }
+  // Lines are stored as integer degrees * 1e5, delta-encoded after the first
+  // point (see settlement_page.py); Leaflet needs [lat, lon] pairs.
+  function decodeLine(flat) {
+    const points = [];
+    let lat = 0;
+    let lon = 0;
+    for (let i = 0; i + 1 < flat.length; i += 2) {
+      lat += flat[i];
+      lon += flat[i + 1];
+      points.push([lat / 1e5, lon / 1e5]);
+    }
+    return points;
+  }
+  function readEmbeddedData() {
+    const room = embedded("room-data");
+    if (room.geometryEncoding === "delta-e5")
+      room.geometry = room.geometry.map((lines) => lines.map(decodeLine));
+    return {
+      meta: embedded("page-meta"),
+      records: embedded("street-records"),
+      ...room,
+    };
+  }
   async function init() {
     try {
-      const response = await fetch("data.json", { cache: "no-store" });
-      if (!response.ok)
-        throw new Error(`Data request failed: ${response.status}`);
-      data = await response.json();
+      data = readEmbeddedData();
       if (!Scores) throw new Error("The score helper could not be loaded");
       // Initialize the table first. Leaflet is optional for all table operations.
       setupModels();
@@ -913,10 +955,10 @@
       console.error(error);
       $("app-status").dataset.state = "error";
       $("app-status").textContent =
-        "כלי הטבלה לא נטענו — המיון אינו פעיל. יש לפתוח את גרסה 2 בתצוגה המקדימה החדשה.";
+        "כלי הטבלה לא נטענו — המיון אינו פעיל.";
       $("fatal").hidden = false;
       $("fatal").textContent =
-        "לא ניתן לטעון את אב־הטיפוס. יש לפתוח אותו דרך שרת HTTP ולוודא שקובץ data.json והספרייה המקומית זמינים. העמוד המקורי זמין בקישור למעלה.";
+        "לא ניתן לטעון את נתוני העמוד. יש לוודא שתיקיית assets זמינה לצד תיקיית HTML ולרענן את העמוד.";
     }
   }
   init();

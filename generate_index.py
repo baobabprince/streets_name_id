@@ -420,7 +420,7 @@ def _example_match(cities: list[dict]) -> str:
                   <div class="evidence-names"><span>השם ב־OpenStreetMap</span><strong>{escape(str(record[1]))}</strong><span class="match-arrow" aria-hidden="true">↓</span><span>השם הרשמי בלמ״ס</span><strong>{escape(str(record[2]))}</strong></div>
                   <div class="evidence-values"><div><span>קוד רחוב ביישוב</span><b>{escape(str(record[3]))}</b></div><div><span>ציון התאמת שמות</span><b dir="ltr">{escape(str(record[4]))}<small> / 100</small></b></div><div><span>ביטחון שדיווח AI</span><b>{escape(str(record[6]))}</b></div></div>
                   <p>הקישור עבר את סינון התהליך. זו אינה עדות לבדיקה אנושית או להוספת הקוד ל־OSM. ציון השמות וביטחון המודל הם מדדים שונים.</p>
-                  <a class="example-link" href="prototype/">לבדיקת הנתונים בחדר ההשוואה <span>←</span><small>פתח תקווה · אב־טיפוס</small></a>
+                  <a class="example-link" href="{escape(HTML_DIR + '/' + city['file'], quote=True)}">לבדיקת הנתונים בעמוד היישוב <span>←</span><small>{escape(city['name'])} · מפה מול מפה וטבלה מלאה</small></a>
                 </aside>'''
     return '<aside class="evidence-card"><h2>קישור שניתן לבדיקה</h2><p>שם ב־OSM, שם רשמי, קוד רחוב ושיטת ההתאמה — יחד, בהקשר של היישוב.</p><a href="#cities">לנתוני היישובים ←</a></aside>'
 
