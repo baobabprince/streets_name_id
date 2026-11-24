@@ -111,8 +111,13 @@ When `--use-ai` is enabled, every OSM street scoring below 90% in fuzzy matching
 is sent together with the city's LAMAS street list to `LayaAIResolver`
 (`convaiinnovations/laya-multilingual`). The model weights download from Hugging
 Face on first use and the resolver is reused across settlements in the same
-process. Matches returned by Laya are written directly to `final_LAMAS_id`
-(`mapping_status = APPROVED_AI`) and included in coverage statistics.
+process. Every Laya suggestion passes strict output gates before it is written
+to `final_LAMAS_id` (`mapping_status = APPROVED_AI`): confidence ≥ 0.70 and
+prefix-stripped similarity ≥ 75 when Laya agrees with the fuzzy top-1 candidate,
+stricter thresholds (≥ 0.80 / ≥ 80) when Laya overrides it, plus digit
+compatibility, a settlement-name guard and magnet protection. Rejected
+suggestions keep the diagnostic row unmatched with the rejection reason in
+`ai_reasoning`.
 
 ## Usage
 
@@ -145,6 +150,12 @@ The single pass does **five** things, each once:
 4. writes one batch summary, one settlement-match CSV and the consolidated
    `data/settlement_matches.json`;
 5. refreshes `index.html`.
+
+Settlements whose pipeline completes with "nothing to map" (`NO_DATA` — OSM has
+no named streets, or `NO_LAMAS_STREETS` — LAMAS has no street-level records for
+the settlement) are counted as **no-data**, marked processed, and auto-documented
+in `batch_reports/no_data_settlements.txt` (which `build_no_results.py` reads to
+classify them in `no_results.json`). They do not fail the run.
 
 `run_all.py` exits non-zero if any settlement pipeline fails, so CI can rely on
 it. `batch_process_settlements.py` remains a compatible alias with the same

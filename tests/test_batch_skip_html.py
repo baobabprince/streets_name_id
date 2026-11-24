@@ -23,7 +23,35 @@ class TestBatchSkipHtml(unittest.TestCase):
         self.assertTrue(run_pipeline.call_args.kwargs["skip_html"])
 
     @patch("batch_process_settlements.run_pipeline", return_value=PipelineStatus.NO_DATA)
-    def test_non_success_pipeline_status_is_not_treated_as_success(self, run_pipeline):
+    def test_no_data_status_is_reported_as_no_data_not_failure(self, run_pipeline):
+        result = worker_wrapper(
+            "יישוב",
+            "יישוב, Israel",
+            use_ai=False,
+        )
+
+        # NO_DATA completed correctly — documented, not counted as a failure.
+        self.assertTrue(result["pipeline_success"])
+        self.assertEqual(result["status"], "no_data")
+        self.assertIn("nothing to map", result["message"])
+
+    @patch(
+        "batch_process_settlements.run_pipeline",
+        return_value=PipelineStatus.NO_LAMAS_STREETS,
+    )
+    def test_no_lamas_streets_status_is_reported_as_no_data(self, run_pipeline):
+        result = worker_wrapper(
+            "יישוב",
+            "יישוב, Israel",
+            use_ai=False,
+        )
+
+        self.assertTrue(result["pipeline_success"])
+        self.assertEqual(result["status"], "no_data")
+        self.assertIn("NO_LAMAS_STREETS", result["message"])
+
+    @patch("batch_process_settlements.run_pipeline", return_value=PipelineStatus.FAILURE)
+    def test_failure_status_is_not_treated_as_success(self, run_pipeline):
         result = worker_wrapper(
             "יישוב",
             "יישוב, Israel",
@@ -32,7 +60,7 @@ class TestBatchSkipHtml(unittest.TestCase):
 
         self.assertFalse(result["pipeline_success"])
         self.assertEqual(result["status"], "failed_pipeline")
-        self.assertEqual(result["message"], "Pipeline returned NO_DATA")
+        self.assertEqual(result["message"], "Pipeline returned FAILURE")
 
     @patch("batch_process_settlements.run_pipeline", return_value=PipelineStatus.SUCCESS)
     def test_worker_passes_structured_osm_match_to_pipeline(self, run_pipeline):
