@@ -256,7 +256,9 @@
       .slice(0, state.shown)
       .map(function (city) {
         return (
-          "<tr>" +
+          '<tr data-href="' +
+          city.href +
+          '">' +
           '<td class="t-name"><a href="' +
           city.href +
           '">' +
@@ -298,9 +300,6 @@
           '">' +
           TIER_LABEL[city.tier] +
           "</span></td>" +
-          '<td><a class="t-link" href="' +
-          city.href +
-          '">פתיחה</a></td>' +
           "</tr>"
         );
       })
@@ -500,6 +499,24 @@
       el.search.focus();
     }
   });
+
+  // The whole row opens the settlement page; the name is a real link for
+  // keyboard and right-click, while the rest of the row is a mouse shortcut.
+  if (el.tableBody) {
+    el.tableBody.addEventListener("click", function (ev) {
+      var tr = ev.target.closest("tr[data-href]");
+      if (!tr) return;
+      if (ev.target.closest("a, button")) return;
+      window.location.href = tr.dataset.href;
+    });
+    el.tableBody.addEventListener("keydown", function (ev) {
+      if (ev.key !== "Enter") return;
+      var tr = ev.target.closest("tr[data-href]");
+      if (!tr || ev.target.closest("a, button")) return;
+      ev.preventDefault();
+      window.location.href = tr.dataset.href;
+    });
+  }
 
   /* hero ring animation */
   var ringValue = document.querySelector(".ring .value");

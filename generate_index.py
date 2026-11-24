@@ -365,8 +365,8 @@ def _no_results_section() -> str:
     return (
         '<section class="no-results" id="no-results">'
         '<div class="shell"><h2>יישובים ללא תוצאות</h2>'
-        f'<p>{_fmt(len(items))} יישובים אין להם עדיין עמוד מפת רחובות. '
-        'ליד כל יישוב מצוין מספר הרחובות הרשומים עבורו בלמ״ס.</p>'
+        f'<p>{_fmt(len(items))} יישובים ללא עמוד מפה. המספר לצד כל יישוב הוא '
+        'הרחובות הרשומים בלמ״ס.</p>'
         + "".join(blocks) + "</div></section>"
         '<style>.no-results{margin:3rem 0}.no-results details{margin:.5rem 0;'
         'border:1px solid var(--line-strong,#ccc);border-radius:10px;padding:.6rem 1rem}'
@@ -419,7 +419,7 @@ def _example_match(cities: list[dict]) -> str:
                   <div class="evidence-top"><span class="source-dot"></span> מתוך הנתונים · {escape(city['name'])}<span class="ai-label">בסיוע AI</span></div>
                   <div class="evidence-names"><span>השם ב־OpenStreetMap</span><strong>{escape(str(record[1]))}</strong><span class="match-arrow" aria-hidden="true">↓</span><span>השם הרשמי בלמ״ס</span><strong>{escape(str(record[2]))}</strong></div>
                   <div class="evidence-values"><div><span>קוד רחוב ביישוב</span><b>{escape(str(record[3]))}</b></div><div><span>ציון התאמת שמות</span><b dir="ltr">{escape(str(record[4]))}<small> / 100</small></b></div><div><span>ביטחון שדיווח AI</span><b>{escape(str(record[6]))}</b></div></div>
-                  <p>הקישור עבר את סינון התהליך. זו אינה עדות לבדיקה אנושית או להוספת הקוד ל־OSM. ציון השמות וביטחון המודל הם מדדים שונים.</p>
+                  <p>הקישור עבר את סינון התהליך, אך אינו אישור בשטח ואינו מוסיף את הקוד ל־OSM. ציון השמות וביטחון המודל הם מדדים שונים.</p>
                   <a class="example-link" href="{escape(HTML_DIR + '/' + city['file'], quote=True)}">לבדיקת הנתונים בעמוד היישוב <span>←</span><small>{escape(city['name'])} · מפה מול מפה וטבלה מלאה</small></a>
                 </aside>'''
     return '<aside class="evidence-card"><h2>קישור שניתן לבדיקה</h2><p>שם ב־OSM, שם רשמי, קוד רחוב ושיטת ההתאמה — יחד, בהקשר של היישוב.</p><a href="#cities">לנתוני היישובים ←</a></aside>'

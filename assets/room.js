@@ -410,8 +410,9 @@
       ? `${number(official)} מתוך ${number(totalOfficial)} קודים רשמיים`
       : "אין רחובות ברשימת למ״ס להשוואה";
     if (data.missingOfficialListed < data.missingOfficialTotal)
-      $("official-missing-note").textContent =
-        `ברשימה מוצגים ${number(data.missingOfficialListed)} מתוך ${number(data.missingOfficialTotal)} שמות למ״ס ללא התאמה; בעמוד הקודם נשמרו רק אלה. הרצה מחדש של היישוב תציג את הרשימה המלאה.`;
+      $("omb-note").textContent =
+        "שמות מהרשימה הרשמית שלא נמצאה להם התאמה ב־OSM. לחיצה על שם מחפשת אותו ב־GovMap. " +
+        `מוצגים ${number(data.missingOfficialListed)} מתוך ${number(data.missingOfficialTotal)} שמות; הרצה מחדש תציג את הרשימה המלאה.`;
     const counts = entries.reduce(
       (a, e) => ((a[e.status] = (a[e.status] || 0) + 1), a),
       {},
@@ -444,6 +445,37 @@
       button.onclick = () => applyView(view);
       $("tabs").append(button);
     });
+  }
+  // Unmatched LAMAS names are presented as a single compact, dense list at the
+  // bottom of the page rather than one near-empty table row each.
+  function renderMissingOfficial() {
+    const block = $("official-missing-block");
+    const list = $("omb-list");
+    if (!block || !list) return;
+    const names = data.missingOfficial || [];
+    if (!names.length) {
+      block.hidden = true;
+      return;
+    }
+    block.hidden = false;
+    $("omb-count").textContent = number(names.length);
+    list.replaceChildren();
+    names
+      .slice()
+      .sort((a, b) => a.localeCompare(b, "he"))
+      .forEach((name) => {
+        const chip = el("button", "omb-chip", name);
+        chip.type = "button";
+        chip.setAttribute(
+          "aria-label",
+          `חיפוש "${name}" ב־GovMap`,
+        );
+        chip.onclick = () => {
+          navigateGov(name);
+          $("gov-map").scrollIntoView({ behavior: "smooth", block: "center" });
+        };
+        list.append(chip);
+      });
   }
   function setupMap() {
     map = L.map("osm-map", {
@@ -556,6 +588,21 @@
       !filtered.some((entry) => entry.key === state.selected.key)
     )
       clearSelection();
+    // Unmatched LAMAS names live in a compact block at the bottom of the page,
+    // so this view skips the near-empty full table and just reveals that block.
+    if (state.view === "official-missing") {
+      renderMissingOfficial();
+      $("findings").classList.add("hide-table");
+      $("current-view").textContent = view.label;
+      $("map-count").textContent = number(filtered.length);
+      paintMap();
+      $("official-missing-block").scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      return;
+    }
+    $("findings").classList.remove("hide-table");
     const officialView =
       state.view.startsWith("official") && state.view !== "official-missing";
     $("score-filter-note").textContent = officialView
@@ -934,6 +981,7 @@
       // Initialize the table first. Leaflet is optional for all table operations.
       setupModels();
       setupOverview();
+      renderMissingOfficial();
       bindEvents();
       render();
       $("app-status").dataset.state = "ready";
