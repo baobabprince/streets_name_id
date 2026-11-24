@@ -35,7 +35,7 @@ considerations, alongside the searchable settlement data.
 - **High-speed offline OSM extraction** — automatically downloads Geofabrik's Israel PBF extract, parses and indexes all road segments, municipal boundaries and `place=*` features locally, eliminating Overpass API rate limits and timeouts.
 - **Offline-first settlement matching** — one national index of OSM boundary/place names is built once per run and matched against the whole LAMAS settlement list with canonical Hebrew/Arabic normalization, curated aliases and geographic validation against LAMAS settlement centres; Nominatim is called only for names the local index cannot explain
 - **Neighbourhood guard** — `place=suburb` / `neighbourhood` / `quarter`, `admin_level` 9+ and district-scale polygons can never win a LAMAS settlement match (offline index *and* Nominatim fallback). Features inside a differently named city boundary or Nominatim `address.city/town/village` are flagged, discarded candidates are listed in the match note, and rejections carry an explicit reason in the audit CSV
-- **BBox-based Overpass fallback** — when the local PBF has no streets, the street fetch uses the already-resolved bbox/OSM id/coordinates with `graph_from_polygon`, instead of re-geocoding the whole settlement match dict through `ox.graph_from_place` (which caused `Nominatim API did not return a list of results` for small settlements)
+- **Minimal BBox-based Overpass fallback** — when the local PBF has no streets, the street fetch makes **one** Overpass query using the already-resolved bbox (or, without one, the matched OSM way/relation boundary, or the coordinates) with `graph_from_polygon`, instead of re-geocoding the whole settlement match dict through `ox.graph_from_place` (which caused `Nominatim API did not return a list of results` for small settlements). A PBF miss is almost always a data issue (no named streets in OSM), so there are no escalating retries: a short timeout (`OSM_OVERPASS_TIMEOUT`, default 30s), no larger-area/alternative-strategy retries, and OSMnx's built-in sleep-and-retry on HTTP 429/504 is disabled for this call
 - **One consolidated match store** — positive *and* negative settlement resolutions are kept in `data/settlement_matches.json` (one atomic write per run), with a CSV audit trail in `batch_reports/settlement_match_report.csv`
 - **One command for everything** — `python run_all.py` fetches, matches, processes, reports and rebuilds the dashboard in a single run
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
@@ -101,6 +101,10 @@ If the tool is not installed, local PBF extraction stops before downloading the
 large regional extract; use `--no-pbf` to fall back to live Overpass data.
 If Osmium detects a PBF decompression/format error, the pipeline downloads a
 fresh extract and retries once before falling back to Overpass.
+The Overpass fallback for a settlement missing from the PBF is a single, short
+attempt (default 30 seconds; override with `OSM_OVERPASS_TIMEOUT=<seconds>`)
+with no retries — if it is empty too, the settlement is reported as having no
+OSM data.
 
 **Optional — Laya local decision model:**
 

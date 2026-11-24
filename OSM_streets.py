@@ -1,6 +1,7 @@
 import logging
 import math
 import os
+from contextlib import contextmanager
 from typing import Any, Callable
 
 import osmnx as ox
@@ -26,7 +27,100 @@ logger = logging.getLogger(__name__)
 # again (which often fails for small/unrecognised settlements).
 MIN_FALLBACK_HALF_LAT = MIN_SETTLEMENT_HALF_HEIGHT_LAT
 MIN_FALLBACK_HALF_LON = MIN_SETTLEMENT_HALF_WIDTH_LON
-FALLBACK_EXPANSION_FACTOR = 1.6
+
+# When a settlement is missing from the local PBF it is almost always a *data*
+# problem (no named streets mapped in OSM, or the place matched to the wrong
+# element), not a problem with the extract.  Overpass reads the same OSM data,
+# so the fallback is deliberately minimal: ONE query, a short timeout, no
+# growing timeouts/areas and no automatic 429/504 retry loops.
+DEFAULT_OVERPASS_FALLBACK_TIMEOUT = 30  # seconds (HTTP + Overpass server timeout)
+FALLBACK_POINT_DIST_M = 2500
+
+
+def _overpass_fallback_timeout() -> int:
+    """Timeout for the single fallback query (``OSM_OVERPASS_TIMEOUT`` overrides)."""
+    raw = os.environ.get("OSM_OVERPASS_TIMEOUT")
+    if raw:
+        try:
+            value = int(float(raw))
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+        logger.warning("Ignoring invalid OSM_OVERPASS_TIMEOUT=%r", raw)
+    return DEFAULT_OVERPASS_FALLBACK_TIMEOUT
+
+
+class OverpassNoRetryError(RuntimeError):
+    """Raised instead of OSMnx's built-in sleep-and-retry on HTTP 429/504."""
+
+
+def _no_retry(module, func_name: str, key_fn: Callable[..., Any]):
+    """Wrap an OSMnx request function so a recursive retry fails immediately.
+
+    OSMnx 1.x answers 429/504 by sleeping ``error_pause`` (60s+) and calling
+    itself again with the same payload, indefinitely.  The wrapper forces
+    ``error_pause=0`` and raises on the first repeat of the same payload, while
+    still allowing distinct sub-requests (e.g. a subdivided polygon).
+    """
+    original = getattr(module, func_name)
+    seen: set = set()
+
+    def wrapper(*args, **kwargs):
+        key = key_fn(*args, **kwargs)
+        if key in seen:
+            raise OverpassNoRetryError(
+                f"{func_name}: server busy/timeout (HTTP 429/504); not retrying"
+            )
+        seen.add(key)
+        kwargs["error_pause"] = 0
+        return original(*args, **kwargs)
+
+    return original, wrapper
+
+
+@contextmanager
+def _limited_overpass():
+    """Temporarily make OSMnx network calls short, single-shot and non-retrying."""
+    timeout = _overpass_fallback_timeout()
+    saved = {
+        "requests_timeout": ox.settings.requests_timeout,
+        "overpass_rate_limit": ox.settings.overpass_rate_limit,
+    }
+    patches = []
+    try:
+        from osmnx import _overpass, _nominatim
+
+        patches.append((_overpass, "_overpass_request", *_no_retry(
+            _overpass,
+            "_overpass_request",
+            lambda data, *a, **k: repr(sorted(dict(data).items())),
+        )))
+        patches.append((_nominatim, "_nominatim_request", *_no_retry(
+            _nominatim,
+            "_nominatim_request",
+            lambda params, request_type="search", *a, **k: (
+                request_type, repr(sorted(dict(params).items()))
+            ),
+        )))
+    except Exception as exc:  # pragma: no cover - other OSMnx layouts
+        logger.debug("Could not install OSMnx no-retry guard: %s", exc)
+        patches = []
+
+    # ``requests_timeout`` also feeds the ``[timeout:N]`` Overpass QL setting.
+    ox.settings.requests_timeout = timeout
+    # Do not poll /status and sleep waiting for a free slot; fail fast instead.
+    ox.settings.overpass_rate_limit = False
+    for module, name, _original, wrapper in patches:
+        setattr(module, name, wrapper)
+    try:
+        yield timeout
+    finally:
+        for module, name, original, _wrapper in patches:
+            setattr(module, name, original)
+        for key, value in saved.items():
+            setattr(ox.settings, key, value)
+
 
 def is_hebrew(text):
     """
@@ -95,76 +189,68 @@ def _graph_by_osm_id(place: dict):
         return ox.graph_from_polygon(polygons.iloc[0], network_type="all", simplify=True)
     return ox.graph_from_point(
         center_point=(float(place["lat"]), float(place["lon"])),
-        dist=2500,
+        dist=FALLBACK_POINT_DIST_M,
         network_type="all",
         simplify=True,
     )
 
 
 def _graph_from_place_dict(place: dict):
-    """Overpass fallback that never geocodes a whole place dict by mistake.
+    """Single, minimal Overpass query for an already-resolved settlement.
 
     ``ox.graph_from_place`` expects a string or an address-query dict.  Passing
     our settlement match dict makes OSMnx issue Nominatim queries for the dict
-    keys, which is why small settlements used to fail with
-    ``Nominatim API did not return a list of results``.  Use the already-known
-    bbox/OSM id/coordinates instead.
+    keys, so the already-known bbox is used instead (or, without a bbox, the
+    boundary of the matched OSM way/relation, or else the coordinates).  Only
+    ONE of these is tried: if it comes back empty the settlement
+    simply has no mapped streets in OSM, and asking again with a larger area,
+    a different strategy or a longer timeout will not change that.
+
+    Returns the graph, or ``None`` when OSM has no streets there.
     """
-    strategies: list[tuple[str, Callable[[], Any]]] = []
+    polygon = _bbox_polygon(place)
+    has_point = place.get("lat") is not None and place.get("lon") is not None
+    osm_type = str(place.get("osm_type") or "").lower()
+    if polygon is not None:
+        label = "bbox"
+        query = lambda: ox.graph_from_polygon(polygon, network_type="all", simplify=True)
+    elif place.get("osm_id") and osm_type in {"way", "relation"}:
+        # A node id has no boundary; the coordinates below are equivalent.
+        label = "OSM id"
+        query = lambda: _graph_by_osm_id(place)
+    elif has_point:
+        label = "point"
+        query = lambda: ox.graph_from_point(
+            center_point=(float(place["lat"]), float(place["lon"])),
+            dist=FALLBACK_POINT_DIST_M,
+            network_type="all",
+            simplify=True,
+        )
+    else:
+        logger.warning(
+            "No bbox/coordinates for %s; skipping Overpass fallback (no geocoding retry).",
+            place.get("settlement_name") or place.get("display_name") or place,
+        )
+        return None
 
-    exact = _bbox_polygon(place)
-    if exact is not None:
-        strategies.append((
-            "bbox",
-            lambda polygon=exact: ox.graph_from_polygon(
-                polygon, network_type="all", simplify=True
-            ),
-        ))
-
-    expanded = _bbox_polygon(place, FALLBACK_EXPANSION_FACTOR)
-    if expanded is not None and (exact is None or not expanded.equals(exact)):
-        strategies.append((
-            "expanded bbox",
-            lambda polygon=expanded: ox.graph_from_polygon(
-                polygon, network_type="all", simplify=True
-            ),
-        ))
-
-    if place.get("osm_id") and place.get("osm_type"):
-        strategies.append(("OSM id", lambda: _graph_by_osm_id(place)))
-
-    if place.get("lat") is not None and place.get("lon") is not None:
-        strategies.append((
-            "point",
-            lambda: ox.graph_from_point(
-                center_point=(float(place["lat"]), float(place["lon"])),
-                dist=2500,
-                network_type="all",
-                simplify=True,
-            ),
-        ))
-
-    display_name = place.get("display_name")
-    if display_name:
-        strategies.append((
-            "display name",
-            lambda query=display_name: ox.graph_from_place(
-                query, network_type="all", simplify=True
-            ),
-        ))
-
-    errors = []
-    for label, strategy in strategies:
-        try:
-            G = strategy()
-            if G is not None and _graph_has_edges(G):
-                logger.info("Overpass fallback succeeded via %s", label)
-                return G
-            errors.append(f"{label}: empty graph")
-        except Exception as exc:
-            errors.append(f"{label}: {exc}")
-            logger.debug("Overpass fallback %s failed: %s", label, exc)
-    raise RuntimeError("; ".join(errors) or "No usable fallback strategy")
+    try:
+        G = query()
+    except Exception as exc:
+        # osmnx raises when the area contains no matching ways at all.
+        if "no data elements" in str(exc).lower() or "found no graph nodes" in str(exc).lower():
+            G = None
+        else:
+            raise
+    if G is None or not _graph_has_edges(G):
+        logger.warning(
+            "Overpass (%s) also returned no streets for %s - this is most likely "
+            "missing/unnamed data in OSM, not a PBF problem; not retrying.",
+            label,
+            place.get("settlement_name") or place.get("display_name") or place,
+        )
+        return None
+    logger.info("Overpass fallback succeeded via %s", label)
+    return G
 
 
 def fetch_osm_street_data(place, use_pbf: bool = True):
@@ -207,14 +293,23 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
         ox.settings.useful_tags_way.append("name:he")
 
     # 1. Download and simplify the full street network for the requested place.
+    # A single, short, non-retrying attempt (see _limited_overpass).
     overpass_retrieved_at = utc_now()
     try:
-        if isinstance(place, dict):
-            G = _graph_from_place_dict(place)
-        else:
-            G = ox.graph_from_place(place, network_type="all", simplify=True)
+        with _limited_overpass() as timeout:
+            logger.info("Single Overpass attempt for %s (timeout %ss, no retries)", place, timeout)
+            if isinstance(place, dict):
+                G = _graph_from_place_dict(place)
+            else:
+                G = ox.graph_from_place(place, network_type="all", simplify=True)
     except Exception as e:
-        logger.exception("Failed to fetch OSM street graph for %s: %s", place, e)
+        logger.warning(
+            "Overpass fallback failed for %s (%s); not retrying - usually a data issue.",
+            place,
+            e,
+        )
+        return None
+    if G is None:
         return None
 
     # 2. המרת קטעי הדרך (Edges) ל-GeoDataFrame

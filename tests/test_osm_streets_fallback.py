@@ -65,29 +65,97 @@ class TestOSMStreetsFallback(unittest.TestCase):
         called_polygon = polygon.call_args.args[0]
         self.assertGreater(called_polygon.area, 0)
 
-    def test_empty_graph_tries_expanded_bbox_before_geocoding(self):
+    def test_empty_graph_is_not_retried_with_other_strategies(self):
+        """A PBF miss is a data issue: one Overpass query, no escalation."""
         place = {
             "display_name": "יישוב קטן, Israel",
             "lat": 31.2,
             "lon": 34.9,
             "boundingbox": (31.199, 31.201, 34.899, 34.901),
+            "osm_id": "123",
+            "osm_type": "node",
         }
+        with (
+            patch.object(osm_streets.ox, "graph_from_polygon", return_value=_Graph(0)) as polygon,
+            patch.object(osm_streets.ox, "graph_from_place") as by_name,
+            patch.object(osm_streets.ox, "graph_from_point") as by_point,
+            patch.object(osm_streets.ox, "geocode_to_gdf") as by_id,
+        ):
+            graph = osm_streets._graph_from_place_dict(place)
+        self.assertIsNone(graph)
+        polygon.assert_called_once()
+        by_name.assert_not_called()
+        by_point.assert_not_called()
+        by_id.assert_not_called()
+
+    def test_no_data_error_is_treated_as_empty_without_retry(self):
+        place = {"lat": 31.2, "lon": 34.9, "boundingbox": (31.19, 31.21, 34.89, 34.91)}
         with (
             patch.object(
                 osm_streets.ox,
                 "graph_from_polygon",
-                side_effect=[_Graph(0), _Graph(1)],
+                side_effect=ValueError("No data elements in server response."),
             ) as polygon,
+            patch.object(osm_streets.ox, "graph_from_point") as by_point,
+        ):
+            self.assertIsNone(osm_streets._graph_from_place_dict(place))
+        polygon.assert_called_once()
+        by_point.assert_not_called()
+
+    def test_point_used_only_when_no_bbox_and_nothing_without_coordinates(self):
+        with patch.object(osm_streets.ox, "graph_from_point", return_value=_Graph()) as by_point:
+            self.assertIsNotNone(osm_streets._graph_from_place_dict({"lat": 31.2, "lon": 34.9}))
+        by_point.assert_called_once()
+        with (
             patch.object(osm_streets.ox, "graph_from_place") as by_name,
             patch.object(osm_streets.ox, "graph_from_point") as by_point,
         ):
-            graph = osm_streets._graph_from_place_dict(place)
-        self.assertEqual(len(graph.edges), 1)
-        self.assertEqual(polygon.call_count, 2)
-        first, second = [call.args[0] for call in polygon.call_args_list]
-        self.assertGreater(second.area, first.area)
+            self.assertIsNone(osm_streets._graph_from_place_dict({"display_name": "X, Israel"}))
         by_name.assert_not_called()
         by_point.assert_not_called()
+
+    def test_fetch_after_pbf_miss_makes_one_short_overpass_attempt(self):
+        place = {"lat": 31.2, "lon": 34.9, "boundingbox": (31.19, 31.21, 34.89, 34.91)}
+        seen = {}
+
+        def fake_polygon(*args, **kwargs):
+            seen["timeout"] = osm_streets.ox.settings.requests_timeout
+            seen["rate_limit"] = osm_streets.ox.settings.overpass_rate_limit
+            raise ConnectionError("read timed out")
+
+        before = osm_streets.ox.settings.requests_timeout
+        with (
+            patch.dict(osm_streets.os.environ, {"OSM_OVERPASS_TIMEOUT": "12"}),
+            patch("osm_pbf_loader.fetch_pbf_street_data", return_value=None),
+            patch.object(osm_streets.ox, "graph_from_polygon", side_effect=fake_polygon) as polygon,
+            patch.object(osm_streets.ox, "graph_from_point") as by_point,
+        ):
+            result = osm_streets.fetch_osm_street_data(place)
+        self.assertIsNone(result)
+        polygon.assert_called_once()
+        by_point.assert_not_called()
+        self.assertEqual(seen, {"timeout": 12, "rate_limit": False})
+        self.assertEqual(osm_streets.ox.settings.requests_timeout, before)
+
+    def test_osmnx_429_retry_loop_is_cut_short(self):
+        from osmnx import _overpass
+
+        calls = []
+
+        def fake_request(data, pause=None, error_pause=60):
+            calls.append(error_pause)
+            # Simulate OSMnx's recursive retry on HTTP 429 with the same payload.
+            return _overpass._overpass_request(data, pause, error_pause)
+
+        with patch.object(_overpass, "_overpass_request", fake_request):
+            with osm_streets._limited_overpass():
+                with self.assertRaises(osm_streets.OverpassNoRetryError):
+                    _overpass._overpass_request(data={"data": "q"})
+                # A *different* payload (e.g. subdivided polygon) is still allowed.
+                with self.assertRaises(osm_streets.OverpassNoRetryError):
+                    _overpass._overpass_request(data={"data": "q2"})
+            self.assertIs(_overpass._overpass_request, fake_request)
+        self.assertEqual(calls, [0, 0])
 
     def test_fetch_uses_dict_fallback_when_pbf_is_disabled(self):
         edges = gpd.GeoDataFrame({
