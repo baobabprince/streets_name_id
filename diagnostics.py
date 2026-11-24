@@ -11,6 +11,43 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# OSM way types that can never carry a street address.  A named street whose
+# every segment is one of these is infrastructure noise (paths, parking aisles,
+# service roads), not a missing addressable street — so it is reported
+# separately instead of inflating the "unmatched" numbers.
+NON_ADDRESSABLE_HIGHWAY_TYPES = {
+    "service", "footway", "path", "track", "cycleway", "steps",
+    "living_street", "busway", "proposed", "construction", "raceway",
+    "corridor", "crossing", "elevator", "escape",
+}
+
+
+def _non_addressable_osm_names(osm_gdf: pd.DataFrame) -> set[str]:
+    """Named streets whose every segment is a non-addressable OSM way type.
+
+    Requires ``osm_id``, ``highway`` and ``normalized_name`` columns (both are
+    present in the pipeline's OSM frames); returns an empty set when they are
+    unavailable so diagnostics keep their previous behaviour.
+    """
+    if not {"osm_id", "highway", "normalized_name"}.issubset(osm_gdf.columns):
+        return set()
+    named = osm_gdf.dropna(subset=["normalized_name"])
+    if named.empty:
+        return set()
+    frame = pd.DataFrame(
+        {
+            "name": named["normalized_name"].astype(str),
+            "highway": named["highway"].map(
+                lambda value: str(value).strip().lower() if pd.notna(value) else ""
+            ),
+        }
+    )
+    return {
+        name
+        for name, highways in frame.groupby("name")["highway"]
+        if highways.isin(NON_ADDRESSABLE_HIGHWAY_TYPES).all()
+    }
+
 
 def calculate_diagnostics(
     lamas_in_city_df: pd.DataFrame,
@@ -54,7 +91,6 @@ def calculate_diagnostics(
         geographic_review_matches = 0
 
     ai_proposed_matches = ai_resolved_matches
-    unmatched_osm_streets = total_osm_streets - total_matched
 
     matched_osm_names = set(
         diagnostic_df_full[diagnostic_df_full["final_LAMAS_id"].notna()][
@@ -62,10 +98,20 @@ def calculate_diagnostics(
         ].unique()
     )
     all_osm_names = set(named_osm_gdf["normalized_name"].unique())
-    unmatched_osm_names = sorted(list(all_osm_names - matched_osm_names))
+    unmatched_osm_names_all = all_osm_names - matched_osm_names
+    # Infrastructure ways (paths, service roads, ...) that ended up unmatched
+    # are reported separately: there is nothing for them to match to.
+    non_addressable_unmatched = _non_addressable_osm_names(osm_gdf) & unmatched_osm_names_all
+    unmatched_osm_names = sorted(unmatched_osm_names_all - non_addressable_unmatched)
+    unmatched_osm_streets = len(unmatched_osm_names)
 
     unmatched_osm_percentage = (
         (unmatched_osm_streets / total_osm_streets) * 100 if total_osm_streets > 0 else 0
+    )
+    non_addressable_osm_percentage = (
+        (len(non_addressable_unmatched) / total_osm_streets) * 100
+        if total_osm_streets > 0
+        else 0
     )
 
     if not lamas_in_city_df.empty:
@@ -143,6 +189,9 @@ def calculate_diagnostics(
         "unmatched_osm_streets": unmatched_osm_streets,
         "unmatched_osm_percentage": f"{unmatched_osm_percentage:.1f}%",
         "unmatched_osm_street_names": unmatched_osm_names,
+        "non_addressable_osm_streets": len(non_addressable_unmatched),
+        "non_addressable_osm_percentage": f"{non_addressable_osm_percentage:.1f}%",
+        "non_addressable_osm_street_names": sorted(non_addressable_unmatched),
         "unmatched_lamas_count": unmatched_lamas_count,
         "unmatched_lamas_percentage": f"{unmatched_lamas_percentage:.1f}%",
         "unmatched_lamas_street_names": unmatched_lamas_street_names,

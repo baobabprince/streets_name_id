@@ -51,7 +51,6 @@ class TestPipelineApproval(unittest.TestCase):
         candidates = pd.DataFrame(
             {
                 "osm_id": [
-                    "disagree",
                     "low-conf",
                     "low-sim",
                     "digit-mismatch",
@@ -64,7 +63,6 @@ class TestPipelineApproval(unittest.TestCase):
                     "multi-seg-c",
                 ],
                 "normalized_name": [
-                    "שדרות בן גוריון",
                     "דוד בן גוריון",
                     "אלקטרה מול הנוף",
                     "גדוד 21",
@@ -76,12 +74,11 @@ class TestPipelineApproval(unittest.TestCase):
                     "סמטת אורן",
                     "סמטת אורן",
                 ],
-                "status": ["NEEDS_AI"] * 11,
-                "best_score": [82.0] * 11,
+                "status": ["NEEDS_AI"] * 10,
+                "best_score": [82.0] * 10,
                 "best_LAMAS_id": [
-                    "999",  # disagrees with AI 202
-                    "202",  # conf 0.65 < 0.70
-                    "303",  # core_wratio < 75
+                    "202",  # conf 0.65 < override 0.80
+                    "303",  # core_wratio < override 80
                     "404",  # 21 != 22
                     "505",  # LAMAS name equals city_name
                     "606",  # 3 unique streets -> post_hits > 2
@@ -92,7 +89,6 @@ class TestPipelineApproval(unittest.TestCase):
                     "707",
                 ],
                 "best_LAMAS_name": [
-                    "שם שגוי",
                     "בן גוריון",
                     "בנין המשטרה",
                     "גדוד 22",
@@ -111,7 +107,6 @@ class TestPipelineApproval(unittest.TestCase):
                 "osm_id": candidates["osm_id"].tolist(),
                 "ai_suggested_LAMAS_id": [
                     "202",
-                    "202",
                     "303",
                     "404",
                     "505",
@@ -123,7 +118,6 @@ class TestPipelineApproval(unittest.TestCase):
                     "707",
                 ],
                 "ai_confidence": [
-                    0.99,
                     0.65,
                     0.98,
                     0.95,
@@ -135,8 +129,8 @@ class TestPipelineApproval(unittest.TestCase):
                     0.85,
                     0.85,
                 ],
-                "ai_reasoning": ["Laya"] * 11,
-                "ai_method": ["local_laya"] * 11,
+                "ai_reasoning": ["Laya"] * 10,
+                "ai_method": ["local_laya"] * 10,
             }
         )
         lamas_names = {
@@ -156,7 +150,6 @@ class TestPipelineApproval(unittest.TestCase):
         )
         by_id = merged.set_index("osm_id")
         for rejected in (
-            "disagree",
             "low-conf",
             "low-sim",
             "digit-mismatch",
@@ -167,11 +160,167 @@ class TestPipelineApproval(unittest.TestCase):
         ):
             self.assertEqual(by_id.loc[rejected, "mapping_status"], "UNMATCHED", rejected)
             self.assertIn("[filtered:", by_id.loc[rejected, "ai_reasoning"])
+        # The rejections carry gate-specific reasons: 'low-conf' fails the
+        # agreement confidence threshold (0.70) and 'low-sim' the agreement
+        # core-WRatio threshold (75.0). Override rejections are covered by
+        # their dedicated tests below.
+        self.assertIn("low_confidence(0.65<0.70)", by_id.loc["low-conf", "ai_reasoning"])
+        self.assertIn("low_core_wratio(23.1<75.0)", by_id.loc["low-sim", "ai_reasoning"])
 
         # Same street split into 3 OSM segments counts as 1 unique street hit -> APPROVED_AI
         for seg in ("multi-seg-a", "multi-seg-b", "multi-seg-c"):
             self.assertEqual(by_id.loc[seg, "mapping_status"], "APPROVED_AI")
         self.assertEqual(set(approved["osm_id"]), {"multi-seg-a", "multi-seg-b", "multi-seg-c"})
+
+    def test_override_with_strong_evidence_beats_wrong_fuzzy_top1(self):
+        # The fuzzy stage picked a wrong top-1 ("שם שגוי"); Laya disagrees and
+        # proposes 202 with strong confidence — the override is approved.
+        candidates = pd.DataFrame(
+            {
+                "osm_id": ["override"],
+                "normalized_name": ["דוד בן גוריון"],
+                "status": ["NEEDS_AI"],
+                "best_score": [42.0],
+                "best_LAMAS_id": ["999"],
+                "best_LAMAS_name": ["שם שגוי"],
+            }
+        )
+        ai_decisions = pd.DataFrame(
+            {
+                "osm_id": ["override"],
+                "ai_suggested_LAMAS_id": ["202"],
+                "ai_confidence": [0.85],
+                "ai_reasoning": ["Laya selected street_2"],
+                "ai_method": ["local_laya"],
+            }
+        )
+
+        merged, approved = _finalize_mappings(
+            candidates,
+            ai_decisions,
+            lamas_name_by_id={"999": "שם שגוי", "202": "בן גוריון"},
+            city_name="עיר בדיקה",
+        )
+
+        row = merged.set_index("osm_id").loc["override"]
+        self.assertEqual(row["mapping_status"], "APPROVED_AI")
+        self.assertEqual(row["best_LAMAS_name"], "בן גוריון")
+        self.assertEqual(approved.set_index("osm_id").loc["override", "final_LAMAS_id"], "202")
+
+    def test_override_rejected_below_strict_confidence(self):
+        # 0.79 confidence would pass the agreement gate (0.70) but not the
+        # override gate (0.80) because the AI contradicts the fuzzy top-1.
+        candidates = pd.DataFrame(
+            {
+                "osm_id": ["weak-override"],
+                "normalized_name": ["דוד בן גוריון"],
+                "status": ["NEEDS_AI"],
+                "best_score": [42.0],
+                "best_LAMAS_id": ["999"],
+                "best_LAMAS_name": ["שם שגוי"],
+            }
+        )
+        ai_decisions = pd.DataFrame(
+            {
+                "osm_id": ["weak-override"],
+                "ai_suggested_LAMAS_id": ["202"],
+                "ai_confidence": [0.79],
+                "ai_reasoning": ["Laya selected street_2"],
+                "ai_method": ["local_laya"],
+            }
+        )
+
+        merged, approved = _finalize_mappings(
+            candidates,
+            ai_decisions,
+            lamas_name_by_id={"999": "שם שגוי", "202": "בן גוריון"},
+            city_name="עיר בדיקה",
+        )
+
+        row = merged.set_index("osm_id").loc["weak-override"]
+        self.assertEqual(row["mapping_status"], "UNMATCHED")
+        self.assertIn("override_low_confidence", row["ai_reasoning"])
+        self.assertTrue(approved.empty)
+
+    def test_agreement_gate_unchanged(self):
+        # When Laya agrees with the fuzzy top-1, the original thresholds
+        # (0.70 confidence / 75.0 core WRatio) still apply.
+        def finalize_with_conf(ai_conf):
+            candidates = pd.DataFrame(
+                {
+                    "osm_id": ["agree"],
+                    "normalized_name": ["רחוב הרצל"],
+                    "status": ["NEEDS_AI"],
+                    "best_score": [80.0],
+                    "best_LAMAS_id": ["101"],
+                    "best_LAMAS_name": ["הרצל"],
+                }
+            )
+            ai_decisions = pd.DataFrame(
+                {
+                    "osm_id": ["agree"],
+                    "ai_suggested_LAMAS_id": ["101"],
+                    "ai_confidence": [ai_conf],
+                    "ai_reasoning": ["Laya selected street_1"],
+                    "ai_method": ["local_laya"],
+                }
+            )
+            merged, _ = _finalize_mappings(
+                candidates,
+                ai_decisions,
+                lamas_name_by_id={"101": "הרצל"},
+                city_name="עיר בדיקה",
+            )
+            return merged.set_index("osm_id").loc["agree"]
+
+        self.assertEqual(finalize_with_conf(0.70)["mapping_status"], "APPROVED_AI")
+        self.assertEqual(finalize_with_conf(0.69)["mapping_status"], "UNMATCHED")
+
+    def test_core_gate_scores_against_the_best_alias_of_the_lamas_id(self):
+        # The LAMAS display name is one alias among several; the gate must
+        # score the OSM name against the best alias of the matched id, so a
+        # bad alphabetical display pick cannot sink a correct match.
+        candidates = pd.DataFrame(
+            {
+                "osm_id": ["alias"],
+                "normalized_name": ["האלון"],
+                "status": ["NEEDS_AI"],
+                "best_score": [80.0],
+                "best_LAMAS_id": ["101"],
+                "best_LAMAS_name": ["בנין המשטרה"],
+            }
+        )
+        ai_decisions = pd.DataFrame(
+            {
+                "osm_id": ["alias"],
+                "ai_suggested_LAMAS_id": ["101"],
+                "ai_confidence": [0.9],
+                "ai_reasoning": ["Laya selected street_1"],
+                "ai_method": ["local_laya"],
+            }
+        )
+        common_kwargs = dict(
+            lamas_name_by_id={"101": "בנין המשטרה"},
+            city_name="עיר בדיקה",
+        )
+
+        # Display alias alone scores 30.0 -> rejected.
+        merged_only, _ = _finalize_mappings(candidates, ai_decisions, **common_kwargs)
+        self.assertEqual(
+            merged_only.set_index("osm_id").loc["alias", "mapping_status"], "UNMATCHED"
+        )
+
+        # With the full alias list the best alias ("האלון") scores 100 -> approved.
+        merged_alias, approved_alias = _finalize_mappings(
+            candidates,
+            ai_decisions,
+            lamas_aliases_by_id={"101": ["בנין המשטרה", "האלון"]},
+            **common_kwargs,
+        )
+        self.assertEqual(
+            merged_alias.set_index("osm_id").loc["alias", "mapping_status"], "APPROVED_AI"
+        )
+        self.assertEqual(set(approved_alias["osm_id"]), {"alias"})
 
     def test_pipeline_sends_all_below_90_streets_in_city_to_laya_and_approves(self):
         osm_gdf = gpd.GeoDataFrame(

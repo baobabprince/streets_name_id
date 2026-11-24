@@ -60,7 +60,11 @@ def _exit_code(summary: Optional[Dict[str, Any]]) -> int:
     if not stats:
         return 0
     total = stats.get("total_settlements", 0)
-    completed = stats.get("successful", 0) + stats.get("skipped_already_processed", 0)
+    completed = (
+        stats.get("successful", 0)
+        + stats.get("no_data", 0)  # completed; nothing to map (NO_DATA/NO_LAMAS_STREETS)
+        + stats.get("skipped_already_processed", 0)
+    )
     if total and completed < total:
         print(
             f"\nOnly {completed}/{total} settlements completed; "
@@ -97,6 +101,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         stats = summary["statistics"]
         print(
             f"Pipelines: {stats['successful']} successful, "
+            f"{stats.get('no_data', 0)} no-data, "
             f"{stats['failed_pipeline']} failed, "
             f"{stats['skipped_already_processed']} skipped"
         )
