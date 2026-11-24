@@ -84,6 +84,32 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).replace("<", "\\u003c")
 
 
+def mazal_entities_html(records: Sequence[Sequence]) -> str:
+    """Optional authority groups; existing nine-field pages render identically."""
+    groups = {}
+    for record in records:
+        if len(record) < 11:
+            continue
+        mid = str(record[9] or "")
+        if len(mid) != 18 or not mid.isascii() or not mid.isdigit():
+            continue
+        group = groups.setdefault(mid, {"name": str(record[10] or mid), "streets": set()})
+        if record[1]:
+            group["streets"].add(str(record[1]))
+    if not groups:
+        return ""
+    items = []
+    for mid, group in sorted(groups.items()):
+        names = escape(" / ".join(sorted(group["streets"])))
+        items.append(f'<li><a href="https://www.nli.org.il/he/authorities/{mid}">'
+                     f'{escape(group["name"])}</a> · <bdi>{mid}</bdi> — {names}</li>')
+    return ('<section class="official-missing-block" aria-label="ישויות מז״ל">'
+            '<h2>ישויות משותפות במז״ל</h2>'
+            '<p>מזהי הישויות מאחדים שמות, לא רחובות פיזיים או קודי למ״ס. '
+            'זוהי העשרת שמות אוטומטית, לא אימות של כוונת ההנצחה העירונית.</p><ul>'
+            + "".join(items) + '</ul></section>\n      ')
+
+
 def render_page(
     *,
     place: str,
@@ -118,7 +144,8 @@ def render_page(
     for token, relative in ASSETS.items():
         html = html.replace(token, asset_url(relative))
     return (
-        html.replace("@@PAGE_DATES@@", page_dates_html(provenance))
+        html.replace("@@MAZAL_ENTITIES@@", mazal_entities_html(records))
+        .replace("@@PAGE_DATES@@", page_dates_html(provenance))
         .replace("@@PLACE_NAME@@", escape(display_name(place)))
         .replace("@@PAGE_META@@", _json(meta))
         .replace("@@RECORDS@@", _json(records))

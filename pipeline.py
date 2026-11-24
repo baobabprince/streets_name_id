@@ -739,6 +739,11 @@ def run_pipeline(
             meta, on="final_LAMAS_id", how="left"
         )
 
+    # Optional offline authority metadata: shared commemorative entity, not a
+    # replacement for the settlement-scoped physical street / official code.
+    from mazal import enrich_from_registry
+
+    diagnostic_df_full = enrich_from_registry(diagnostic_df_full)
     _save_step(diagnostic_df_full, "diagnostic_report", file_identifier, save_intermediates)
 
     named_osm_count = diagnostic_df_full["normalized_name"].nunique()

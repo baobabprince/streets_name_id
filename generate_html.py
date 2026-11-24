@@ -183,7 +183,8 @@ def build_records(gdf):
                     "" if ai_confidence is None else round(ai_confidence, 3),
                     _clean(row.get("geographic_validation")),
                     "" if distance is None else round(distance, 1),
-                ]
+                ] + ([_clean(row.get("mazal_id")), _clean(row.get("mazal_name"))]
+                     if _clean(row.get("mazal_id")) else [])
             )
             geometry.append([])
             counts[status] = counts.get(status, 0) + 1
