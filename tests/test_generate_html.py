@@ -162,6 +162,30 @@ class TestGenerateHtml(unittest.TestCase):
         self.assertNotIn("</script><b>", html)
         self.assertEqual(block(html, "street-records")[0][1], "</script><b>x")
 
+    def test_mazal_entity_is_separate_from_official_street_id(self):
+        from mazal import enrich_dataframe, name_key
+        mid = "987007123456705171"  # Synthetic fixture ID.
+        registry = {"entries": {name_key("משה מונטיפיורי"): {
+            "status": "resolved", "mazal_id": mid, "preferred_name": "מונטיפיורי, משה"}}}
+        frame = pd.DataFrame({"osm_name": ["משה מונטיפיורי", "מונטיפיורי משה"],
+                              "final_LAMAS_id": ["101", "202"], "best_score": [100, 100]})
+        html = render(enrich_dataframe(frame, registry))
+        records = block(html, "street-records")
+        self.assertEqual(html.count(f'href="https://www.nli.org.il/he/authorities/{mid}"'), 1)
+        self.assertIn("ישויות משותפות במז״ל", html)
+        self.assertNotIn("@@MAZAL_ENTITIES@@", html)
+        self.assertEqual([r[3] for r in records], ["101", "202"])
+        self.assertEqual([r[9] for r in records], [mid, mid])
+        self.assertEqual([r[10] for r in records], ["מונטיפיורי, משה"] * 2)
+
+    def test_optional_mazal_name_cannot_break_json_blocks(self):
+        frame = two_streets()
+        frame["mazal_id"] = "987007123456705171"
+        frame["mazal_name"] = "</script><b>entity"
+        html = render(frame)
+        self.assertNotIn("</script><b>entity", html)
+        self.assertEqual(block(html, "street-records")[0][10], "</script><b>entity")
+
     def test_report_without_geometry_still_renders_table(self):
         df = pd.DataFrame({"osm_name": ["רחוב"], "final_LAMAS_id": [1], "best_score": [100]})
         html = render(df, {"total_osm_streets": 1, "total_lamas_streets": 1})

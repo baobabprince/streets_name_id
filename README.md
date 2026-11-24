@@ -29,6 +29,89 @@ considerations, alongside the searchable settlement data.
   Optional Playwright browser check: `python scripts/check_project_home.py` with
   the preview running (supports `PROJECT_URL` and `CHROMIUM_EXECUTABLE`).
 
+## Optional Mazal entity unification (pilot)
+
+Street identity and commemorative entity identity are separate. Two physical
+streets can share `entity_key = mazal:<authority ID>` while retaining their
+original OSM IDs, settlement-scoped `final_LAMAS_key`, official codes, geometry,
+matching decisions and coverage statistics. This enrichment **does not approve
+an OSM → LAMAS match** and does not merge map geometries or rename streets.
+
+### Run with the existing GitHub secret
+
+The manual **Mazal entity pilot** workflow (`.github/workflows/mazal-entities.yml`)
+reads the repository secret **`MAZAL_API_KEY`**. It starts with Montefiore name
+variants and Bialik, accepts one name per line, and can optionally sample names
+from the structured settlement pages. The default budget is **50 requests / 50
+canonical names**, with at least one second between requests. It needs no local
+AI model, GIS download, write permissions or access to the secret outside Actions.
+As with any new manual workflow, its definition must first be on the repository's
+default branch before GitHub offers **Run workflow**; then the branch/ref can be
+selected for the run.
+
+Download the `mazal-entities-<run ID>` artifact. Its `mazal_entities.json` includes:
+
+- `entries`: canonical name → resolution status and, only if resolved, authority
+  ID, preferred name, authority-page URL and matching method;
+- `entities`: groups of observed spellings sharing the same verified authority ID;
+- `statistics`, request count and a **field/type-only** `response_shape` for
+  diagnosing an unexpected response without publishing response bodies or keys.
+
+The registry and lookup cache live under the already ignored `data/` and `cache/`
+directories. No generated dataset or secret is committed. Lookups expire after
+30 days; Actions caches successful runs separately from report artifacts.
+
+**Live-validation boundary:** the request parameters are from the library's
+[official Search API usage documentation](https://www.nli.org.il/en/research-and-teach/open-library/search-api/user-help)
+(`material_type=Identity`, `output_format=json`). The JSON-LD parser is based on
+public Search API clients, but its **Identity response shape has not yet been
+verified with this repository's key**. Tests use explicitly synthetic fixtures,
+not live captures. The first Actions run is a compatibility pilot: unsupported
+schemas produce `schema_error`, fail the job and preserve the diagnostic report;
+they never produce guessed entity links. An HTTP 200 with the library's `Errors`
+header is also rejected, since NLI can silently ignore invalid filters.
+
+### Local usage and pipeline integration
+
+Install `requirements.txt`, then set `MAZAL_API_KEY` through your environment or
+secret manager (do not pass it as a CLI argument or put it in source files):
+
+```bash
+python scripts/build_mazal_entities.py \
+  --name 'משה מונטיפיורי' --name 'מונטיפיורי משה' \
+  --html-dir HTML --max-names 50 --max-requests 50
+```
+
+Place the reviewed artifact at `data/mazal_entities.json`, or point
+`MAZAL_ENTITIES_PATH` at it. Subsequent pipeline runs automatically add
+`mazal_id`, `mazal_name`, `entity_key` and `mazal_status` to diagnostic CSVs.
+Regenerated settlement pages show a shared-entities section with links to Mazal,
+separate from street-code matching. Existing pages are not rewritten automatically; use
+`--force` when reprocessing previously completed settlements. **Mapping runs
+only read the local registry and never call the API.** With no registry the
+pipeline behaves as before. No API key is embedded in any HTML or JSON report.
+
+### Conservative matching rules
+
+- Normalize punctuation, niqqud and street prefixes; token order may differ
+  between a street name and a library heading.
+- Match a complete preferred/alternative authority label, optionally removing
+  a trailing MARC-style life-date range. Never pick the first search hit or use
+  a fuzzy score as entity evidence.
+- Only an explicit `nli.org.il/{language}/authorities/<18-digit ID>` URL is
+  accepted. A bibliographic record ID is not a Mazal ID.
+- Single-word names (e.g. `מונטיפיורי` or `הרצל`), numbers and ambiguous results
+  stay unresolved/reviewable. This deliberately sacrifices recall to avoid
+  misleading automatic merges; name equality alone is not contextual proof of
+  the person a municipality intended to commemorate.
+- Search all result pages up to the bounded page/request limits. A truncated
+  result set is **not** proof of uniqueness. Quota/auth/network/schema failures
+  stop further requests and are not cached as “not found”.
+- Candidate `best_LAMAS_name` is never identity evidence: AI may have overridden
+  that candidate. Conflicting explicit final/OSM identities are withheld.
+
+Checks: `python -m unittest discover -s tests -p 'test_mazal.py' -v`.
+
 ## Features
 
 - **Automated data fetching** from local OSM PBF extracts (or live Overpass fallback via osmnx) and data.gov.il (LAMAS)
