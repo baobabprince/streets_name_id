@@ -1,7 +1,9 @@
-"""Browser smoke test; run the preview server first. Requires playwright.
+"""Browser smoke test of a generated settlement page (Petah Tikva).
 
-    python scripts/serve_comparison_prototype.py
-    python scripts/check_comparison_prototype.py
+Run the preview server first. Requires playwright.
+
+    python scripts/serve_project.py --port 8000
+    python scripts/check_settlement_page.py
 
 Optional: COMPARISON_URL, CHROMIUM_EXECUTABLE, COMPARISON_SCREENSHOT.
 External map/font requests are deliberately blocked: this checks local
@@ -16,9 +18,20 @@ from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
 
+ROOT = Path(__file__).resolve().parents[1]
+PAGE = ROOT / "HTML/פתח_תקווה_roads.html"
+DEFAULT_URL = "http://127.0.0.1:8000/HTML/%D7%A4%D7%AA%D7%97_%D7%AA%D7%A7%D7%95%D7%95%D7%94_roads.html"
+
+
+def page_data():
+    """Records embedded in the page under test (the table's source of truth)."""
+    raw = PAGE.read_text(encoding="utf-8")
+    records = re.search(r'<script id="street-records" type="application/json">(.*?)</script>', raw, re.S)
+    return {"records": json.loads(records.group(1))}
+
 
 def check_score_controls(page):
-    fixture = json.loads((Path(__file__).resolve().parents[1] / "prototype/data.json").read_text(encoding="utf-8"))
+    fixture = page_data()
     def displayed_scores():
         return [float(text.replace(",", "")) for text in page.locator("#rows .score-value").all_text_contents()]
     def exported_rows():
@@ -114,7 +127,7 @@ def check_score_controls(page):
 
 
 def check_table_navigation_and_evidence(page):
-    fixture = json.loads((Path(__file__).resolve().parents[1] / "prototype/data.json").read_text(encoding="utf-8"))
+    fixture = page_data()
     def expected_names(direction):
         return page.evaluate("""({names, direction}) => names.sort((a,b) => a.localeCompare(b,'he') * direction).slice(0,10)""",
                              {"names": [r[1] for r in fixture["records"]], "direction": direction})
@@ -206,7 +219,7 @@ def check_table_navigation_and_evidence(page):
 
 
 def check_loading_contract_and_map_independence(browser, page):
-    url = os.environ.get("COMPARISON_URL", "http://127.0.0.1:8000/prototype/")
+    url = os.environ.get("COMPARISON_URL", DEFAULT_URL)
     response = page.request.get(url, headers={"If-Modified-Since": "Wed, 01 Jan 2031 00:00:00 GMT"})
     assert response.status == 200
     assert "no-store" in response.headers.get("cache-control", "")
@@ -260,7 +273,7 @@ def main():
         errors = []
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.route("https://**/*", lambda route: route.abort())
-        page.goto(os.environ.get("COMPARISON_URL", "http://127.0.0.1:8000/prototype/"))
+        page.goto(os.environ.get("COMPARISON_URL", DEFAULT_URL))
         expect(page.locator("#rows tr")).to_have_count(989)
         expect(page.locator("#app-status")).to_have_attribute("data-state", "ready")
         expect(page.locator("#page-size")).to_have_value("all")
@@ -343,8 +356,11 @@ def main():
         page.locator('#legend button').first.click()
         expect(page.locator("#map-count")).to_have_text("832")
         page.locator("#reset").click()
-        expect(page.locator("#source-dates")).to_contain_text("מועד יצירת העמוד המקורי: לא תועד")
-        expect(page.locator("#built-at")).to_contain_text(re.compile(r"מועד בניית התצוגה: \d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}"))
+        expect(page.locator(".source-meta")).to_contain_text(re.compile(r"הדף נוצר \d{2}\.\d{2}\.\d{4}, \d{2}:\d{2}"))
+        expect(page.locator(".source-meta")).to_contain_text("נתוני OSM:")
+        expect(page.locator(".source-meta")).to_contain_text("נתוני למ״ס:")
+        expect(page.locator("h1")).to_have_text("פתח תקווה")
+        assert "?" not in page.locator("#osm-total").inner_text()
         page.locator("h1").click()
         page.keyboard.press("/")
         expect(page.locator("#search")).to_be_focused()
@@ -355,7 +371,7 @@ def main():
         check_table_navigation_and_evidence(page)
         check_score_controls(page)
         check_loading_contract_and_map_independence(browser, page)
-        page.screenshot(path=os.environ.get("COMPARISON_SCREENSHOT", ".cache/comparison-prototype.png"), full_page=True)
+        page.screenshot(path=os.environ.get("COMPARISON_SCREENSHOT", ".cache/settlement-page.png"), full_page=True)
         assert not errors, errors
         browser.close()
         print("PASS: metrics, 2-way coverage, filters, pagination, selection, AI approval, official missing geometry, search, CSV, keyboard shortcut, map controls, external-source fallback, score display/filter/sort/export, missing scores, grouped-code scoring, all-names reset, all column sorts, page sizes, visible technical evidence, default full table, versioned assets/no-store, sortable table without Leaflet; no JS errors")

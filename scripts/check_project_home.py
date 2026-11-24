@@ -7,12 +7,16 @@ import re
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, parse_qs
 
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from generate_index import aggregate, scan_settlements  # noqa: E402
 
 
 def main():
@@ -33,13 +37,15 @@ def main():
         expect(dates).to_contain_text("הדף נוצר")
         expect(dates.locator("time").first).to_have_attribute("datetime", re.compile(r"^\d{4}-\d{2}-\d{2}T"))
         expect(dates).to_contain_text("הרצת אצווה אחרונה")
-        expect(dates).to_contain_text("מתוך 859 דפי יישוב")
+        on_disk = aggregate(scan_settlements(str(ROOT / "HTML")))
+        expect(dates).to_contain_text(f"מתוך {on_disk['cities']:,} דפי יישוב")
         expect(page.locator(".project-footer time")).to_be_visible()
         expect(page.locator("#city-table tbody tr")).to_have_count(12)
         payload = json.loads(page.locator("#dash-data").text_content())
-        assert payload["totals"]["cities"] == len(payload["cities"]) == 859
-        assert payload["totals"]["ai_approved"] == 810
-        assert payload["totals"]["ai_unknown"] == 170
+        # The page reflects the pages on disk (python generate_index.py --data-out '').
+        assert payload["totals"]["cities"] == len(payload["cities"]) == on_disk["cities"]
+        assert payload["totals"]["ai_approved"] == on_disk["ai_approved"]
+        assert payload["totals"]["ai_unknown"] == on_disk["ai_unknown"]
         assert payload["totals"]["open"] == payload["totals"]["unmatched"]
         expect(page.locator(".stats-context")).to_contain_text("לא ספירה של מזהים שכבר הוטמעו")
         expect(page.locator("#shown-count")).to_have_text("12")
@@ -95,7 +101,7 @@ def main():
         expect(page.locator(".formula")).to_contain_text("0.30 × ratio")
         interpretation = page.locator(".method-details details").nth(2)
         interpretation.locator("summary").click()
-        expect(interpretation).to_contain_text("170")
+        expect(interpretation).to_contain_text(f"{on_disk['ai_unknown']:,}")
         expect(interpretation).to_contain_text("אישור של קהילת OSM")
         identity = page.locator(".method-details details").nth(3)
         identity.locator("summary").click()
@@ -109,7 +115,7 @@ def main():
         assert not page.evaluate("document.documentElement.scrollWidth > innerWidth")
         page.set_viewport_size({"width": 1440, "height": 1100})
 
-        # The homepage sample reaches the working comparison prototype, not a mock.
+        # The homepage sample reaches the real Petah Tikva settlement page, not a mock.
         expect(page.locator(".evidence-card")).to_contain_text("הרב יצחק טייב")
         page.locator(".example-link").click()
         expect(page.locator("#app-status")).to_have_attribute("data-state", "ready")

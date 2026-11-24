@@ -1,13 +1,24 @@
 """Preview the project homepage and settlement pages with cache-safe responses."""
 import argparse
 from functools import partial
-from http.server import ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-from serve_comparison_prototype import Handler, ROOT
+ROOT = Path(__file__).resolve().parents[1]
 
 
-class ProjectHandler(Handler):
+class ProjectHandler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        # A live preview, not an immutable deployment: never serve stale assets.
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        super().end_headers()
+
     def do_GET(self):
+        # Ignore validators from older preview responses as well.
+        for header in ("If-Modified-Since", "If-None-Match"):
+            if header in self.headers:
+                del self.headers[header]
         if self.path.split("?", 1)[0] == "/":
             self.path = "/index.html"
         super().do_GET()

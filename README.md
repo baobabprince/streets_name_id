@@ -15,9 +15,9 @@ considerations, alongside the searchable settlement data.
 - Rebuild after editing the template, explorer JS/CSS or settlement data:
   `python generate_index.py --data-out ''`. Local asset URLs are content-hashed
   to avoid mixed HTML/JavaScript versions in browsers and on static hosts.
-- Preview the homepage and the Petah Tikva comparison prototype together:
-  `python scripts/serve_project.py --port 8000` (open `/`; the prototype is at
-  `/prototype/`). The preview binds to `0.0.0.0` and disables response caching.
+- Preview the homepage and the settlement pages together:
+  `python scripts/serve_project.py --port 8000` (open `/`; settlement pages are
+  under `/HTML/`). The preview binds to `0.0.0.0` and disables response caching.
 - Only AI records with an explicit final street ID count as AI links that passed
   filtering. Historical aggregate AI counts without per-record approval evidence
   are disclosed separately; approved AI is not added a second time to matched
@@ -59,9 +59,10 @@ considerations, alongside the searchable settlement data.
 | `diagnostics.py` | Match / coverage statistics |
 | `laya_ai_resolver.py` | Optional local Laya decision-model resolver (whole-city matching) |
 | `batch_process_settlements.py` | Batch runner / shared orchestration implementation |
-| `generate_html.py` / `map_template.html` | Per-city interactive street map |
+| `generate_html.py` | Builds one settlement page from the pipeline results |
+| `settlement_page.py` / `settlement_template.html` | Settlement page renderer + template ("חדר השוואה") |
+| `scripts/convert_pages_to_room.py` | Re-render existing pages without re-matching |
 | `generate_index.py` | National dashboard (`index.html`) |
-| `migrate_legacy_pages.py` | Upgrade old self-contained map pages |
 | `assets/` | Shared UI (design tokens, dashboard, map, JS) |
 
 ## Installation
@@ -318,54 +319,54 @@ What you get:
 - **City explorer** — instant Hebrew-aware search, coverage-tier chips, sorting
   by size / coverage / unmatched streets, card and table views, and paged
   rendering so hundreds of settlements stay fast.
-- **Per-city street inspector** (`HTML/*_roads.html`) — map + synced street
-  list: hover/click a street to highlight every segment, focus with one click,
-  filter chips with live counts, street-name labels that appear as you zoom,
-  AI/geographic-review badges, deep links (`#street=…`), CSV export, print,
-  dark/light themes and a mobile layout.
-- **Match-status palette** — exact (green), partial (gold), AI proposal (sky),
-  geographic review (violet), no match (red), unnamed (grey). Partial approvals
-  keep one stable gold tone instead of a gradient, so they never read as
-  “unmatched”. AI proposals and geographic reviews are always *not approved*.
-- **Score-first recommendation lists** — filtering “מאושר חלקי” or “הצעת AI”
-  orders the streets by score, highest first, and the list header says so. AI
-  rows show their score instead of an internal candidate id, so the ranking is
-  comparable with partial approvals.
-- **Gap finder** — the two “unmatched” directions are promoted out of the
-  insights tab into a wide panel under the map: OSM streets without an approved
-  LAMAS match (click a chip to locate and zoom it) and LAMAS names without an
-  OSM street (click to open that street in GovMap). Both lists have counts, a
-  shared search box, and a toolbar shortcut („פערים”).
-- **GovMap reference panel** — an optional, lazy-loaded `iframe` of the official
-  government map, opened from the toolbar; it centres on the settlement and can
-  focus the selected street (`z=12`, roughly 1:1,000). No API key or registration
-  is needed for this URL/embed mode, and nothing is requested until the panel is
-  opened. The panel is reference only: our match colours and overlays stay on
-  the SVG map. Environments that block third-party frames show a fallback link
-  to open GovMap in a new tab.
+- **Settlement pages** (`HTML/*_roads.html`, "חדר השוואה") — see below.
 
-#### Migrating existing pages
+#### Settlement pages
 
-Older pages embed their own CSS/JS and full-precision geometry (up to 14 MB per
-city). The migration tool re-renders them with the shared UI, rounds
-coordinates and moves repeated metadata into one compact record table — about
-**35–40 % smaller** while keeping the same street data:
+Every pipeline run (`pipeline.py`, `batch_process_settlements.py`,
+`run_all.py`, or `python generate_html.py "<name>"` from an existing diagnostic
+report) writes the same comparison-room page:
+
+- **Overview** — OSM names and LAMAS codes, coverage in both directions
+  (share of OSM names linked, share of official codes linked), the match mix,
+  and the two gap counts.
+- **Map vs map** — the OSM match layer (Leaflet, vendored under
+  `assets/vendor/leaflet`, coloured by status, filtered together with the table)
+  next to a GovMap reference panel for the same settlement or street. GovMap is
+  reference only; it is not synchronised with the OSM map. If tiles or the
+  GovMap embed are blocked, the table, search and sorting keep working.
+- **Full findings table** — tabs for all OSM names, OSM without approved match,
+  LAMAS names without an OSM street, and AI matches; search, sortable columns,
+  a match-score range filter shared with the map (a missing score is not 0, and
+  the similarity score is not a probability), CSV export.
+- **Technical details** for the selected street: final code, score, AI fields,
+  geographic validation and how the status was decided.
+- Creation time of the page and the OSM / LAMAS source dates (see
+  [Creation and source timestamps](#creation-and-source-timestamps)).
+
+All data is embedded in the page as JSON (`#page-meta`, `#street-records`,
+`#room-data`); the shared UI is `assets/room.js`, `assets/room.css` and
+`assets/score-tools.js`, referenced with content hashes. Street geometry is
+stored in WGS84 (about one metre precision, delta-encoded), so pages work from
+GitHub Pages or straight from a checkout.
+
+To apply template or asset changes to pages that are already generated —
+without downloading data or re-running the matching — run:
 
 ```bash
-python migrate_legacy_pages.py                 # dry run on a demo set
-python migrate_legacy_pages.py --write         # migrate the demo set in place
-python migrate_legacy_pages.py --all --write   # migrate every legacy page
-python migrate_legacy_pages.py --all --write --out-dir /tmp/new-html
+python scripts/convert_pages_to_room.py             # all pages
+python scripts/convert_pages_to_room.py "פתח תקווה"  # selected settlements
+python generate_index.py --data-out ''
 ```
 
-After migrating, re-run `python generate_index.py` to refresh the dashboard.
-New pipeline runs automatically use the new template. `batch_process_settlements.py`
-also refreshes `index.html` at the end of a batch (unless `--skip-html`).
+The converter also upgrades pages from the earlier SVG layout; their geometry
+is recovered from the SVG coordinates and the page's rounded ITM centre
+(about one metre). Their recorded creation time is kept, since the results did
+not change. Single-street pages from `generate_single_street_pages.py` are left
+as they are.
 
-Migrated pages get an explicit ITM centre from `config/settlement_centers.json`
-(derived from the public `cities_geo.txt` dataset) so the GovMap panel opens the
-right settlement instead of relying on ambiguous free-text geocoding. Pages
-generated by the pipeline compute the centre directly from their geometry.
+Browser checks (run the preview server first; Playwright required):
+`python scripts/check_settlement_page.py` and `python scripts/check_project_home.py`.
 
 ## Methodology (short)
 
@@ -405,8 +406,8 @@ generated before it show "לא תועד" — no time is ever estimated. See
 
 The national index shows its own creation time, the latest batch-summary time
 (as recorded, without a time-zone claim) and how many settlement pages have a
-recorded creation time. `index.html` and `prototype/data.json` honour
-`SOURCE_DATE_EPOCH` for reproducible rebuilds.
+recorded creation time. `index.html` honours `SOURCE_DATE_EPOCH` for
+reproducible rebuilds.
 
 ## Outputs
 
@@ -414,7 +415,7 @@ recorded creation time. `index.html` and `prototype/data.json` honour
   `data/settlement_matches.json` (consolidated settlement resolutions), and
   `diagnostic_report_*.csv`. Bulky intermediate pickles are optional
   (`--no-intermediates`).
-- `HTML/` — per-settlement interactive street inspectors (`*_roads.html`)
+- `HTML/` — per-settlement comparison pages (`*_roads.html`)
 - `batch_reports/` — batch summaries, `settlement_match_report.csv` and
   `processed_settlements.json`
 - `index.html` — national dashboard (search, filters, analytics)

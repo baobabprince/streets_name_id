@@ -274,6 +274,34 @@ def page_sources_html(provenance: Optional[dict]) -> str:
     return '<p class="footnote page-sources" aria-label="מועדי יצירה ומקורות">' + "".join(parts) + "</p>"
 
 
+def page_dates_html(provenance: Optional[dict]) -> str:
+    """Creation and source-data lines for the settlement page header.
+
+    Missing values are shown as "not recorded"; nothing is estimated.
+    """
+    from html import escape
+
+    provenance = provenance or {}
+    osm_at, osm_label = osm_data_time(provenance.get("osm"))
+    lamas_at, lamas_label = lamas_data_time(provenance.get("lamas"))
+    generated = provenance.get("generated_at")
+    stamp = (
+        f"הדף נוצר {_time_html(generated)}"
+        if format_local(generated)
+        else "מועד יצירת הדף לא תועד"
+    )
+    lines = [
+        f'<span class="page-stamp"><span class="tiny-dot"></span> {stamp}</span>',
+        f'<span>נתוני OSM: {_time_html(osm_at)}'
+        + (f" · {escape(osm_label)}" if osm_at and osm_label else "")
+        + "</span>",
+        f'<span>נתוני למ״ס: {_time_html(lamas_at)}'
+        + (f" · {escape(lamas_label)}" if lamas_at and lamas_label else "")
+        + "</span>",
+    ]
+    return "<br />".join(lines)
+
+
 def page_provenance(sources: Optional[dict], generated_at: Optional[str] = None) -> dict:
     """Provenance block embedded in a page's ``#page-meta`` JSON."""
     sources = sources or {}
