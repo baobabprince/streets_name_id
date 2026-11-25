@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz, process
 
+from arabic_translit import contains_arabic, transliteration_variants
 from settlement_names import canonical_key
 
 logger = logging.getLogger(__name__)
@@ -42,12 +43,25 @@ _ARABIC_DIGITS = str.maketrans({
     chr(0x06F0 + i): str(i) for i in range(10)
 })
 
+# Hebrew final letters fold to their regular form so cross-script
+# transliteration comparisons match LAMAS spellings that use them
+# ("א-ס'יף" with ף vs transliterated "סיף" with פ, "אבן" vs "אבנ").
+# Mirrors settlement_names._FINAL_LETTERS; applied only to the
+# cross-script comparison channel (see comparable_forms), never to the
+# stored normalized name.
+_HEBREW_FINAL_LETTERS = str.maketrans({
+    "ך": "כ", "ם": "מ", "ן": "נ", "ף": "פ", "ץ": "צ",
+})
+
 # Quote-like characters removed entirely: ASCII ' " ` , Hebrew geresh ׳ and
 # gershayim ״, curly quotes, modifier apostrophes.  The LAMAS and OSM sources
 # mix all of these for the same name ("הב"ח" / "הב״ח", "ר' אליעזר" / "ר׳ אליעזר").
 _PUNCTUATION_RE = re.compile(
     r"[.,;:!?'\"`\u05f3\u05f4\u2018\u2019\u201c\u201d\u02bc{}\[\]]"
 )
+
+# Invisible bidi control characters sometimes smuggled into OSM name tags.
+_BIDI_MARKS_RE = re.compile(r"[\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 
 # Every dash variant, including the Hebrew maqaf (א־סלאם), becomes a space.
 _HYPHENS_RE = re.compile(r"[\u05be\u2010\u2011\u2012\u2013\u2014\u2015-]")
@@ -90,6 +104,47 @@ def strip_street_prefix(name: str) -> str:
     return text
 
 
+def fold_hebrew_final_letters(text: str) -> str:
+    """Fold Hebrew final letters (ך ם ן ף ץ) to their regular forms.
+
+    Used only by the cross-script comparison channel: LAMAS spellings use
+    conventional final letters ("א-ס'יף", "אבן") while transliterated
+    Arabic and the folding in ``settlement_names`` use regular ones.  The
+    stored normalized street name keeps its original letters.
+    """
+    return (text or "").translate(_HEBREW_FINAL_LETTERS)
+
+
+def comparable_forms(name, fold_final_letters: bool = False) -> List[str]:
+    """Comparable normalized spellings for one street name.
+
+    The first form is always :func:`normalize_street_name`.  Arabic-script
+    names additionally get their Hebrew transliteration variants
+    (:mod:`arabic_translit`), because LAMAS lists Arabic-named streets as
+    Hebrew-script transliterations and a cross-script fuzzy score would
+    otherwise always be ~0.  Hebrew names return exactly one form, so
+    existing matching behaviour is unchanged.
+
+    ``fold_final_letters`` also folds Hebrew final letters on every form;
+    pass it when either side of a comparison is a transliteration.
+    """
+    normalized = normalize_street_name(name)
+    if not normalized:
+        return []
+    if fold_final_letters:
+        normalized = fold_hebrew_final_letters(normalized)
+    forms = [normalized]
+    if contains_arabic(normalized):
+        for variant in transliteration_variants(normalized):
+            normalized_variant = normalize_street_name(variant)
+            if normalized_variant:
+                if fold_final_letters:
+                    normalized_variant = fold_hebrew_final_letters(normalized_variant)
+                if normalized_variant not in forms:
+                    forms.append(normalized_variant)
+    return forms
+
+
 def normalize_street_name(name):
     """Normalize a street name (any language) for matching.
 
@@ -104,8 +159,11 @@ def normalize_street_name(name):
     if not name:
         return None
 
-    # 1. Unicode hygiene: drop combining marks (niqqud, Arabic harakat) and
-    #    fold Arabic letters/digits so both script variants compare equal.
+    # 1. Unicode hygiene: drop bidi controls and combining marks (niqqud,
+    #    Arabic harakat), then fold Arabic letters/digits so both script
+    #    variants compare equal.  Hebrew final letters are folded later and
+    #    only in the cross-script comparison channel (comparable_forms).
+    name = _BIDI_MARKS_RE.sub("", name)
     name = "".join(
         char
         for char in unicodedata.normalize("NFKD", name)
@@ -187,7 +245,9 @@ def find_fuzzy_candidates(
     ``NEEDS_AI`` so the whole city's remainder can be resolved by AI.
 
     The score is ``max(full_name_blend, core_name_blend)`` where the core
-    blend compares names after stripping street-type prefixes.  Safeguards:
+    blend compares names after stripping street-type prefixes.  Arabic-script
+    OSM names additionally score through their Hebrew transliteration
+    variants (see :func:`comparable_forms`).  Safeguards:
 
     * Among tied top scores the candidate with the strongest full-name blend
       wins, so an exact match always beats a core-level match.
@@ -254,6 +314,19 @@ def find_fuzzy_candidates(
         else:
             lamas_core_names.append(strip_street_prefix(name))
 
+    # Arabic-script OSM names also match through their Hebrew transliteration
+    # variants (LAMAS spells the same street in Hebrew script); extra scoring
+    # rows are folded into final_matrix per unique OSM name.  The comparison
+    # uses final-letter-folded spellings on both sides, because LAMAS uses
+    # conventional final letters (א-ס'יף, אבן) that the transliteration
+    # output does not.
+    extra_forms: Dict[str, List[str]] = {}
+    for name in set(osm_names):
+        if contains_arabic(name):
+            forms = comparable_forms(name, fold_final_letters=True)[1:]
+            if forms:
+                extra_forms[name] = forms
+
     logger.info(
         "Fuzzy matching %s unique OSM street names against %s LAMAS names (threshold=%.1f)...",
         len(osm_names),
@@ -272,6 +345,49 @@ def find_fuzzy_candidates(
         else:
             core_matrix = np.zeros_like(score_matrix)
         final_matrix = np.maximum(score_matrix, core_matrix)
+
+        # Transliteration variants of Arabic-script OSM names, scored in one
+        # batched pass and folded into the rows of the names they belong to.
+        # LAMAS spells the article inconsistently ("א-רייף", "אל סנאבל",
+        # "אלקודס"), so alongside the spaced comparison a compact
+        # (space-stripped) channel removes spacing noise entirely — but only
+        # here, never for Hebrew↔Hebrew pairs.
+        extra_items = [
+            (row_index, form)
+            for row_index, osm_name in enumerate(batch_names)
+            for form in extra_forms.get(osm_name, ())
+        ]
+        if extra_items:
+            extra_form_names = [form for _, form in extra_items]
+            lamas_folded_candidates = [
+                fold_hebrew_final_letters(name) for name in lamas_name_candidates
+            ]
+            lamas_folded_cores = [
+                fold_hebrew_final_letters(core) if core else ""
+                for core in lamas_core_names
+            ]
+            extra_full = _blend_score_matrix(extra_form_names, lamas_folded_candidates)
+            extra_cores = [strip_street_prefix(form) for form in extra_form_names]
+            if any(extra_cores):
+                extra_core = _blend_score_matrix(extra_cores, lamas_folded_cores)
+            else:
+                extra_core = np.zeros_like(extra_full)
+            extra_final = np.maximum(extra_full, extra_core)
+
+            compact_forms = [form.replace(" ", "") for form in extra_form_names]
+            compact_candidates = [name.replace(" ", "") for name in lamas_folded_candidates]
+            compact_full = _blend_score_matrix(compact_forms, compact_candidates)
+            compact_cores = [core.replace(" ", "") for core in extra_cores]
+            compact_lamas_cores = [core.replace(" ", "") for core in lamas_folded_cores]
+            if any(compact_cores):
+                compact_core = _blend_score_matrix(compact_cores, compact_lamas_cores)
+            else:
+                compact_core = np.zeros_like(compact_full)
+            compact_final = np.maximum(compact_full, compact_core)
+            extra_final = np.maximum(extra_final, compact_final)
+
+            for (row_index, _), row in zip(extra_items, extra_final):
+                final_matrix[row_index] = np.maximum(final_matrix[row_index], row)
 
         for row_index, osm_name in enumerate(batch_names):
             row_final = final_matrix[row_index]

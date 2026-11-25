@@ -31,11 +31,13 @@ from laya_ai_resolver import LayaAIResolver
 from normalization import (
     DEFAULT_CONFIDENT_THRESHOLD,
     build_lamas_aliases,
+    comparable_forms,
     find_fuzzy_candidates,
     normalize_street_name,
     strip_street_prefix,
 )
 from OSM_streets import place_name as OSM_PLACE_NAME
+from arabic_translit import contains_arabic
 from settlement_names import canonical_key
 
 logger = logging.getLogger(__name__)
@@ -150,14 +152,33 @@ def _digits_compatible(osm_name: str, lamas_name: str) -> bool:
 
 
 def _core_wratio(osm_name: str, lamas_name: str) -> float:
-    """Compute WRatio between normalized prefix-stripped OSM and LAMAS names."""
-    norm_osm = normalize_street_name(osm_name) or ""
-    norm_lamas = normalize_street_name(lamas_name) or ""
-    core_osm = strip_street_prefix(norm_osm)
-    core_lamas = strip_street_prefix(norm_lamas)
-    if not core_osm or not core_lamas:
-        return 0.0
-    return float(fuzz.WRatio(core_osm, core_lamas))
+    """Best prefix-stripped WRatio across all comparable spellings.
+
+    Hebrew/Hebrew pairs behave exactly as before (single normalized form).
+    When either side is Arabic-script, both sides are also compared through
+    Hebrew transliteration variants with final letters folded and — because
+    LAMAS spells the definite article inconsistently ("א-רייף", "אל סנאבל")
+    — with spaces removed.
+    """
+    cross_script = contains_arabic(osm_name) or contains_arabic(lamas_name)
+    osm_forms = comparable_forms(osm_name, fold_final_letters=cross_script)
+    lamas_forms = comparable_forms(lamas_name, fold_final_letters=cross_script)
+    best = 0.0
+    for norm_osm in osm_forms:
+        core_osm = strip_street_prefix(norm_osm)
+        if not core_osm:
+            continue
+        if cross_script:
+            compact_osm = core_osm.replace(" ", "")
+        for norm_lamas in lamas_forms:
+            core_lamas = strip_street_prefix(norm_lamas)
+            if not core_lamas:
+                continue
+            best = max(best, float(fuzz.WRatio(core_osm, core_lamas)))
+            if cross_script:
+                compact_lamas = core_lamas.replace(" ", "")
+                best = max(best, float(fuzz.WRatio(compact_osm, compact_lamas)))
+    return best
 
 
 def _finalize_mappings(

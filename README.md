@@ -122,6 +122,7 @@ Checks: `python -m unittest discover -s tests -p 'test_mazal.py' -v`.
 - **One consolidated match store** — positive *and* negative settlement resolutions are kept in `data/settlement_matches.json` (one atomic write per run), with a CSV audit trail in `batch_reports/settlement_match_report.csv`
 - **One command for everything** — `python run_all.py` fetches, matches, processes, reports and rebuilds the dashboard in a single run
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
+- **Cross-script Arabic↔Hebrew matching** — OSM streets named in Arabic script (`ابن سينا`, `شارع القدس`, `دوار …`) are also matched through bounded Hebrew transliteration variants (`אבן סינא`, `רחוב אלקדס`, `כיכר …`) that follow the LAMAS transliteration conventions (`א-רייף`/`אל סנאבל`/`אלקודס`, ח/כ, צ/ס, ף↔פ), so Arabic-script streets no longer score ~0 against the Hebrew LAMAS table; near-misses keep enough score to pass the AI gates
 - **Fuzzy matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz) (weighted ratio / token_sort / token_set, ≥90% auto-matched)
 - **Whole-city Laya AI matching** — optional local `convaiinnovations/laya-multilingual` model resolves every OSM street below 90% against the city's LAMAS streets and writes confirmed matches directly to `final_LAMAS_id`
 - **Batch processing** with parallel workers
@@ -139,6 +140,7 @@ Checks: `python -m unittest discover -s tests -p 'test_mazal.py' -v`.
 | `pipeline.py` | Orchestrator (run one settlement end-to-end) |
 | `data_loader.py` | Cache + fetch LAMAS / OSM (in-memory + pickle caches) |
 | `normalization.py` | Street-name normalize + fuzzy candidates |
+| `arabic_translit.py` | Arabic→Hebrew transliteration variants for cross-script matching |
 | `diagnostics.py` | Match / coverage statistics |
 | `laya_ai_resolver.py` | Optional local Laya decision-model resolver (whole-city matching) |
 | `batch_process_settlements.py` | Batch runner / shared orchestration implementation |
@@ -465,7 +467,9 @@ Browser checks (run the preview server first; Playwright required):
    fallback + LAMAS-centre distance checks, with a Nominatim fallback only for
    unresolved names, all persisted in one store
 3. **Normalize streets** — abbreviations, punctuation, Hebrew preference
-   (`name:he`); LAMAS rows are joined by canonical city key
+   (`name:he`); LAMAS rows are joined by canonical city key. Arabic-script
+   OSM names additionally score through Hebrew transliteration variants
+   (`arabic_translit.py`) because LAMAS spells those streets in Hebrew script
 4. **Fuzzy match (≥90%)** — rapidfuzz weighted score against city LAMAS streets
    and synonyms; streets ≥90% are approved directly
 5. **Whole-city Laya AI (optional)** — every street below 90% is matched against
