@@ -70,9 +70,10 @@ _HIGHWAY_ROUTE_RE = re.compile(r"^\s*(?:כביש|route|highway|דרך\s+מהיר
 # Tokens that strongly indicate a Latin-transliterated Arabic street name
 # (prevents random English labels like "Under Pass" from being transliterated).
 _LATIN_ARABIC_MARKERS = frozenset({
-    "al", "el", "abu", "ibn", "bin", "wadi", "wady", "ein", "ain",
-    "kafr", "sheikh", "salah", "omar", "khalid", "ahmad", "ahmed",
-    "mohammad", "muhammad", "hassan", "hussein", "sharia", "tariq", "duwar",
+    "al", "el", "abu", "ibn", "bin", "ben", "abd", "abed", "abdul",
+    "wadi", "wady", "ein", "ain", "kafr", "sheikh", "salah", "omar",
+    "khalid", "ahmad", "ahmed", "mohammad", "muhammad", "hassan", "hussein",
+    "utman", "uthman", "othman", "othmann", "ali", "sharia", "tariq", "duwar",
 })
 _LATIN_ARTICLE_TOKENS = frozenset({
     "al", "el", "ar", "as", "ash", "ad", "an", "at", "az",
@@ -252,8 +253,9 @@ def is_arab_style_lamas_city(lamas_names: Sequence[str]) -> bool:
     """True when a meaningful share of a city's LAMAS streets use Arabic articles/names.
 
     Empirically, Arab towns sit at 55%-72% while mixed cities like Jerusalem sit
-    near 16% and Jewish cities below 4%; 0.35 cleanly separates Arab-majority LAMAS
-    tables from mixed/Jewish cities.
+    near 16% and Jewish cities below 4%; requiring ``hits >= 3`` and ratio >= 0.35
+    cleanly separates Arab-majority LAMAS tables from mixed/Jewish cities and
+    1-street settlements like ``אלון``.
     """
     if not lamas_names:
         return False
@@ -261,7 +263,128 @@ def is_arab_style_lamas_city(lamas_names: Sequence[str]) -> bool:
         1 for name in lamas_names
         if name and _ARAB_LAMAS_MARKER_RE.match(str(name).strip())
     )
-    return (hits / len(lamas_names)) >= 0.35
+    return hits >= 3 and (hits / len(lamas_names)) >= 0.35
+
+
+def arabic_phonetic_skeleton(hebrew_core_text: str) -> str:
+    """Slightly coarser Semitic phonetic skeleton for Arabic <-> Hebrew spelling drift.
+
+    Built on top of :func:`arabic_hebrew_skeleton`, additionally folding classic
+    Arabic-to-Hebrew transliteration equivalences:
+    - ``ט`` -> ``ת`` (``نتاف`` <-> ``נטאף``)
+    - ``ח`` -> ``כ`` (``البطيخة`` / ``אלבטיח'ה`` <-> ``אלבטיכה``)
+    - interior ``א`` dropped for tokens of length >= 4 (``البيرة`` / ``אלביירה`` <-> ``אלביארה``)
+
+    Intended ONLY for exact equality checks (never loose fuzzy thresholds) on
+    Arabic-script names or within Arab-style cities.
+    """
+    sk = arabic_hebrew_skeleton(hebrew_core_text)
+    if not sk:
+        return ""
+    out: list[str] = []
+    for tok in sk.split():
+        if len(tok) >= 4:
+            tok = tok[0] + tok[1:-1].replace("א", "") + tok[-1]
+        tok = tok.replace("ט", "ת").replace("ח", "כ")
+        out.append(tok)
+    return " ".join(out).strip()
+
+
+def latin_comparison_skeleton(skeleton_text: str) -> str:
+    """Fold Hebrew gutturals/emphatics that Latin transliteration cannot distinguish.
+
+    Latin spellings of Arabic names omit ``ع`` (writing a vowel -> ``א``, e.g.
+    ``Utman``/``Omar``/``Afan``) and collapse ``ط``/``ت`` into ``t``.
+    """
+    if not skeleton_text:
+        return ""
+    out: list[str] = []
+    for tok in skeleton_text.split():
+        if len(tok) >= 4:
+            tok = tok[0] + tok[1:-1].replace("א", "") + tok[-1]
+        tok = tok.replace("ע", "א").replace("ט", "ת").replace("ח", "כ")
+        out.append(tok)
+    return " ".join(out).strip()
+
+
+# Curated bidirectional glossary of unambiguous Arabic-transliterated <-> Hebrew-translated
+# street-name nouns frequently mixed between OSM and LAMAS in Israeli Arab towns
+# (e.g. Jisr az-Zarqa OSM "הנמל"/"האלמוגים"/"החוף" vs LAMAS "אלמינא"/"אלמורג'אן"/"אלשאטיא",
+# Abu Ghosh OSM "شارع السلام" vs LAMAS "דרך השלום").
+# Keys are bare Hebrew forms (final-folded, article-stripped); values are sets of
+# :func:`arabic_phonetic_skeleton` targets.
+_HEBREW_TO_ARABIC_STREET_NOUNS: dict[str, frozenset[str]] = {
+    "שלומ": frozenset({"סלמ"}),          # השלום <-> אלסלאם / السلام
+    "נמל": frozenset({"מנה"}),           # הנמל <-> אלמינא / الميناء
+    "חופ": frozenset({"שתה", "שתא"}),    # החוף <-> אלשאטיא / الشاطئ
+    "מעגנ": frozenset({"מרסה"}),         # המעגן <-> אלמרסאא / المرسى
+    "צדפימ": frozenset({"סדפ"}),         # הצדפים <-> אלסדאף / الصدف
+    "אלמוגימ": frozenset({"מרגנ"}),      # האלמוגים <-> אלמורג'אן / المرجان
+    "גלימ": frozenset({"אמג"}),          # הגלים <-> אלאמואג' / الأمواج
+    "יפו": frozenset({"יפה"}),           # יפו <-> יאפא / يافا
+    "ירושלימ": frozenset({"קדס"}),       # ירושלים <-> אלקודס / القدس
+    "זיתימ": frozenset({"זתנ"}),         # הזיתים <-> אלזיתון / الزيتون
+    "זית": frozenset({"זתנ"}),           # הזית <-> אלזיתון / الزيتون
+    "דקלימ": frozenset({"נכל"}),         # הדקלים <-> אלנח'יל / النخيل
+    "תמרימ": frozenset({"נכל"}),         # התמרים <-> אלנח'יל / النخيل
+    "פרחימ": frozenset({"זהר"}),         # הפרחים <-> אלזהור / الزهور
+    "ורדימ": frozenset({"ורד"}),         # הוורדים <-> אלורוד / الورود
+    "כנסיות": frozenset({"כנס"}),        # הכנסיות <-> אלכנאיס / الكنائس
+    "נרקיס": frozenset({"נרגס"}),        # נרקיס <-> נרג'ס / نرجس
+    "שוק": frozenset({"סוק"}),           # השוק <-> אלסוק / السوق
+    "ימ": frozenset({"בכר"}),            # הים <-> אלבחר / البحر
+    "הר": frozenset({"גבל"}),            # ההר <-> אלג'בל / الجبل
+    "מעיינ": frozenset({"עינ"}),         # המעיין <-> אלעין / العين
+    "מעינ": frozenset({"עינ"}),
+    "תנינימ": frozenset({"תמסכ"}),       # התנינים <-> אלתמאסיח / التماسيح
+    "יסמינ": frozenset({"יסמנ"}),        # היסמין <-> אליאסמין / الياسمين
+}
+
+_ARABIC_TO_HEBREW_STREET_NOUNS: dict[str, frozenset[str]] = {}
+for _he_noun, _ar_skels in _HEBREW_TO_ARABIC_STREET_NOUNS.items():
+    for _ask in _ar_skels:
+        _ARABIC_TO_HEBREW_STREET_NOUNS[_ask] = (
+            _ARABIC_TO_HEBREW_STREET_NOUNS.get(_ask, frozenset()) | {_he_noun}
+        )
+
+
+def bare_hebrew_street_noun(hebrew_core_text: str) -> str:
+    """Article-stripped, final-folded Hebrew noun form for bilingual glossary lookup."""
+    if not hebrew_core_text:
+        return ""
+    text = str(hebrew_core_text).translate(_FINAL_HEBREW_FOLD)
+    tokens = text.split()
+    out: list[str] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in ("אל", "א") and i + 1 < len(tokens):
+            tok = tokens[i + 1]
+            i += 2
+        else:
+            i += 1
+            if tok.startswith("אל") and len(tok) >= 5:
+                tok = tok[2:]
+            elif tok.startswith("ה") and len(tok) >= 3:
+                tok = tok[1:]
+        tok = tok.replace("וו", "ו").replace("יי", "י").replace("אא", "א")
+        if len(tok) >= 3 and tok.endswith("א"):
+            tok = tok[:-1] + "ה"
+        if tok:
+            out.append(tok)
+    return " ".join(out).strip()
+
+
+def hebrew_noun_to_arabic_skeletons(hebrew_core_text: str) -> frozenset[str]:
+    """Return known Arabic phonetic skeletons for a Hebrew-translated street noun."""
+    return _HEBREW_TO_ARABIC_STREET_NOUNS.get(
+        bare_hebrew_street_noun(hebrew_core_text), frozenset()
+    )
+
+
+def arabic_skeleton_to_hebrew_nouns(arabic_phon_skeleton: str) -> frozenset[str]:
+    """Return known Hebrew-translated street nouns for an Arabic phonetic skeleton."""
+    return _ARABIC_TO_HEBREW_STREET_NOUNS.get(arabic_phon_skeleton, frozenset())
 
 
 def has_arabic_article_in_hebrew(text: str, *, allow_attached_al: bool = False) -> bool:

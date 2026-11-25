@@ -701,8 +701,11 @@ def _prepare_osm_caches(args) -> None:
 
 def _refresh_dashboard() -> None:
     try:
+        from build_no_results import main as build_no_results_main
         from generate_index import generate_index_html
 
+        print("Refreshing no_results.json…")
+        build_no_results_main()
         print("Refreshing the national dashboard (index.html)…")
         generate_index_html()
     except Exception as exc:  # dashboard refresh must never fail the batch

@@ -22,12 +22,17 @@ from rapidfuzz import fuzz
 from arabic_matching import (
     arabic_hebrew_skeleton,
     arabic_long_vowels_compatible,
+    arabic_phonetic_skeleton,
+    arabic_skeleton_to_hebrew_nouns,
+    bare_hebrew_street_noun,
     has_arabic,
     has_arabic_article_in_hebrew,
     has_hebrew,
     hebrew_arabic_article_form,
+    hebrew_noun_to_arabic_skeletons,
     is_latin_only,
     latin_arabic_to_hebrew_skeleton,
+    latin_comparison_skeleton,
     transliterate_arabic_to_hebrew,
 )
 from data_loader import (
@@ -198,21 +203,41 @@ def _core_wratio(osm_name: str, lamas_name: str) -> float:
                 sk_lam = arabic_hebrew_skeleton(core_lamas)
                 if len(sk_osm.replace(" ", "")) >= 3 and len(sk_lam.replace(" ", "")) >= 3:
                     score = max(score, float(fuzz.ratio(sk_osm, sk_lam)))
+                ph_osm = arabic_phonetic_skeleton(he_translit)
+                ph_lam = arabic_phonetic_skeleton(core_lamas)
+                if len(ph_osm.replace(" ", "")) >= 3 and ph_osm == ph_lam:
+                    score = max(score, 100.0)
+                if (
+                    len(ph_osm) >= 4
+                    and ph_osm.endswith("ה")
+                    and ph_osm[:-1] == ph_lam
+                ):
+                    score = max(score, 95.0)
+                if bare_hebrew_street_noun(core_lamas) in arabic_skeleton_to_hebrew_nouns(ph_osm):
+                    score = max(score, 100.0)
     elif is_latin_only(osm_name):
         sk_osm = latin_arabic_to_hebrew_skeleton(osm_name)
         sk_lam = arabic_hebrew_skeleton(core_lamas)
         if len(sk_osm.replace(" ", "")) >= 3 and len(sk_lam.replace(" ", "")) >= 3:
             score = max(score, float(fuzz.ratio(sk_osm, sk_lam)))
-    elif has_hebrew(core_osm) and (
-        has_arabic_article_in_hebrew(core_osm, allow_attached_al=True)
-        or has_arabic_article_in_hebrew(core_lamas, allow_attached_al=True)
-    ):
-        af_osm = hebrew_arabic_article_form(core_osm, strip_attached_al=True, strip_he_prefix=True)
-        af_lam = hebrew_arabic_article_form(core_lamas, strip_attached_al=True, strip_he_prefix=True)
-        if len(af_osm.replace(" ", "")) >= 3 and len(af_lam.replace(" ", "")) >= 3:
-            af_ratio = float(fuzz.ratio(af_osm, af_lam))
-            if af_ratio >= 80.0:
-                score = max(score, af_ratio)
+            lsk_osm = latin_comparison_skeleton(sk_osm)
+            lsk_lam = latin_comparison_skeleton(sk_lam)
+            if len(lsk_osm.replace(" ", "")) >= 3 and len(lsk_lam.replace(" ", "")) >= 3:
+                score = max(score, float(fuzz.ratio(lsk_osm, lsk_lam)))
+    elif has_hebrew(core_osm):
+        if (
+            has_arabic_article_in_hebrew(core_osm, allow_attached_al=True)
+            or has_arabic_article_in_hebrew(core_lamas, allow_attached_al=True)
+        ):
+            af_osm = hebrew_arabic_article_form(core_osm, strip_attached_al=True, strip_he_prefix=True)
+            af_lam = hebrew_arabic_article_form(core_lamas, strip_attached_al=True, strip_he_prefix=True)
+            if len(af_osm.replace(" ", "")) >= 3 and len(af_lam.replace(" ", "")) >= 3:
+                af_ratio = float(fuzz.ratio(af_osm, af_lam))
+                if af_ratio >= 80.0:
+                    score = max(score, af_ratio)
+        ph_lam = arabic_phonetic_skeleton(core_lamas)
+        if ph_lam and ph_lam in hebrew_noun_to_arabic_skeletons(core_osm):
+            score = max(score, 100.0)
 
     return score
 
@@ -597,7 +622,12 @@ def run_pipeline(
         and pd.notna(name)
         and canonical_key(name) == target_city_key
     )
-    lamas_street_df = lamas_city_df[~settlement_record_mask]
+    settlement_lamas_ids = set(
+        lamas_city_df.loc[settlement_record_mask, "LAMAS_id"].astype(str)
+    )
+    lamas_street_df = lamas_city_df[
+        ~lamas_city_df["LAMAS_id"].astype(str).isin(settlement_lamas_ids)
+    ]
 
     if lamas_street_df.empty:
         # Nothing street-level to match against: the settlement is either

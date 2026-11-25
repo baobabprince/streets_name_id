@@ -113,8 +113,10 @@ class TestArabicMatchingPrimitives(unittest.TestCase):
     def test_is_arab_style_lamas_city_separates_arab_and_mixed_cities(self):
         arab_city = ["אלגליל", "אלחרוב", "אל-סלאם", "אבו בכר", "חטין"]
         mixed_city = ["הרצל", "זבוטינסקי", "ביאליק", "בן גוריון", "אלתקווא", "התקוה", "דרך חברון"]
+        single_hebrew_settlement = ["אלון"]
         self.assertTrue(is_arab_style_lamas_city(arab_city))
         self.assertFalse(is_arab_style_lamas_city(mixed_city))
+        self.assertFalse(is_arab_style_lamas_city(single_hebrew_settlement))
 
 
 class TestArabicFuzzyMatching(unittest.TestCase):
@@ -303,12 +305,136 @@ class TestArabicFuzzyMatching(unittest.TestCase):
         self.assertEqual(list(res["status"])[1:], ["CONFIDENT", "CONFIDENT", "CONFIDENT"])
         self.assertEqual(list(res["best_LAMAS_id"])[1:], ["5268", "4710", "4012"])
 
+    def test_osm_name_original_arabic_fallback_and_phonetic_matching(self):
+        osm = pd.DataFrame(
+            {
+                "osm_id": ["w1", "w2", "w3", "w4", "w5", "w6", "w7"],
+                "osm_name": [
+                    "כביש אלבלסם",
+                    "אלבטיכה",
+                    "אלביירה",
+                    "אלמוח'תארה",
+                    "אלסראת",
+                    "نتاف",
+                    "دوار الزيتونة",
+                ],
+                "osm_name_original": [
+                    "شارع البلسم",
+                    "البطيخة",
+                    "البيرة",
+                    "المختارة",
+                    "السراط",
+                    "نتاف",
+                    "دوار الزيتونة",
+                ],
+                "normalized_name": [
+                    normalize_street_name(n)
+                    for n in [
+                        "כביש אלבלסם",
+                        "אלבטיכה",
+                        "אלביירה",
+                        "אלמוח'תארה",
+                        "אלסראת",
+                        "نتاف",
+                        "دوار الزيتونة",
+                    ]
+                ],
+                "city": ["ג'ולס"] * 7,
+            }
+        )
+        lamas = _make_lamas(
+            [
+                ("121", "אלבלסם"),
+                ("102", "אלבטיח'ה"),
+                ("153", "אלביארה"),
+                ("105", "אלמוח'טארה"),
+                ("450", "אלסראט"),
+                ("122", "נטאף"),
+                ("203", "אלזיתון"),
+            ]
+        )
+        res = find_fuzzy_candidates(osm, lamas)
+        self.assertEqual(list(res["status"]), ["CONFIDENT"] * 7)
+        self.assertEqual(
+            list(res["best_LAMAS_id"]),
+            ["121", "102", "153", "105", "450", "122", "203"],
+        )
+
+    def test_bilingual_street_noun_glossary_and_highway_guard(self):
+        osm = _make_osm(
+            [
+                "הנמל",
+                "האלמוגים",
+                "הגלים",
+                "החוף",
+                "המעגן",
+                "הצדפים",
+                "התנינים",
+                "יפו",
+                "כביש החוף",
+                "شارع السلام",
+                "ميدان السلام",
+            ],
+            city="ג'סר א-זרקא",
+        )
+        lamas = _make_lamas(
+            [
+                ("156", "אלמינא"),
+                ("159", "אלמורג'אן"),
+                ("161", "אלאמואג'"),
+                ("154", "אלשאטיא"),
+                ("160", "אלמרסאא"),
+                ("158", "אלסדאף"),
+                ("128", "אלתמאסיח"),
+                ("163", "יאפא"),
+                ("101", "דרך השלום"),
+            ]
+        )
+        res = find_fuzzy_candidates(osm, lamas)
+        self.assertEqual(
+            list(res["status"]),
+            [
+                "CONFIDENT", "CONFIDENT", "CONFIDENT", "CONFIDENT",
+                "CONFIDENT", "CONFIDENT", "CONFIDENT", "CONFIDENT",
+                "NEEDS_AI",  # כביש החוף must NOT match אלשאטיא
+                "CONFIDENT", "CONFIDENT",
+            ],
+        )
+        self.assertEqual(
+            list(res["best_LAMAS_id"])[:8],
+            ["156", "159", "161", "154", "160", "158", "128", "163"],
+        )
+        self.assertEqual(list(res["best_LAMAS_id"])[9:], ["101", "101"])
+
+    def test_latin_arabic_ayn_folding_and_settlement_alias_exclusion(self):
+        osm = _make_osm(["Utman ben afan", "ג'וליס"], city="ג'ולס")
+        lamas = _make_lamas(
+            [
+                ("371", "עותמאן בן עפאן"),
+                ("9000", "ג'ולס"),
+                ("9000", "ג'וליס"),
+                ("101", "אלבלסם"),
+                ("102", "אלבטיח'ה"),
+                ("103", "אלקודס"),
+            ]
+        )
+        res = find_fuzzy_candidates(osm, lamas)
+        self.assertEqual(res.loc[0, "status"], "CONFIDENT")
+        self.assertEqual(res.loc[0, "best_LAMAS_id"], "371")
+        # Alternate spelling alias of settlement own-name record (9000 "ג'וליס") is also
+        # blanked out at the core/cross-script level (only exact full-name string matches).
+        self.assertEqual(res.loc[1, "best_LAMAS_id"], "9000")
+
 
 class TestArabicPipelineAndLayaIntegration(unittest.TestCase):
     def test_core_wratio_supports_cross_script_without_inflating_unrelated_hebrew(self):
         self.assertGreaterEqual(_core_wratio("شارع صلاح الدين", "צלאח אלדין"), 95.0)
         self.assertGreaterEqual(_core_wratio("شارع خلة بلوط", "ח'לת בלוט"), 85.0)
+        self.assertGreaterEqual(_core_wratio("نتاف", "נטאף"), 95.0)
+        self.assertGreaterEqual(_core_wratio("شارع السلام", "דרך השלום"), 95.0)
+        self.assertGreaterEqual(_core_wratio("הנמל", "אלמינא"), 95.0)
         self.assertGreaterEqual(_core_wratio("Abu Bakr al-Siddiq", "אבו בכר א-ס'דיק"), 95.0)
+        self.assertGreaterEqual(_core_wratio("Utman ben afan", "עותמאן בן עפאן"), 95.0)
         self.assertGreaterEqual(_core_wratio("הגליל", "אלגליל"), 95.0)
         # Unrelated Hebrew pair starting with אל must not be inflated
         self.assertLess(_core_wratio("אלקטרה מול הנוף", "בנין המשטרה"), 30.0)
