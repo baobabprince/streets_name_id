@@ -684,6 +684,11 @@ def run_pipeline(
         "ai_reasoning",
         "ai_method",
     ]
+    # Optional for compatibility with cached/older candidate frames.
+    diagnostic_cols.extend(
+        column for column in ("match_method", "match_review_reason")
+        if column in merged_df.columns
+    )
     osm_cols_for_diag = ["osm_id", "osm_name", "normalized_name", "city", "geometry"]
     if "osm_name_original" in osm_gdf.columns:
         osm_cols_for_diag.insert(2, "osm_name_original")

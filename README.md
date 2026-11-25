@@ -1,6 +1,6 @@
 # Street Name Synonym Mapper
 
-Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Central Bureau of Statistics / CBS) street IDs for Israeli settlements. It combines Hebrew-aware normalization, 90% fuzzy matching, and optional whole-city Laya AI resolution for everything below 90%.
+Pipeline that maps OpenStreetMap (OSM) street names to official **LAMAS** (Central Bureau of Statistics / CBS) street IDs for Israeli settlements. It combines Hebrew-aware normalization, layered name matching (default threshold 90 with safety gates), review-only phonetic suggestions, and optional whole-city Laya AI resolution for unapproved streets.
 
 **Live dashboard:** [baobabprince.github.io/streets_name_id](https://baobabprince.github.io/streets_name_id/)
 
@@ -122,10 +122,53 @@ Checks: `python -m unittest discover -s tests -p 'test_mazal.py' -v`.
 - **One consolidated match store** — positive *and* negative settlement resolutions are kept in `data/settlement_matches.json` (one atomic write per run), with a CSV audit trail in `batch_reports/settlement_match_report.csv`
 - **One command for everything** — `python run_all.py` fetches, matches, processes, reports and rebuilds the dashboard in a single run
 - **Hebrew-aware normalization** — expands abbreviations (`שד'` → `שדרות`, `רח'` → `רחוב`, …) and cleans punctuation
-- **Fuzzy matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz) (weighted ratio / token_sort / token_set, ≥90% auto-matched)
+- **Layered street matching** with [rapidfuzz](https://github.com/rapidfuzz/rapidfuzz): full/core fuzzy scores, complete-token order invariance, review-only Hebrew phonetic suggestions, numeric-conflict and cross-ID ambiguity guards (default approval threshold: 90)
 - **Whole-city Laya AI matching** — optional local `convaiinnovations/laya-multilingual` model resolves every OSM street below 90% against the city's LAMAS streets and writes confirmed matches directly to `final_LAMAS_id`
 - **Batch processing** with parallel workers
 - **Interactive HTML reports** — per-settlement maps + master index dashboard
+
+## Street matching: word order and Hebrew phonetics
+
+The OSM → LAMAS matcher operates **within the selected settlement**, independently
+of the optional Mazal person-identity enrichment. It combines:
+
+1. Existing Unicode/abbreviation normalization and full/core-name fuzzy scoring.
+2. **Complete-token equality ignoring order**, before and after street-prefix
+   stripping: `משה מונטיפיורי` ↔ `מונטיפיורי משה` scores 100. All words and their
+   multiplicities must agree; a shared surname or a subset of the words is not
+   sufficient for this boost.
+3. A **Hebrew phonetic suggestion key**, rather than English Soundex: final-letter
+   folding, א/ע, כ/ך/ק/ח and ט/ת groups, and omission of non-initial ו/י. Word
+   boundaries are retained (ignoring order) and the key is not truncated. For
+   example, `תיקווה` and `תקוה` share a key. This is a lossy heuristic, **not proof
+   of identity**: phonetic-only scores are capped at `min(89, threshold - 1)` and
+   remain `NEEDS_AI`, even when the approval threshold is customized. Names with
+   short tokens, digits or non-Hebrew script receive no phonetic boost. Existing
+   lexical evidence can still independently qualify for approval.
+4. **Safety gates**: candidates with different numeric tokens (including an
+   absent number on one side) are excluded. If all candidates conflict, the
+   street stays `NEEDS_AI` with no best ID. Cross-ID ties in the final evidence,
+   and unresolved core/token-order ties, require review; aliases for the same
+   ID do not create ambiguity. Exact full-name evidence takes precedence over
+   boosted ties. Settlement pseudo-records remain excluded from core/phonetic
+   boosts.
+
+Candidate and diagnostic CSVs include `match_method` (`exact`, `fuzzy`,
+`core_fuzzy`, `token_order`, `hebrew_phonetic`, `none`, `missing`) and
+`match_review_reason` (`phonetic_only`, `ambiguous_candidates`,
+`number_conflict`, or empty). These describe the **candidate stage**, not any
+subsequent AI decision. Scores are ranking signals, not calibrated probabilities.
+No new dependency or external service is required. Re-run matching to update
+results; checked-in HTML pages and historical data are not rewritten automatically.
+
+Regression checks (synthetic examples, not a measured accuracy benchmark):
+
+```bash
+python -m unittest discover -s tests -p 'test_street_matching_signals.py' -v
+```
+
+A labelled sample of genuine matches and non-matches is still needed to measure
+precision/recall before relaxing approval rules or enabling phonetic auto-approval.
 
 ## Project layout (core modules)
 
