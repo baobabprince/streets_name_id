@@ -5,9 +5,8 @@ Provides:
 1. Street-name normalization (Hebrew abbreviations with or without geresh,
    Hebrew/Arabic punctuation, niqqud, Arabic letter/digit folding, whitespace)
 2. Grouping all LAMAS display names / synonyms by LAMAS_id
-3. Single-threshold fuzzy matching (>= 90% confident; everything below goes to AI),
-   boosted by a "core name" comparison that strips street-type prefixes so
-   "סמטת אורן" matches "סמ אורן" and "משעול סייפן" matches "סייפן".
+3. Layered fuzzy/core and complete-token matching (default threshold 90), with
+   review-only Hebrew phonetic suggestions and numeric/ambiguity safety gates.
 """
 
 import logging
@@ -24,6 +23,14 @@ from settlement_names import canonical_key
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIDENT_THRESHOLD = 90.0
+# A phonetic collision is a retrieval hint, never independent approval evidence.
+PHONETIC_SUGGESTION_SCORE = 89.0
+
+_HEBREW_PHONETIC_FOLD = str.maketrans({
+    "ך": "ק", "ם": "מ", "ן": "נ", "ף": "פ", "ץ": "צ",
+    "כ": "ק", "ח": "ק", "ט": "ת", "א": "ע",
+})
+
 
 # Arabic letter folding (mirrors settlement_names._ARABIC_LETTERS) so Arabic
 # script OSM names compare consistently against LAMAS spellings of the same
@@ -136,6 +143,54 @@ def normalize_street_name(name):
     return name if name else None
 
 
+def hebrew_phonetic_key(name: str) -> str:
+    """Return a non-truncated Hebrew consonant key, for suggestions only.
+
+    Unlike English Soundex, preserve word boundaries without truncation, fold
+    common Hebrew sound/spelling variants and omit non-initial vav/yod (matres
+    lectionis). They can also be consonants: this intentionally lossy key MUST
+    NOT establish street identity. Short, numeric and mixed-script names are
+    excluded; no transliteration or Arabic phonetic matching is attempted.
+    """
+    name = normalize_street_name(name)
+    if not name:
+        return ""
+    tokens = strip_street_prefix(name).split()
+    keys = []
+    for token in tokens:
+        if len(token) < 3 or not re.fullmatch(r"[א-ת]+", token):
+            return ""
+        token = token.translate(_HEBREW_PHONETIC_FOLD)
+        key = token[0] + re.sub(r"[וי]", "", token[1:])
+        if len(key) < 2:
+            return ""
+        keys.append(key)
+    return " ".join(sorted(keys))
+
+
+def _token_key(name: str) -> str:
+    # Sorting a list, not a set, retains repeated words and requires all words.
+    return " ".join(sorted(name.split()))
+
+
+def _equal_key_matrix(left: List[str], right: List[str], score: float) -> np.ndarray:
+    """Exact nonempty key matches without a Python all-pairs comparison."""
+    positions = {}
+    for index, key in enumerate(right):
+        if key:
+            positions.setdefault(key, []).append(index)
+    matrix = np.zeros((len(left), len(right)), dtype=np.float64)
+    for index, key in enumerate(left):
+        matches = positions.get(key)
+        if matches:
+            matrix[index, matches] = score
+    return matrix
+
+
+def _number_key(name: str) -> str:
+    return "|".join(sorted(re.findall(r"\d+", name)))
+
+
 def build_lamas_aliases(lamas_df: pd.DataFrame) -> Dict[str, List[str]]:
     """Group all LAMAS street names (including synonyms) by LAMAS_id."""
     if lamas_df is None or lamas_df.empty:
@@ -182,12 +237,15 @@ def find_fuzzy_candidates(
 ) -> pd.DataFrame:
     """Match OSM street names against city LAMAS streets with one threshold.
 
-    Streets scoring >= ``confident_threshold`` (default 90) are marked
-    ``CONFIDENT``. Every named OSM street below the threshold is marked
-    ``NEEDS_AI`` so the whole city's remainder can be resolved by AI.
+    Streets scoring >= ``confident_threshold`` (default 90) and passing the
+    safety gates are marked ``CONFIDENT``. All other named OSM streets are
+    marked ``NEEDS_AI`` so the city's remainder can be resolved by AI/review.
 
-    The score is ``max(full_name_blend, core_name_blend)`` where the core
-    blend compares names after stripping street-type prefixes.  Safeguards:
+    Full/core fuzzy blends are augmented by complete-token equality (ignoring
+    order) and review-only Hebrew phonetic suggestions. Numeric conflicts are
+    excluded from scoring. ``match_method`` explains the winning signal and
+    ``match_review_reason`` records safety gates; scores are not probabilities.
+    The core blend compares names after stripping street-type prefixes. Safeguards:
 
     * Among tied top scores the candidate with the strongest full-name blend
       wins, so an exact match always beats a core-level match.
@@ -205,6 +263,8 @@ def find_fuzzy_candidates(
             "best_score": [0.0] * len(osm_gdf),
             "best_LAMAS_id": [None] * len(osm_gdf),
             "best_LAMAS_name": [None] * len(osm_gdf),
+            "match_method": ["missing"] * len(osm_gdf),
+            "match_review_reason": [""] * len(osm_gdf),
         }
     )
 
@@ -261,6 +321,14 @@ def find_fuzzy_candidates(
         confident_threshold,
     )
 
+    lamas_token_keys = [_token_key(name) for name in lamas_name_candidates]
+    lamas_core_keys = [_token_key(name) for name in lamas_core_names]
+    # Reuse the core guard: settlement pseudo-records cannot acquire a
+    # phonetic boost, and an empty core must never match another empty core.
+    lamas_phonetic_keys = [hebrew_phonetic_key(name) for name in lamas_core_names]
+    lamas_numbers = np.array([_number_key(name) for name in lamas_name_candidates])
+    phonetic_score = max(0.0, min(PHONETIC_SUGGESTION_SCORE, confident_threshold - 1.0))
+
     street_name_results: Dict[str, dict] = {}
     batch_size = 128
     for batch_start in range(0, len(osm_names), batch_size):
@@ -271,14 +339,36 @@ def find_fuzzy_candidates(
             core_matrix = _blend_score_matrix(batch_cores, lamas_core_names)
         else:
             core_matrix = np.zeros_like(score_matrix)
-        final_matrix = np.maximum(score_matrix, core_matrix)
+        lexical_matrix = np.maximum(score_matrix, core_matrix)
+        token_matrix = np.maximum(
+            _equal_key_matrix([_token_key(n) for n in batch_names], lamas_token_keys, 100.0),
+            _equal_key_matrix([_token_key(n) for n in batch_cores], lamas_core_keys, 100.0),
+        )
+        phonetic_matrix = _equal_key_matrix(
+            [hebrew_phonetic_key(n) for n in batch_cores], lamas_phonetic_keys, phonetic_score
+        )
+        final_matrix = np.maximum(np.maximum(lexical_matrix, token_matrix), phonetic_matrix)
+        # A single digit mismatch can otherwise score >90 in a long name.
+        # An absent number also conflicts; do not silently drop qualifiers.
+        batch_numbers = np.array([_number_key(name) for name in batch_names])
+        number_conflicts = batch_numbers[:, None] != lamas_numbers[None, :]
+        final_matrix[number_conflicts] = 0.0
 
         for row_index, osm_name in enumerate(batch_names):
             row_final = final_matrix[row_index]
             row_full = score_matrix[row_index]
             best_score = float(row_final.max())
+            if number_conflicts[row_index].all():
+                street_name_results[osm_name] = {
+                    "status": "NEEDS_AI", "best_score": 0.0,
+                    "best_LAMAS_id": None, "best_LAMAS_name": None,
+                    "match_method": "none", "match_review_reason": "number_conflict",
+                }
+                continue
             # Ties are compared with a tiny tolerance against float noise.
-            tied = np.flatnonzero(row_final >= best_score - 1e-9)
+            tied = np.flatnonzero(
+                (row_final >= best_score - 1e-9) & ~number_conflicts[row_index]
+            )
             # Prefer the strongest full-name candidate among tied scores, so
             # "ירושלים" (exact 100) beats "שדרות ירושלים" (core 100).
             tied_full_best = float(row_full[tied].max())
@@ -293,22 +383,45 @@ def find_fuzzy_candidates(
                 key=id_order.__getitem__,
             )
 
+            best_index = next(
+                idx for idx in finalists
+                if best_lid in unique_name_to_ids[lamas_name_candidates[idx]]
+            )
+            if osm_name == lamas_name_candidates[best_index]:
+                method = "exact"
+            elif token_matrix[row_index, best_index] > lexical_matrix[row_index, best_index] + 1e-9:
+                method = "token_order"
+            elif phonetic_matrix[row_index, best_index] > lexical_matrix[row_index, best_index] + 1e-9:
+                method = "hebrew_phonetic"
+            elif core_matrix[row_index, best_index] > row_full[best_index] + 1e-9:
+                method = "core_fuzzy"
+            else:
+                method = "fuzzy"
+
             status = "CONFIDENT" if best_score >= confident_threshold else "NEEDS_AI"
+            review_reason = "phonetic_only" if method == "hebrew_phonetic" else ""
             tied_ids = {
                 lid
                 for idx in tied
                 for lid in unique_name_to_ids[lamas_name_candidates[idx]]
             }
+            finalist_ids = {
+                lid for idx in finalists
+                for lid in unique_name_to_ids[lamas_name_candidates[idx]]
+            }
             if (
-                status == "CONFIDENT"
-                and len(tied_ids) > 1
-                and tied_full_best < confident_threshold
+                len(finalist_ids) > 1
+                or (
+                    len(tied_ids) > 1
+                    and (tied_full_best < confident_threshold or method in {"token_order", "hebrew_phonetic"})
+                )
             ):
-                # The tie exists only after prefix stripping and spans several
-                # LAMAS ids — ambiguous; defer to AI/review instead of guessing.
+                # Multiple IDs remain plausible after the available evidence;
+                # do not turn input row order into an automatic approval.
                 status = "NEEDS_AI"
+                review_reason = "ambiguous_candidates"
                 logger.debug(
-                    "Ambiguous core-level match for '%s' across %d LAMAS ids; "
+                    "Ambiguous street match for '%s' across %d LAMAS ids; "
                     "deferring to AI.",
                     osm_name,
                     len(tied_ids),
@@ -322,6 +435,8 @@ def find_fuzzy_candidates(
                 "best_score": best_score,
                 "best_LAMAS_id": best_lid,
                 "best_LAMAS_name": best_lamas_name,
+                "match_method": method,
+                "match_review_reason": review_reason,
             }
 
     results = []
@@ -334,6 +449,8 @@ def find_fuzzy_candidates(
                     "best_score": 0.0,
                     "best_LAMAS_id": None,
                     "best_LAMAS_name": None,
+                    "match_method": "missing",
+                    "match_review_reason": "",
                 }
             )
         else:

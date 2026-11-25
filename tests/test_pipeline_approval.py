@@ -377,6 +377,9 @@ class TestPipelineApproval(unittest.TestCase):
         )
 
         diagnostic = saved["diagnostic_report"].set_index("osm_id")
+        self.assertEqual(diagnostic.loc["osm-exact", "match_method"], "exact")
+        self.assertEqual(diagnostic.loc["osm-exact", "match_review_reason"], "")
+        self.assertIn("match_method", saved["step3_candidates"].columns)
         self.assertEqual(diagnostic.loc["osm-exact", "mapping_status"], "APPROVED_FUZZY")
         self.assertEqual(diagnostic.loc["osm-exact", "final_LAMAS_id"], "101")
         self.assertEqual(diagnostic.loc["osm-low", "mapping_status"], "APPROVED_AI")
