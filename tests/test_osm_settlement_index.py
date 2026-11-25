@@ -326,6 +326,55 @@ class TestOSMSettlementIndex(unittest.TestCase):
             pbf_path="region.osm.pbf", force=True
         )
 
+    def test_composite_osm_ids_union_multiple_place_polygons(self):
+        poly_a = box(35.020, 32.115, 35.035, 32.125)
+        poly_b = box(35.040, 32.115, 35.055, 32.125)
+        places = gpd.GeoDataFrame(
+            {
+                "osm_id": ["w499961728", "w500944692"],
+                "osm_type": ["w", "w"],
+                "name:he": ["שערי תקוה", "עץ אפרים"],
+                "place": ["village", "village"],
+                "geometry": [poly_a, poly_b],
+            },
+            crs="EPSG:4326",
+        )
+        streets = gpd.GeoDataFrame(
+            {
+                "osm_id": ["st_a", "st_b", "st_out"],
+                "osm_name": ["האורן שערי תקווה", "האורן עץ אפרים", "כביש חיצוני"],
+                "highway": ["residential", "residential", "residential"],
+                "geometry": [
+                    LineString([(35.025, 32.118), (35.028, 32.120)]),
+                    LineString([(35.045, 32.118), (35.048, 32.120)]),
+                    LineString([(35.090, 32.150), (35.095, 32.155)]),
+                ],
+            },
+            crs="EPSG:4326",
+        )
+        place = {
+            "settlement_name": "שער שומרון",
+            "display_name": "שער שומרון, Israel",
+            "osm_id": "499961728+500944692",
+            "osm_type": "composite",
+            "osm_ids": ["w499961728", "w500944692"],
+            "lat": 32.120,
+            "lon": 35.0375,
+            "boundingbox": (32.115, 32.125, 35.020, 35.055),
+        }
+        with (
+            patch.object(osm_pbf_loader, "load_national_streets", return_value=streets),
+            patch.object(
+                osm_pbf_loader,
+                "load_national_boundaries",
+                return_value=gpd.GeoDataFrame(columns=["osm_id", "geometry"], crs="EPSG:4326"),
+            ),
+            patch.object(osm_pbf_loader, "load_national_places", return_value=places),
+        ):
+            result = osm_pbf_loader.fetch_pbf_street_data(place)
+        self.assertIsNotNone(result)
+        self.assertEqual(set(result["osm_id"].tolist()), {"st_a", "st_b"})
+
 
 if __name__ == "__main__":
     unittest.main()

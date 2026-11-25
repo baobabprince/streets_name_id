@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from arabic_matching import has_arabic, transliterate_arabic_to_hebrew
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "convaiinnovations/laya-multilingual"
@@ -80,6 +82,18 @@ class LayaAIResolver:
             return option_ids[selected], confidence, f"Laya selected {selected}"
         raise ValueError(f"Laya returned an unknown choice: {selected!r}")
 
+    @staticmethod
+    def _build_state(city_name: str, osm_street: str) -> dict[str, str]:
+        state = {
+            "יישוב": str(city_name)[:120],
+            "שם הרחוב ב-OSM": str(osm_street)[:120],
+        }
+        if has_arabic(osm_street):
+            translit = transliterate_arabic_to_hebrew(str(osm_street))
+            if translit:
+                state["תעתיק עברי"] = translit[:120]
+        return state
+
     def _predict_choice(
         self,
         city_name: str,
@@ -88,10 +102,7 @@ class LayaAIResolver:
     ) -> tuple[str | None, float, str]:
         """Run one Laya choice decision over a bounded slice of LAMAS streets."""
         option_ids, questions = self._build_choice_question(options)
-        state = {
-            "יישוב": str(city_name)[:120],
-            "שם הרחוב ב-OSM": str(osm_street)[:120],
-        }
+        state = self._build_state(city_name, osm_street)
         result = self.agent.predict(state, questions)
         return self._parse_answer(result, option_ids)
 
@@ -103,13 +114,7 @@ class LayaAIResolver:
     ) -> list[tuple[str | None, float, str]]:
         """Evaluate one chunk of LAMAS streets across all unmatched OSM streets."""
         option_ids, questions = self._build_choice_question(options)
-        states = [
-            {
-                "יישוב": str(city_name)[:120],
-                "שם הרחוב ב-OSM": str(osm_street)[:120],
-            }
-            for osm_street in osm_streets
-        ]
+        states = [self._build_state(city_name, osm_street) for osm_street in osm_streets]
         if len(states) > 1 and callable(getattr(self.agent, "predict_batch", None)):
             raw_results = self.agent.predict_batch(
                 states, questions, batch_size=self.batch_size

@@ -81,6 +81,32 @@ class TestPipelineCityMatching(unittest.TestCase):
             pipeline._filter_lamas_by_city(lamas_df, "ישוב לא קיים").empty
         )
 
+    def test_filter_lamas_by_city_keeps_kibbutz_gat_and_jatt_separate(self):
+        from settlement_names import canonical_key, settlement_identity_key
+
+        lamas_df = pd.DataFrame({
+            "city": ["ג'ת", "ג'ת", "גת )קיבוץ("],
+            "LAMAS_name": ["רח 1", "רח 2", "גת )קיבוץ("],
+            "city_key": [canonical_key("ג'ת"), canonical_key("ג'ת"), canonical_key("גת )קיבוץ(")],
+            "city_identity_key": [
+                settlement_identity_key("ג'ת"),
+                settlement_identity_key("ג'ת"),
+                settlement_identity_key("גת )קיבוץ("),
+            ],
+        })
+        gat_rows = pipeline._filter_lamas_by_city(
+            lamas_df,
+            canonical_key("גת )קיבוץ("),
+            target_identity_key=settlement_identity_key("גת )קיבוץ("),
+        )
+        jatt_rows = pipeline._filter_lamas_by_city(
+            lamas_df,
+            canonical_key("ג'ת"),
+            target_identity_key=settlement_identity_key("ג'ת"),
+        )
+        self.assertEqual(gat_rows["city"].tolist(), ["גת )קיבוץ("])
+        self.assertEqual(jatt_rows["city"].tolist(), ["ג'ת", "ג'ת"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,8 +33,11 @@ from settlement_names import (
     NON_SETTLEMENT_ADMIN_LEVELS,
     admin_level,
     canonical_key,
+    has_geresh_conflict,
+    has_qualifier_conflict,
     is_regional_boundary_name,
     load_osm_id_overrides,
+    lookup_by_settlement_key,
     place_is_settlement,
 )
 
@@ -628,6 +631,19 @@ def find_settlement_boundary(
     index, gdf = _boundary_name_index(boundaries_gdf)
 
     def geometry_is_close(row_index) -> bool:
+        row = gdf.loc[row_index]
+        row_names = [
+            part.strip()
+            for col in NAME_COLUMNS
+            if col in gdf.columns and not pd.isna(row.get(col))
+            for part in str(row.get(col)).split(";")
+            if part.strip()
+        ]
+        if row_names and (
+            has_geresh_conflict(place_name, row_names)
+            or has_qualifier_conflict(place_name, row_names)
+        ):
+            return False
         if expected_center is None:
             return True
         geom = gdf.at[row_index, "geometry"]
@@ -854,6 +870,8 @@ def find_settlement_place_area(
                 names.extend(str(value).split(";"))
         if not any(canonical_key(name) == query_key for name in names):
             continue
+        if has_geresh_conflict(place_name, names) or has_qualifier_conflict(place_name, names):
+            continue
         geometry = row.get("geometry")
         if geometry is None or getattr(geometry, "is_empty", True):
             continue
@@ -918,8 +936,31 @@ def fetch_pbf_street_data(
             except (ValueError, TypeError):
                 expected_center = None
 
+        # 1a-multi. Composite pinned settlement (e.g. merged councils like שער שומרון):
+        #           union all constituent polygons from local boundaries/places.
+        if place.get("osm_ids"):
+            composite_geoms = []
+            for raw_token in place["osm_ids"]:
+                token = str(raw_token).strip()
+                t_prefix = token[:1].lower() if token[:1].lower() in {"n", "w", "r"} else ""
+                t_id = token[1:] if t_prefix else token
+                geom = _lookup_place_polygon_by_id(t_id, osm_type=t_prefix)
+                if geom is None:
+                    try:
+                        boundaries_gdf = load_national_boundaries()
+                        ids = boundaries_gdf["osm_id"].astype(str).str.lstrip("rnwRNW")
+                        match = boundaries_gdf[ids == t_id]
+                        if not match.empty and _is_polygon_geom(match.iloc[0].geometry):
+                            geom = match.iloc[0].geometry
+                    except Exception:
+                        pass
+                if geom is not None:
+                    composite_geoms.append(geom)
+            if composite_geoms:
+                query_geom = unary_union(composite_geoms)
+
         # 1a. Check if osm_id matches a known non-regional administrative boundary
-        if place.get("osm_id"):
+        if query_geom is None and place.get("osm_id"):
             osm_id_str = str(place["osm_id"]).lstrip("rnwRNW")
             osm_type = str(place.get("osm_type") or "")
             try:
@@ -1019,7 +1060,7 @@ def fetch_pbf_street_data(
         try:
             from settlement_index import load_settlement_centers
 
-            expected_center = load_settlement_centers().get(canonical_key(city_name))
+            expected_center = lookup_by_settlement_key(load_settlement_centers(), city_name)
         except Exception as e:
             logger.debug("Settlement centres unavailable for %s: %s", city_name, e)
         try:
@@ -1031,7 +1072,7 @@ def fetch_pbf_street_data(
 
         if query_geom is None:
             try:
-                pinned = canonical_key(city_name) in load_osm_id_overrides()
+                pinned = lookup_by_settlement_key(load_osm_id_overrides(), city_name) is not None
                 query_geom = find_settlement_place_area(
                     city_name,
                     expected_center=expected_center,

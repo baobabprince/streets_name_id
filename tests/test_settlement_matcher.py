@@ -210,6 +210,38 @@ class TestSettlementMatcher(unittest.TestCase):
         self.assertEqual(params["format"], "jsonv2")
         self.assertEqual(params["namedetails"], 1)
 
+    def test_allows_village_inside_regional_council_address(self):
+        result = place_result("בר גיורא")
+        result["address"] = {
+            "country_code": "il",
+            "city": "מועצה אזורית מטה יהודה",
+        }
+        valid, reason = self.matcher._validate_result(result, "בר גיורא")
+        self.assertTrue(valid, reason)
+
+    def test_rejects_jatt_for_kibbutz_gat_via_geresh_guard(self):
+        result = place_result("ג'ת", display_name="ג'ת, ישראל")
+        result["namedetails"] = {"name:he": "ג'ת", "name:en": "Jatt"}
+        valid, reason = self.matcher._validate_result(result, "גת )קיבוץ(", ["גת"])
+        self.assertFalse(valid)
+        self.assertIn("Geresh mismatch", reason)
+
+    def test_pinned_override_allows_institutional_settlement_class(self):
+        result = place_result(
+            "בית הספר החקלאי מקווה ישראל",
+            category="amenity",
+            place_type="school",
+            display_name="בית הספר החקלאי מקווה ישראל, חולון, ישראל",
+        )
+        result["osm_id"] = 1004703155
+        result["osm_type"] = "way"
+        result["address"] = {"country_code": "il", "city": "חולון"}
+        valid, reason = self.matcher._validate_result(
+            result, "מקווה ישראל", self.matcher._query_variants("מקווה ישראל")
+        )
+        self.assertTrue(valid, reason)
+        self.assertIn("Pinned OSM id override", reason)
+
 
 if __name__ == "__main__":
     unittest.main()

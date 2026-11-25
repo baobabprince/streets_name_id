@@ -27,7 +27,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from rapidfuzz import fuzz, process
 
@@ -42,11 +42,17 @@ from settlement_names import (
     admin_level as _admin_level,
     canonical_key,
     fuzzy_form,
+    has_geresh_conflict,
+    has_qualifier_conflict,
     is_regional_boundary_name,
+    ktiv_haser_key,
     load_aliases,
     load_osm_id_overrides,
+    lookup_by_settlement_key,
     name_variants,
     place_is_settlement,
+    qualifier_match_bonus,
+    settlement_identity_key,
 )
 
 logger = logging.getLogger(__name__)
@@ -57,9 +63,10 @@ CENTERS_FILE = os.path.join(ROOT, "config", "settlement_centers.json")
 STORE_PATH = os.path.join(DATA_DIR, "settlement_matches.json")
 REPORT_PATH = os.path.join(ROOT, "batch_reports", "settlement_match_report.csv")
 
-# v4: polygon-over-node preference, regional-council/district exclusion, and
-# compact node-only fallback boxes.
-STORE_VERSION = 4
+# v5: identity-keyed store/centres, geresh & qualifier separation (גת vs ג'ת,
+# איחוד vs מאוחד, מושב vs קיבוץ), ktiv-haser tier, non-substring fuzzy matching,
+# multi-OSM-id pins, and strict duplicate-OSM-id dropping.
+STORE_VERSION = 5
 MATCHED_TTL_DAYS = 90
 UNRESOLVED_TTL_DAYS = 7
 SCORE_CUTOFF = 88.0
@@ -68,6 +75,20 @@ NAME_COLUMNS = (
     "name:he", "name", "name:en", "name:ar", "alt_name",
     "official_name", "old_name", "short_name",
 )
+# Valid Israel/Palestine bounding envelope for settlement centre coordinates.
+_VALID_CENTER_BOUNDS = (29.4, 34.2, 33.4, 35.9)  # min_lat, min_lon, max_lat, max_lon
+
+
+def _is_valid_center(lon: float, lat: float) -> bool:
+    """Reject placeholder (31.0, 35.0) and out-of-Israel centre coordinates."""
+    min_lat, min_lon, max_lat, max_lon = _VALID_CENTER_BOUNDS
+    if not (min_lat <= lat <= max_lat and min_lon <= lon <= max_lon):
+        return False
+    # cities_geo.txt uses (31.0, 35.0) as a placeholder for ungeocoded settlements.
+    if abs(lat - 31.0) < 0.005 and abs(lon - 35.0) < 0.005:
+        return False
+    return True
+
 
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -85,7 +106,7 @@ def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
 
 @lru_cache(maxsize=2)
 def load_settlement_centers(path: str = CENTERS_FILE) -> Dict[str, Tuple[float, float]]:
-    """Return ``{canonical settlement key: (lon, lat)}`` from the ITM dataset."""
+    """Return ``{settlement identity key: (lon, lat)}`` from the ITM dataset."""
     if not os.path.exists(path):
         return {}
     try:
@@ -99,11 +120,13 @@ def load_settlement_centers(path: str = CENTERS_FILE) -> Dict[str, Tuple[float, 
         for name, coords in places.items():
             if not isinstance(coords, (list, tuple)) or len(coords) < 2:
                 continue
-            key = canonical_key(name)
-            if key:
-                lon, lat = transformer.transform(float(coords[0]), float(coords[1]))
+            key = settlement_identity_key(name)
+            if not key:
+                continue
+            lon, lat = transformer.transform(float(coords[0]), float(coords[1]))
+            if _is_valid_center(lon, lat):
                 centers[key] = (lon, lat)
-        # Centres for settlements renamed after the snapshot was generated.
+        # Centres for renamed or mis-geocoded settlements in settlement_centers.json.
         alias_payload = {}
         if os.path.exists(ALIASES_PATH):
             with open(ALIASES_PATH, "r", encoding="utf-8") as handle:
@@ -112,20 +135,28 @@ def load_settlement_centers(path: str = CENTERS_FILE) -> Dict[str, Tuple[float, 
             alias_payload.get("center_overrides", {})
             if isinstance(alias_payload, dict) else {}
         ).items():
+            if str(name).startswith("_"):
+                continue
+            key = settlement_identity_key(name)
+            if not key:
+                continue
+            if coords is None:
+                centers.pop(key, None)
+                continue
             if not isinstance(coords, (list, tuple)) or len(coords) < 2:
                 continue
-            key = canonical_key(name)
-            if key:
-                lon, lat = transformer.transform(float(coords[0]), float(coords[1]))
+            lon, lat = transformer.transform(float(coords[0]), float(coords[1]))
+            if _is_valid_center(lon, lat):
                 centers[key] = (lon, lat)
         # Renamed settlements (נצרת עילית -> נוף הגליל) are in the centre file
         # under their old name; reuse that centre for the current LAMAS name.
-        for name, aliases in load_aliases().items():
-            if name in centers:
+        for name_key, aliases in load_aliases().items():
+            if name_key in centers:
                 continue
             for alias in aliases:
-                if canonical_key(alias) in centers:
-                    centers[name] = centers[canonical_key(alias)]
+                alias_center = lookup_by_settlement_key(centers, alias)
+                if alias_center is not None:
+                    centers[name_key] = alias_center
                     break
         return centers
     except Exception as exc:  # config is optional; never block a batch on it
@@ -190,6 +221,7 @@ class OSMPlace:
     inside_city: bool = False
     span_deg: float = 0.0
     has_polygon: bool = False
+    osm_ids: List[str] = field(default_factory=list)
 
     @property
     def id_key(self) -> str:
@@ -333,12 +365,15 @@ class MatchDecision:
 
 
 class SettlementNameIndex:
-    """Canonical + fuzzy index that only returns whole-settlement features."""
+    """Canonical + ktiv-haser + fuzzy index that only returns whole-settlement features."""
 
     def __init__(self, places: Sequence[OSMPlace]):
         self.places = list(places)
         self.exact: Dict[str, List[OSMPlace]] = {}
+        self.ktiv_haser: Dict[str, List[OSMPlace]] = {}
         self.fuzzy: Dict[str, List[OSMPlace]] = {}
+        self.settlement_fuzzy: Dict[str, List[OSMPlace]] = {}
+        self.non_settlement_fuzzy: Dict[str, List[OSMPlace]] = {}
         self.display_by_form: Dict[str, str] = {}
         self.by_id: Dict[str, OSMPlace] = {}
         self.by_raw_id: Dict[str, List[OSMPlace]] = {}
@@ -349,18 +384,32 @@ class SettlementNameIndex:
                 key = canonical_key(name)
                 if key:
                     self.exact.setdefault(key, []).append(place)
+                kh = ktiv_haser_key(name)
+                if kh:
+                    self.ktiv_haser.setdefault(kh, []).append(place)
                 form = fuzzy_form(name)
-                if form:
+                # Ignore 1-character names (e.g. Be'er Sheva neighbourhoods "א'",
+                # "ב'") so they never pollute fuzzy search or diagnostics.
+                if form and len(form.replace(" ", "")) >= 2:
                     self.fuzzy.setdefault(form, []).append(place)
                     self.display_by_form.setdefault(form, name)
+                    if place.is_settlement:
+                        self.settlement_fuzzy.setdefault(form, []).append(place)
+                    else:
+                        self.non_settlement_fuzzy.setdefault(form, []).append(place)
         self.fuzzy_choices = list(self.fuzzy)
+        self.settlement_fuzzy_choices = list(self.settlement_fuzzy)
+        self.non_settlement_fuzzy_choices = list(self.non_settlement_fuzzy)
 
     @staticmethod
     def _rank(place: OSMPlace) -> tuple:
         poly_rank = 0 if place.has_polygon else 1
+        # Real populated settlements (city/town/village/hamlet/administrative)
+        # always outrank generic localities (e.g. Kibbutz Gat village vs. Tel Zafit locality).
+        locality_rank = 1 if place.place_type == "locality" else 0
         type_rank = 0 if place.category == "boundary" else 1
         level_rank = {"8": 0, "7": 1}.get(place.admin_level, 2)
-        return (poly_rank, type_rank, level_rank, place.id_key)
+        return (poly_rank, locality_rank, type_rank, level_rank, place.id_key)
 
     @staticmethod
     def _describe(place: OSMPlace) -> str:
@@ -371,49 +420,128 @@ class SettlementNameIndex:
             label += f",admin_level={place.admin_level}"
         return f"{place.id_key}({label})"
 
+    @staticmethod
+    def _best_display_name(place: OSMPlace, fallback: str) -> str:
+        """Pick an un-folded human-readable OSM name matching ``fallback``."""
+        if not place.names:
+            return fallback
+        fb_key = canonical_key(fallback)
+        for name in place.names:
+            if canonical_key(name) == fb_key:
+                return name
+        return place.names[0]
+
+    def _lookup_pinned_places(self, raw_pin: str) -> List[OSMPlace]:
+        value = str(raw_pin).strip().lower()
+        prefix = value[0] if value[:1] in {"n", "w", "r"} else ""
+        raw = value[1:] if prefix else value
+        if not raw.isdigit():
+            return []
+        if prefix:
+            osm_type = {"n": "node", "w": "way", "r": "relation"}[prefix]
+            key = f"{osm_type}:{raw}"
+            if key in self.by_id:
+                return [self.by_id[key]]
+            # Local osmium exports often omit the n/w/r prefix (osm_type == "");
+            # allow matching an untyped entry whose geometry matches the prefix.
+            untyped = self.by_id.get(f":{raw}")
+            if untyped is not None:
+                if prefix == "n" and not untyped.has_polygon:
+                    return [untyped]
+                if prefix in {"w", "r"} and untyped.has_polygon:
+                    return [untyped]
+            return []
+        return list(self.by_raw_id.get(raw, []))
+
     def decide(
         self,
         variants: Sequence[str],
         center: Optional[Tuple[float, float]],
         score_cutoff: float = SCORE_CUTOFF,
         max_distance_m: float = MAX_CENTER_DISTANCE_M,
-        pinned_id: Optional[str] = None,
+        pinned_id: Optional[Union[str, Sequence[str]]] = None,
+        original_name: Optional[str] = None,
     ) -> MatchDecision:
         """Choose a settlement feature; neighbourhoods can never win."""
+        guard_name = original_name or (variants[0] if variants else "")
+
         def acceptable(place: OSMPlace) -> bool:
             dist = self._distance(place, center)
             return dist is None or dist <= max_distance_m
 
+        def compatible(place: OSMPlace) -> bool:
+            if not guard_name:
+                return True
+            if has_geresh_conflict(guard_name, place.names):
+                return False
+            if has_qualifier_conflict(guard_name, place.names):
+                return False
+            return True
+
         if pinned_id:
-            # Accept "n123"/"w123"/"r123" as well as a bare numeric id, but
-            # never resolve a pinned relation to a node with the same number.
-            value = str(pinned_id).strip().lower()
-            prefix = value[0] if value[:1] in {"n", "w", "r"} else ""
-            raw = value[1:] if prefix else value
-            if raw.isdigit():
-                if prefix:
-                    osm_type = {"n": "node", "w": "way", "r": "relation"}[prefix]
-                    key = f"{osm_type}:{raw}"
-                    candidates = [self.by_id[key]] if key in self.by_id else []
-                else:
-                    candidates = self.by_raw_id.get(raw, [])
-                if not candidates:
+            # Accept a single pin ("n123"/"w123"/"r123"/bare numeric) or a list
+            # of pins (for merged settlements like שער שומרון = שערי תקווה + עץ אפרים).
+            if isinstance(pinned_id, (list, tuple)):
+                resolved: List[OSMPlace] = []
+                pin_tokens: List[str] = []
+                for token in pinned_id:
+                    cands = [p for p in self._lookup_pinned_places(str(token)) if acceptable(p)]
+                    if cands:
+                        resolved.append(cands[0])
+                        pin_tokens.append(str(token).strip())
+                if not resolved:
                     return MatchDecision(
-                        reason=f"Pinned OSM id {pinned_id!r} is not in the local OSM index"
+                        reason=f"Pinned OSM ids {pinned_id!r} are not in the local OSM index"
                     )
-                for place in candidates:
-                    if acceptable(place):
-                        return MatchDecision(
-                            place=place, score=100.0,
-                            distance_m=self._distance(place, center),
-                            matched_name=place.names[0] if place.names else "",
-                            pinned=True,
-                        )
-                return MatchDecision(
-                    reason=f"Pinned OSM id {pinned_id!r} is too far from the LAMAS centre"
+                if len(resolved) == 1:
+                    place = resolved[0]
+                    return MatchDecision(
+                        place=place, score=100.0,
+                        distance_m=self._distance(place, center),
+                        matched_name=guard_name or (place.names[0] if place.names else ""),
+                        pinned=True,
+                    )
+                min_lat = min(p.bbox[0] for p in resolved)
+                max_lat = max(p.bbox[1] for p in resolved)
+                min_lon = min(p.bbox[2] for p in resolved)
+                max_lon = max(p.bbox[3] for p in resolved)
+                avg_lat = sum(p.lat for p in resolved) / len(resolved)
+                avg_lon = sum(p.lon for p in resolved) / len(resolved)
+                composite = OSMPlace(
+                    osm_id="+".join(p.osm_id for p in resolved),
+                    osm_type="composite",
+                    names=[guard_name] if guard_name else [p.names[0] for p in resolved if p.names],
+                    lat=avg_lat,
+                    lon=avg_lon,
+                    bbox=(min_lat, max_lat, min_lon, max_lon),
+                    place_type=resolved[0].place_type,
+                    category=resolved[0].category,
+                    is_settlement=True,
+                    has_polygon=any(p.has_polygon for p in resolved),
+                    osm_ids=pin_tokens,
                 )
+                return MatchDecision(
+                    place=composite, score=100.0,
+                    distance_m=self._distance(composite, center),
+                    matched_name=guard_name or composite.names[0],
+                    pinned=True,
+                )
+
+            candidates = self._lookup_pinned_places(str(pinned_id))
+            if not candidates:
+                return MatchDecision(
+                    reason=f"Pinned OSM id {pinned_id!r} is not in the local OSM index"
+                )
+            for place in candidates:
+                if acceptable(place):
+                    return MatchDecision(
+                        place=place, score=100.0,
+                        distance_m=self._distance(place, center),
+                        matched_name=place.names[0] if place.names else "",
+                        pinned=True,
+                    )
             return MatchDecision(
-                reason=f"Pinned OSM id {pinned_id!r} is not in the local OSM index"
+                reason=f"Pinned OSM id {pinned_id!r} is too far from the LAMAS centre"
             )
 
         demoted: List[str] = []
@@ -427,10 +555,17 @@ class SettlementNameIndex:
             demoted.append(self._describe(place))
             rejected_types.append(place.place_type)
 
-        # 1. Exact canonical match.  A settlement feature with 88 beats a
-        #    suburb/neighbourhood with 100: the suburb is simply discarded.
-        #    All candidates are inspected so the audit note lists every
-        #    discarded neighbourhood, regardless of iteration order.
+        def exact_rank(decision: MatchDecision) -> tuple:
+            place = decision.place
+            assert place is not None
+            dist_m = decision.distance_m or 0.0
+            near_bucket = 0 if dist_m <= 3000.0 else 1
+            qual_bonus = qualifier_match_bonus(guard_name, place.names)
+            return (near_bucket, -qual_bonus, self._rank(place), dist_m)
+
+        # 1. Exact canonical match.  A settlement feature beats any
+        #    suburb/neighbourhood; opposing qualifiers and ג'/ג conflicts are
+        #    rejected so twin settlements (גת vs ג'ת, איחוד vs מאוחד) never collide.
         best_exact: Optional[MatchDecision] = None
         for variant in variants:
             key = canonical_key(variant)
@@ -438,60 +573,98 @@ class SettlementNameIndex:
                 if not acceptable(place):
                     continue
                 if not place.is_settlement:
-                    note_demoted(place)
+                    if compatible(place):
+                        note_demoted(place)
+                    continue
+                if not compatible(place):
                     continue
                 decision = MatchDecision(
                     place=place, score=100.0,
                     distance_m=self._distance(place, center),
-                    matched_name=variant,
+                    matched_name=self._best_display_name(place, variant),
                 )
-                dist_m = decision.distance_m or 0.0
-                # Within 3 km of the LAMAS centre, always prefer an exact polygon
-                # (boundary or place area) over a bare place node that happens to
-                # sit slightly closer to the nominal centre point.
-                near_bucket = 0 if dist_m <= 3000.0 else 1
-                rank = (near_bucket, self._rank(place), dist_m)
-                best_rank = (
-                    (
-                        0 if (best_exact.distance_m or 0.0) <= 3000.0 else 1,
-                        self._rank(best_exact.place),
-                        best_exact.distance_m or 0.0,
-                    )
-                    if best_exact is not None and best_exact.place is not None
-                    else None
-                )
-                if best_rank is None or rank < best_rank:
+                if best_exact is None or exact_rank(decision) < exact_rank(best_exact):
                     best_exact = decision
 
-        # 2. Bounded fuzzy match, settlement features only.
-        query_forms = list(
-            dict.fromkeys(fuzzy_form(v) for v in variants if fuzzy_form(v))
-        )
-        best: Optional[MatchDecision] = None
-        best_effective = -1.0
-        for query in query_forms:
-            for choice, score, _ in process.extract(
-                query, self.fuzzy_choices, scorer=fuzz.WRatio,
-                score_cutoff=score_cutoff, limit=4,
-            ):
-                for place in self.fuzzy.get(choice, []):
+        # 1.5. Hebrew ktiv-haser (plene/defective) match (e.g. עופרה <-> עפרה,
+        #      יוקנעם <-> יקנעם, סוואעד <-> סואעד, קידר <-> קדר, עינב <-> ענב).
+        best_ktiv: Optional[MatchDecision] = None
+        if best_exact is None:
+            for variant in variants:
+                kh = ktiv_haser_key(variant)
+                if not kh:
+                    continue
+                for place in self.ktiv_haser.get(kh, []):
                     if not acceptable(place):
                         continue
                     if not place.is_settlement:
-                        note_demoted(place)
+                        if compatible(place):
+                            note_demoted(place)
                         continue
-                    dist = self._distance(place, center)
-                    # A near-by 92 beats a far-away 96: proximity is evidence.
-                    # Also prefer polygon features over point nodes on ties.
-                    poly_bonus = 2.0 if place.has_polygon else 0.0
-                    effective = score + poly_bonus - min((dist or 0.0) / 1000.0, 25.0) * 0.4
-                    if effective > best_effective:
-                        best_effective = effective
-                        best = MatchDecision(
-                            place=place, score=float(score), distance_m=dist,
-                            matched_name=self.display_by_form.get(choice, choice),
+                    if not compatible(place):
+                        continue
+                    decision = MatchDecision(
+                        place=place, score=99.0,
+                        distance_m=self._distance(place, center),
+                        matched_name=self._best_display_name(place, variant),
+                    )
+                    if best_ktiv is None or exact_rank(decision) < exact_rank(best_ktiv):
+                        best_ktiv = decision
+
+        # 2. Bounded whole-name fuzzy match (fuzz.ratio — never partial/WRatio,
+        #    so short substrings like לח"י/קלחים or 1-letter neighbourhoods cannot match).
+        query_forms = list(
+            dict.fromkeys(
+                f for v in variants
+                if (f := fuzzy_form(v)) and len(f.replace(" ", "")) >= 2
+            )
+        )
+        best: Optional[MatchDecision] = None
+        best_effective = -1.0
+        if best_exact is None and best_ktiv is None:
+            for query in query_forms:
+                q_compact_len = len(query.replace(" ", ""))
+                for choice, score, _ in process.extract(
+                    query, self.settlement_fuzzy_choices, scorer=fuzz.ratio,
+                    score_cutoff=score_cutoff, limit=6,
+                ):
+                    c_compact_len = len(choice.replace(" ", ""))
+                    if min(q_compact_len, c_compact_len) / max(q_compact_len, c_compact_len) < 0.70:
+                        continue
+                    for place in self.settlement_fuzzy.get(choice, []):
+                        if not acceptable(place) or not compatible(place):
+                            continue
+                        dist = self._distance(place, center)
+                        poly_bonus = 2.0 if place.has_polygon else 0.0
+                        qual_bonus = 3.0 * qualifier_match_bonus(guard_name, place.names)
+                        locality_penalty = 2.0 if place.place_type == "locality" else 0.0
+                        effective = (
+                            score + poly_bonus + qual_bonus - locality_penalty
+                            - min((dist or 0.0) / 1000.0, 25.0) * 0.4
                         )
-        winner = best_exact or best
+                        if effective > best_effective:
+                            best_effective = effective
+                            best = MatchDecision(
+                                place=place, score=float(score), distance_m=dist,
+                                matched_name=self.display_by_form.get(choice, choice),
+                            )
+
+        # Record non-settlement fuzzy candidates for audit diagnostics only
+        # (never allowed to crowd out real settlements).
+        for query in query_forms:
+            q_compact_len = len(query.replace(" ", ""))
+            for choice, _score, _ in process.extract(
+                query, self.non_settlement_fuzzy_choices, scorer=fuzz.ratio,
+                score_cutoff=score_cutoff, limit=4,
+            ):
+                c_compact_len = len(choice.replace(" ", ""))
+                if min(q_compact_len, c_compact_len) / max(q_compact_len, c_compact_len) < 0.70:
+                    continue
+                for place in self.non_settlement_fuzzy.get(choice, []):
+                    if acceptable(place) and compatible(place):
+                        note_demoted(place)
+
+        winner = best_exact or best_ktiv or best
         if winner is not None:
             winner.demoted = list(demoted)
             winner.rejected_types = list(rejected_types)
@@ -557,13 +730,14 @@ def match_settlements_offline(
     pinned = load_osm_id_overrides() if pinned is None else pinned
     matches: Dict[str, SettlementMatch] = {}
     for settlement in settlements:
-        center = centers.get(canonical_key(settlement))
+        center = lookup_by_settlement_key(centers, settlement)
         decision = index.decide(
             name_variants(settlement, aliases),
             center,
             score_cutoff=score_cutoff,
             max_distance_m=max_distance_m,
-            pinned_id=pinned.get(canonical_key(settlement)),
+            pinned_id=lookup_by_settlement_key(pinned, settlement),
+            original_name=settlement,
         )
         if decision.place is None:
             if rejections is not None:
@@ -603,6 +777,7 @@ def match_settlements_offline(
             match_source="pinned" if decision.pinned else "pbf",
             name_score=decision.score,
             center_distance_m=decision.distance_m,
+            osm_ids=tuple(place.osm_ids),
         )
     return matches
 
@@ -624,7 +799,7 @@ class SettlementMatchStore:
 
     @staticmethod
     def key(settlement: str) -> str:
-        return canonical_key(settlement)
+        return settlement_identity_key(settlement)
 
     def _load(self) -> None:
         if not os.path.exists(self.path):
@@ -828,7 +1003,7 @@ class SettlementResolver:
                         else "No valid Nominatim result"
                     )
                     continue
-                center = self.centers.get(canonical_key(settlement))
+                center = lookup_by_settlement_key(self.centers, settlement)
                 if center:
                     distance = haversine_m(center[0], center[1], match.lon, match.lat)
                     match.center_distance_m = distance
@@ -861,20 +1036,32 @@ class SettlementResolver:
         for names in by_id.values():
             if len(names) < 2:
                 continue
-            def distance(name: str):
+
+            def _rank_claim(name: str) -> tuple:
                 if name in matches:
-                    value = matches[name].center_distance_m
+                    score = float(matches[name].name_score or 0.0)
+                    dist = matches[name].center_distance_m
+                    pinned = matches[name].match_source == "pinned"
                 elif place_dicts:
-                    value = place_dicts.get(name, {}).get("center_distance_m")
+                    place = place_dicts.get(name, {})
+                    score = float(place.get("name_score") or 0.0)
+                    dist = place.get("center_distance_m")
+                    pinned = place.get("match_source") == "pinned"
                 else:
-                    value = None
-                return value if value is not None else float("inf")
-            names.sort(key=distance)
+                    score, dist, pinned = 0.0, None, False
+                has_dist = dist is not None
+                return (
+                    0 if pinned else 1,
+                    -score,
+                    0 if has_dist else 1,
+                    dist if has_dist else float("inf"),
+                    name,
+                )
+
+            names.sort(key=_rank_claim)
             winner = names[0]
             for loser in names[1:]:
-                if distance(loser) == float("inf"):
-                    continue
-                kept_id = matches.get(loser).osm_id if loser in matches else (
+                kept_id = matches[loser].osm_id if loser in matches else (
                     place_dicts.get(loser, {}).get("osm_id") if place_dicts else None
                 )
                 unresolved[loser] = (

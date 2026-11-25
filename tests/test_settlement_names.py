@@ -6,10 +6,17 @@ import unittest
 from settlement_names import (
     canonical_key,
     clean_display_name,
+    extract_qualifiers,
     fuzzy_form,
+    has_geresh_conflict,
+    has_qualifier_conflict,
+    ktiv_haser_key,
     load_aliases,
     load_osm_id_overrides,
+    lookup_by_settlement_key,
     name_variants,
+    qualifier_match_bonus,
+    settlement_identity_key,
 )
 
 
@@ -56,20 +63,95 @@ class TestSettlementNames(unittest.TestCase):
         self.assertIn("أبو ربية", variants)
 
     def test_osm_id_overrides_skip_metadata_and_read_only_verified_pins(self):
-        self.assertEqual(load_osm_id_overrides(), {})
+        live = load_osm_id_overrides()
+        self.assertNotIn("_meta", live)
+        for key, value in live.items():
+            self.assertTrue(key)
+            tokens = value if isinstance(value, list) else [value]
+            self.assertTrue(tokens)
+            for token in tokens:
+                self.assertRegex(token, r"^[nwr]\d+$")
+
         with tempfile.TemporaryDirectory() as temp_dir:
             path = os.path.join(temp_dir, "aliases.json")
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump(
                     {"osm_id_overrides": {
-                        "_meta": "explanation", "יישוב חריג": "n123456",
+                        "_meta": "explanation",
+                        "יישוב חריג": "n123456",
+                        "מועצה מאוחדת": ["w111", "w222"],
                     }},
                     handle, ensure_ascii=False,
                 )
             self.assertEqual(
                 load_osm_id_overrides(path),
-                {canonical_key("יישוב חריג"): "n123456"},
+                {
+                    canonical_key("יישוב חריג"): "n123456",
+                    canonical_key("מועצה מאוחדת"): ["w111", "w222"],
+                },
             )
+
+    def test_identity_key_separates_gat_jatt_and_twin_settlements(self):
+        self.assertNotEqual(
+            settlement_identity_key("גת )קיבוץ("),
+            settlement_identity_key("ג'ת"),
+        )
+        self.assertEqual(
+            settlement_identity_key("ג'ת"),
+            settlement_identity_key("ג׳ת"),
+        )
+        self.assertNotEqual(
+            settlement_identity_key("גת"),
+            settlement_identity_key("ג'ת"),
+        )
+        self.assertNotEqual(
+            settlement_identity_key("טמרה"),
+            settlement_identity_key("טמרה )יזרעאל("),
+        )
+        self.assertNotEqual(
+            settlement_identity_key("טייבה"),
+            settlement_identity_key("טייבה )בעמק("),
+        )
+        self.assertNotEqual(
+            settlement_identity_key("גבעת חיים )איחוד("),
+            settlement_identity_key("גבעת חיים )מאוחד("),
+        )
+        self.assertNotEqual(
+            settlement_identity_key("בן שמן )מושב("),
+            settlement_identity_key("בן שמן )כפר נוער("),
+        )
+        # Plain names keep identical key to canonical_key
+        self.assertEqual(
+            settlement_identity_key("תל אביב - יפו"),
+            canonical_key("תל אביב - יפו"),
+        )
+
+    def test_geresh_and_qualifier_conflicts_protect_twins(self):
+        self.assertTrue(has_geresh_conflict("גת )קיבוץ(", ["ג'ת", "جت", "Jatt"]))
+        self.assertTrue(has_geresh_conflict("ג'ת", ["גת", "Gat"]))
+        self.assertFalse(has_geresh_conflict("ג'ת", ["ג’ת", "جت", "Jatt"]))
+        self.assertFalse(has_geresh_conflict("גת )קיבוץ(", ["גת", "Gat"]))
+        # Longer Arabic names with omitted geresh in OSM remain allowed
+        self.assertFalse(has_geresh_conflict("ג'דיידה-מכר", ["גדיידה מכר"]))
+
+        self.assertTrue(has_qualifier_conflict("גבעת חיים )מאוחד(", ["גבעת חיים (איחוד)"]))
+        self.assertFalse(has_qualifier_conflict("גבעת חיים )מאוחד(", ["גבעת חיים (מאוחד)"]))
+        self.assertEqual(qualifier_match_bonus("גבעת חיים )מאוחד(", ["גבעת חיים (מאוחד)"]), 1)
+        self.assertTrue(has_qualifier_conflict("מרחביה )קיבוץ(", ["מושב מרחביה", "Moshav Merhavia"]))
+        self.assertTrue(has_qualifier_conflict("בן שמן )מושב(", ["כפר הנוער בן שמן"]))
+
+    def test_ktiv_haser_and_parenthetical_variants(self):
+        self.assertEqual(ktiv_haser_key("עופרה"), ktiv_haser_key("עפרה"))
+        self.assertNotEqual(ktiv_haser_key("עופרה"), ktiv_haser_key("עופר"))
+        self.assertEqual(ktiv_haser_key("סוואעד חמירה"), ktiv_haser_key("סואעד חמירה"))
+        self.assertEqual(extract_qualifiers("כפר רוזנואלד )זרעית("), ["זרעית"])
+        self.assertIn("זרעית", name_variants("כפר רוזנואלד )זרעית(", aliases={}))
+        self.assertIn("קיבוץ מרחביה", name_variants("מרחביה )קיבוץ(", aliases={}))
+
+        # lookup_by_settlement_key never leaks ג'ת's config into גת )קיבוץ(
+        centers = {settlement_identity_key("ג'ת"): (35.03, 32.40)}
+        self.assertIsNone(lookup_by_settlement_key(centers, "גת )קיבוץ("))
+        self.assertEqual(lookup_by_settlement_key(centers, "ג'ת"), (35.03, 32.40))
 
     def test_missing_alias_file_is_not_an_error(self):
         self.assertEqual(load_aliases("/does/not/exist.json"), {})

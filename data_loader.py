@@ -66,7 +66,7 @@ def lamas_provenance() -> dict:
 
 def osm_cache_path(place: str | dict) -> str:
     if isinstance(place, dict):
-        place = place.get("display_name", "unknown_place")
+        place = place.get("settlement_name") or place.get("display_name", "unknown_place")
     return OSM_CACHE_TEMPLATE.format(place=safe_place_name(place))
 
 
@@ -217,7 +217,9 @@ def load_or_fetch_osm(
 ):
     """Load OSM GeoDataFrame from cache if fresh, otherwise fetch and cache it."""
     if isinstance(place, dict):
-        place_str_for_cache = place.get("display_name", "unknown_place")
+        place_str_for_cache = place.get("settlement_name") or place.get(
+            "display_name", "unknown_place"
+        )
     else:
         place_str_for_cache = place
 

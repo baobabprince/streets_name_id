@@ -9,7 +9,7 @@ Categories:
 import glob, json, os, re
 import pandas as pd
 from generate_index import scan_settlements, HTML_DIR
-from settlement_names import canonical_key
+from settlement_names import settlement_identity_key
 
 REASONS = {
     "unresolved": "לא נמצא יישוב מתאים ב-OSM",
@@ -22,7 +22,7 @@ def main(out="no_results.json"):
     pages = {c["name"] for c in scan_settlements(HTML_DIR)}
     rep = pd.read_csv("batch_reports/settlement_match_report.csv", encoding="utf-8-sig")
     lam = pd.read_csv("cache/lamas_data.csv", dtype=str)
-    lam["k"] = lam["city"].map(lambda x: canonical_key(x) if isinstance(x, str) else "")
+    lam["k"] = lam["city"].map(lambda x: settlement_identity_key(x) if isinstance(x, str) else "")
     counts = lam[lam.LAMAS_name.fillna("").str.strip() != ""].groupby("k").LAMAS_name.nunique()
 
     nodata = set()
@@ -50,7 +50,7 @@ def main(out="no_results.json"):
             cat, detail = "pending", ""
         items.append({"name": name, "category": cat, "reason": REASONS[cat],
                       "detail": re.sub(r"\s+", " ", detail)[:120],
-                      "lamas": int(counts.get(canonical_key(name), 0))})
+                      "lamas": int(counts.get(settlement_identity_key(name), 0))})
     # A partial (retry) run overwrites the match report; keep earlier entries.
     if os.path.exists(out):
         have = {i["name"] for i in items}

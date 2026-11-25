@@ -1,0 +1,99 @@
+<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><style>
+body { margin: 0; padding: 0; font-family: system-ui, sans-serif; background: #f0f2f5; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+header { background: #1e1e26; color: white; padding: 10px 20px; z-index: 100; height: 40px; display: flex; align-items: center; justify-content: space-between; }
+h1 { margin: 0; font-size: 1.2rem; } .main-layout { display: flex; flex: 1; min-height: 0; }
+.sidebar { width: 300px; background: white; border-left: 1px solid #ddd; border-right: 1px solid #ddd; overflow-y: auto; padding: 15px; z-index: 50; }
+.map-container { flex: 1; position: relative; background: #fdfdfd; overflow: hidden; cursor: grab; user-select: none; }
+#street-map { width: 100%; height: 100%; transform-origin: 0 0; transition: transform 0.1s; }
+.stat-card { background: #f8fbff; border: 1px solid #e1e9f3; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.legend { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 8px; margin-bottom: 15px; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.legend-item { display: flex; align-items: center; gap: 5px; font-size: 0.75rem; } .legend-color { width: 12px; height: 4px; border-radius: 2px; }
+.street-path { cursor: pointer; pointer-events: stroke; transition: stroke-width 0.1s; } 
+.street-path:hover { stroke-width: 8 !important; stroke: #ff0 !important; } 
+.street-path.pinned { stroke: #0f0 !important; stroke-width: 10 !important; }
+#tooltip { position: fixed; background: rgba(0,0,0,0.8); color: white; padding: 5px 10px; border-radius: 4px; pointer-events: none; opacity: 0; z-index: 1000; font-size: 0.85rem; white-space: pre-line; }
+.missing-list { max-height: 150px; overflow-y: auto; border: 1px solid #eee; font-size: 0.8rem; margin-bottom: 15px; }
+.debug-card { background: #f9f9fb; border: 1px solid #eee; border-radius: 6px; padding: 10px; margin-bottom: 15px; font-size: 0.85rem; }
+.map-controls { position: absolute; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 5px; z-index: 100; }
+.map-btn { width: 36px; height: 36px; background: white; border: 1px solid #ccc; border-radius: 4px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 1.2rem; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+
+/* Modal Styles for Lightbox */
+.modal { display: none; position: fixed; z-index: 3000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); cursor: zoom-out; justify-content: center; align-items: center; }
+.modal-content { display: block; max-width: 95%; max-height: 95%; box-shadow: 0 0 20px rgba(255,255,255,0.2); cursor: default; }
+.modal-close { position: absolute; top: 15px; left: 35px; color: #fff; font-size: 40px; font-weight: bold; cursor: pointer; }
+</style></head><body>
+<header><h1>{{PLACE_NAME}} - Street Mapping</h1><div>OSM & LAMAS</div></header>
+<div class="main-layout">
+<aside class="sidebar"><h2>📊 נתונים</h2>
+<div class="stat-card">OSM: {{TOTAL_OSM}}</div><div class="stat-card">הותאמו: {{MATCHED_OSM}} ({{MATCH_PCT}}%)</div>
+<h2>🎨 מקרא</h2><div class="legend">
+<div class="legend-item"><span class="legend-color" style="background:#000"></span>מלאה</div>
+<div class="legend-item"><span class="legend-color" style="background:#c06666"></span>חלקית</div>
+<div class="legend-item"><span class="legend-color" style="background:#00BFFF"></span>AI</div>
+<div class="legend-item"><span class="legend-color" style="background:#FF8C00"></span>אין</div>
+</div><h2>❌ חסר ב-OSM</h2><div class="missing-list">{{M_OSM_HTML}}</div>
+<h2>❓ חסר בלמ"ס</h2><div class="missing-list">{{M_LAMAS_HTML}}</div></aside>
+<main class="map-container" id="viewport"><svg id="street-map" viewBox="0 0 {{WIDTH}} {{HEIGHT}}"><rect width="{{WIDTH}}" height="{{HEIGHT}}" fill="#fdfdfd" />
+{{SVG_PATHS}}
+</svg><div class="map-controls"><div class="map-btn" onclick="zoom(1.4)">+</div><div class="map-btn" onclick="zoom(0.7)">−</div><div class="map-btn" onclick="resetView()">⟲</div></div></main>
+<aside class="sidebar"><h2>🔍 פרטי רחוב</h2><div id="details-panel"><div style="color:#999;text-align:center;margin-top:50px">לחץ על רחוב במפה</div></div></aside></div>
+
+<div id="tooltip"></div>
+
+<!-- Modal for Bigger Image -->
+<div id="imgModal" class="modal" onclick="closeLightbox()">
+  <span class="modal-close" onclick="closeLightbox()">×</span>
+  <img class="modal-content" id="modalImg" onclick="event.stopPropagation()">
+</div>
+
+<script>
+const streetData = {{STREET_DATA_JSON}};
+const tt=document.getElementById("tooltip"), panel=document.getElementById("details-panel"), svg=document.getElementById("street-map"), vp=document.getElementById("viewport");
+let scale=1, tx=0, ty=0, panning=false, start={x:0,y:0}, st=0;
+
+function uT(){ svg.style.transform='translate('+tx+'px,'+ty+'px) scale('+scale+')'; }
+vp.onmousedown=(e)=>{ panning=true; st=Date.now(); start={x:e.clientX-tx, y:e.clientY-ty}; };
+window.onmouseup=()=>{ panning=false; }; window.onmousemove=(e)=>{ if(!panning)return; tx=e.clientX-start.x; ty=e.clientY-start.y; uT(); };
+vp.onwheel=(e)=>{ e.preventDefault(); const xs=(e.clientX-tx)/scale, ys=(e.clientY-ty)/scale; e.deltaY<0?scale*=1.2:scale/=1.2; tx=e.clientX-xs*scale; ty=e.clientY-ys*scale; uT(); };
+function zoom(f){ const c={x:vp.clientWidth/2, y:vp.clientHeight/2}, xs=(c.x-tx)/scale, ys=(c.y-ty)/scale; scale*=f; tx=c.x-xs*scale; ty=c.y-ys*scale; uT(); }
+function resetView(){ scale=1; tx=0; ty=0; uT(); }
+window.onload=()=>{ const sR={{WIDTH}}/{{HEIGHT}}, vR=vp.clientWidth/vp.clientHeight; scale=sR>vR?vp.clientWidth/{{WIDTH}}:vp.clientHeight/{{HEIGHT}}; tx=(vp.clientWidth-{{WIDTH}}*scale)/2; ty=(vp.clientHeight-{{HEIGHT}}*scale)/2; uT(); };
+
+function openLightbox(src) {
+    console.log("Opening lightbox for:", src);
+    const modal = document.getElementById("imgModal");
+    const modalImg = document.getElementById("modalImg");
+    modal.style.display = "flex";
+    modalImg.src = src;
+}
+
+function closeLightbox() {
+    document.getElementById("imgModal").style.display = "none";
+}
+
+// Close modal on Escape key
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeLightbox();
+});
+
+let pinned=null; 
+function showDetails(id){
+    const d=streetData[id]; if(!d)return;
+    console.log("Details for street:", id, d);
+    let h='<div class="debug-card"><b>'+d.name+'</b><br><small>מנורמל: '+(d.norm||"---")+'</small></div>';
+    if(d.candidates && d.candidates.length>0){ 
+        h+='<h3>מועמדים</h3><table style="width:100%;font-size:0.8rem">'; 
+        d.candidates.forEach((m,i)=>{ h+='<tr style="'+(i===0?"background:#eef":"")+'"><td>'+m.LAMAS_name+'</td><td align="left">'+m.weighted_score.toFixed(1)+'</td></tr>'; }); 
+        h+='</table>'; 
+    }
+    if(d.lamas_id && d.lamas_id!=="None" && d.lamas_id!=="") h+='<div class="debug-card" style="border-right:4px solid #00BFFF;margin-top:10px"><b>ID למ"ס:</b> '+d.lamas_id+'</div>';
+    if(d.has_img) {
+        const url = '../screenshots/' + id + ".png";
+        h+='<h3>מפה</h3><div style="cursor:pointer;border:1px solid #ddd" onclick="openLightbox(\''+url+'\')"><img src="'+url+'" style="width:100%" onerror="console.error(\'Img fail:\', this.src); this.parentElement.innerHTML=\'<p style=color:red>שגיאה בטעינת תמונה</p>\' ">
+</div>';
+    }
+    panel.innerHTML=h; 
+}
+document.querySelectorAll(".street-path").forEach(p=>{ p.onclick=(e)=>{ e.stopPropagation(); if(Date.now()-st>500)return; if(pinned===p){ pinned.classList.remove("pinned"); pinned=null; panel.innerHTML='<div style="color:#999;text-align:center;margin-top:50px">לחץ על רחוב במפה</div>'; } else { if(pinned)pinned.classList.remove("pinned"); p.classList.add("pinned"); pinned=p; showDetails(p.getAttribute("data-id")); } }; p.onmouseenter=()=>{ tt.textContent=p.getAttribute("data-tooltip"); tt.style.opacity="1"; }; p.onmousemove=(e)=>{ tt.style.left=(e.clientX+15)+"px"; tt.style.top=(e.clientY+15)+"px"; }; p.onmouseleave=(()=>{ tt.style.opacity="0"; }); });
+document.onclick=(()=>{ if(pinned){pinned.classList.remove("pinned");pinned=null;panel.innerHTML='<div style="color:#999;text-align:center;margin-top:50px">לחץ על רחוב במפה</div>';} });
+</script></body></html>

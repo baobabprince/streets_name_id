@@ -19,11 +19,28 @@ import numpy as np
 import pandas as pd
 from rapidfuzz import fuzz, process
 
+from arabic_matching import (
+    DIGIT_RE as _DIGIT_RE,
+    arabic_hebrew_skeleton,
+    arabic_long_vowels_compatible,
+    extract_embedded_street_number,
+    has_arabic,
+    has_arabic_article_in_hebrew,
+    has_hebrew,
+    hebrew_arabic_article_form,
+    is_arab_style_lamas_city,
+    is_latin_only,
+    latin_arabic_to_hebrew_skeleton,
+    strip_arabic_street_prefix,
+    transliterate_arabic_to_hebrew,
+)
 from settlement_names import canonical_key
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIDENT_THRESHOLD = 90.0
+ARABIC_TRANSLIT_CONFIDENT_THRESHOLD = 92.0
+LATIN_ARABIC_CONFIDENT_THRESHOLD = 95.0
 
 # Arabic letter folding (mirrors settlement_names._ARABIC_LETTERS) so Arabic
 # script OSM names compare consistently against LAMAS spellings of the same
@@ -76,17 +93,19 @@ _ABBREVIATIONS = [
 
 
 def strip_street_prefix(name: str) -> str:
-    """Strip leading generic Hebrew street-type prefixes for core-name similarity.
+    """Strip leading generic Hebrew or Arabic street-type prefixes for core-name similarity.
 
     Repeatedly removes a leading street-type word ("דרך נתיב האבות" ->
-    "נתיב האבות" -> "האבות").  Callers should run :func:`normalize_street_name`
-    first so bare abbreviations ("סמ אורן") are already expanded.
+    "נתיב האבות" -> "האבות"; "شارع 1108" -> "1108").  Callers should run
+    :func:`normalize_street_name` first so bare abbreviations ("סמ אורן") are
+    already expanded.
     """
     text = (name or "").strip()
     prev = None
     while prev != text:
         prev = text
         text = STREET_PREFIX_RE.sub("", text).strip()
+        text = strip_arabic_street_prefix(text)
     return text
 
 
@@ -323,6 +342,263 @@ def find_fuzzy_candidates(
                 "best_LAMAS_id": best_lid,
                 "best_LAMAS_name": best_lamas_name,
             }
+
+    # Cross-script Arabic / Latin-Arabic / Hebrew-Arabic-article / embedded-number
+    # rescue pass for streets still below confident_threshold.
+    unresolved_osm = [
+        name for name, res in street_name_results.items() if res["status"] != "CONFIDENT"
+    ]
+    if unresolved_osm:
+        raw_by_norm: Dict[str, str] = {}
+        if "osm_name" in osm_gdf.columns:
+            for norm_n, raw_n in zip(osm_gdf["normalized_name"], osm_gdf["osm_name"]):
+                if pd.notna(norm_n) and pd.notna(raw_n) and str(norm_n) not in raw_by_norm:
+                    raw_by_norm[str(norm_n)] = str(raw_n)
+
+        non_settlement_lamas = [
+            (name, core)
+            for name, core in zip(lamas_name_candidates, lamas_core_names)
+            if core  # settlement own-name records were blanked out above
+        ]
+        is_arab_city = is_arab_style_lamas_city([name for name, _ in non_settlement_lamas])
+
+        # Precompute LAMAS lookup structures once per city.
+        num_to_ids: Dict[str, set[str]] = {}
+        skel_entries: Dict[str, List[tuple[str, str, List[str]]]] = {}
+        art_strict: Dict[str, List[tuple[str, bool, List[str], str]]] = {}
+        art_attached: Dict[str, List[tuple[str, bool, List[str]]]] = {}
+        lcores_by_id: Dict[str, List[str]] = {}
+        lnames_by_id: Dict[str, List[str]] = {}
+        for lname, lcore in non_settlement_lamas:
+            lids = unique_name_to_ids[lname]
+            l_digs = _DIGIT_RE.findall(lcore)
+            for lid in lids:
+                lcores_by_id.setdefault(lid, []).append(lcore)
+                lnames_by_id.setdefault(lid, []).append(lname)
+            if re.fullmatch(r"\d{3,4}", lcore):
+                num_to_ids.setdefault(lcore, set()).update(lids)
+            lsk = arabic_hebrew_skeleton(lcore)
+            if lsk and len(lsk.replace(" ", "")) >= 3:
+                for lid in lids:
+                    skel_entries.setdefault(lsk, []).append((lid, lcore, l_digs))
+            l_has_ar_art = has_arabic_article_in_hebrew(
+                lcore, allow_attached_al=is_arab_city
+            )
+            af_strict = hebrew_arabic_article_form(lcore, strip_attached_al=False)
+            if af_strict and len(af_strict.replace(" ", "")) >= 3:
+                # Preserve the literal (non-vowel-folded) article-stripped form so
+                # mixed cities don't equate unrelated Hebrew words like תקוה vs תקווא.
+                lit_lcore = re.sub(r"(?:^|\s)(?:אל|א)(?=\s)", " ", lcore).strip()
+                lit_lcore = re.sub(r"\s+", " ", lit_lcore)
+                for lid in lids:
+                    art_strict.setdefault(af_strict, []).append(
+                        (lid, l_has_ar_art, l_digs, lit_lcore)
+                    )
+            if is_arab_city:
+                af_att = hebrew_arabic_article_form(
+                    lcore, strip_attached_al=True, strip_he_prefix=True
+                )
+                if af_att and len(af_att.replace(" ", "")) >= 3:
+                    for lid in lids:
+                        art_attached.setdefault(af_att, []).append((lid, l_has_ar_art, l_digs))
+        skel_items = list(skel_entries.items())
+
+        def _pick_best_lid(lids: set[str]) -> str:
+            return min(lids, key=id_order.__getitem__)
+
+        def _is_neighborhood_id(lid: str) -> bool:
+            disp = str(display_name_by_id.get(lid, "")).strip()
+            return bool(re.match(r"^(?:שכ|שכונת)\b", disp))
+
+        def _is_square_id(lid: str) -> bool:
+            return any(
+                re.match(r"^(?:כיכר|ככר)\b", nm.strip())
+                for nm in lnames_by_id.get(lid, [])
+            )
+
+        def _disambiguate_arabic_tie(
+            raw_ar: str, he_tr: str, tied_lids: set[str]
+        ) -> set[str]:
+            """Break cross-ID skeleton ties using street-type and exact-transliteration signals."""
+            cands = set(tied_lids)
+            raw_words = re.sub(r"\s+", " ", raw_ar.strip()).split()
+            first_ar = raw_words[0].replace("ة", "ه") if raw_words else ""
+
+            # 1. Square/roundabout prefix in Arabic prefers כיכר/ככר in LAMAS.
+            if first_ar in {"ساحه", "الساحه", "ميدان", "الميدان", "دوار", "الدوار"}:
+                sq = {lid for lid in cands if _is_square_id(lid)}
+                if sq and len(sq) < len(cands):
+                    cands = sq
+
+            # 2. Roads/streets (not حي/حارة) prefer street records over neighborhood (שכ) records.
+            if len(cands) > 1 and first_ar not in {"حي", "الحي", "حاره", "الحاره"}:
+                non_nb = {lid for lid in cands if not _is_neighborhood_id(lid)}
+                if non_nb and len(non_nb) < len(cands):
+                    cands = non_nb
+
+            # 3. Prefer a unique candidate with clearly higher un-stripped Hebrew fidelity
+            #    (preserves vowels and צ vs ס so e.g. אלסהל beats צה"ל, אלסעדיה beats סעידה).
+            if len(cands) > 1:
+                tr_form = hebrew_arabic_article_form(he_tr, strip_attached_al=True)
+                if tr_form:
+                    lid_scores: List[tuple[float, str]] = []
+                    for lid in cands:
+                        best_f = max(
+                            (
+                                float(
+                                    fuzz.ratio(
+                                        tr_form,
+                                        hebrew_arabic_article_form(
+                                            lc, strip_attached_al=True
+                                        ),
+                                    )
+                                )
+                                for lc in lcores_by_id.get(lid, [])
+                            ),
+                            default=0.0,
+                        )
+                        lid_scores.append((best_f, lid))
+                    lid_scores.sort(key=lambda x: x[0], reverse=True)
+                    if (
+                        len(lid_scores) >= 2
+                        and lid_scores[0][0] >= 95.0
+                        and lid_scores[0][0] - lid_scores[1][0] >= 6.0
+                    ):
+                        return {lid_scores[0][1]}
+            return cands
+
+        for osm_name in unresolved_osm:
+            raw_name = raw_by_norm.get(osm_name, osm_name)
+            osm_core = strip_street_prefix(osm_name)
+            osm_digs = _DIGIT_RE.findall(osm_name)
+
+            # 1. Unique embedded 3-4 digit street number (e.g. "المدينة القديمة - 6171" -> "רח 6171").
+            embedded_num = extract_embedded_street_number(raw_name)
+            if embedded_num and embedded_num in num_to_ids:
+                cand_ids = num_to_ids[embedded_num]
+                if len(cand_ids) == 1:
+                    lid = next(iter(cand_ids))
+                    street_name_results[osm_name] = {
+                        "status": "CONFIDENT",
+                        "best_score": 100.0,
+                        "best_LAMAS_id": lid,
+                        "best_LAMAS_name": display_name_by_id.get(lid, embedded_num),
+                    }
+                    continue
+
+            # 2. Arabic-script OSM -> LAMAS Hebrew via Semitic consonantal skeleton.
+            if has_arabic(raw_name):
+                he_translit = transliterate_arabic_to_hebrew(raw_name, strip_prefix=True)
+                sk = arabic_hebrew_skeleton(he_translit)
+                t_digs = _DIGIT_RE.findall(he_translit)
+                if sk and len(sk.replace(" ", "")) >= 3:
+                    best_sc = 0.0
+                    best_lids: set[str] = set()
+                    for lsk, entries in skel_items:
+                        sc = float(fuzz.ratio(sk, lsk))
+                        if sc < max(best_sc - 1e-9, 75.0):
+                            continue
+                        valid_lids = {
+                            lid for lid, lcore, l_digs in entries
+                            if l_digs == t_digs
+                            and arabic_long_vowels_compatible(he_translit, lcore)
+                        }
+                        if not valid_lids:
+                            continue
+                        if sc > best_sc + 1e-9:
+                            best_sc = sc
+                            best_lids = valid_lids
+                        elif abs(sc - best_sc) <= 1e-9:
+                            best_lids |= valid_lids
+                    if len(best_lids) > 1 and best_sc >= ARABIC_TRANSLIT_CONFIDENT_THRESHOLD:
+                        best_lids = _disambiguate_arabic_tie(raw_name, he_translit, best_lids)
+                    if best_lids and best_sc > street_name_results[osm_name]["best_score"]:
+                        lid = _pick_best_lid(best_lids)
+                        is_conf = (
+                            best_sc >= ARABIC_TRANSLIT_CONFIDENT_THRESHOLD
+                            and len(best_lids) == 1
+                        )
+                        street_name_results[osm_name] = {
+                            "status": "CONFIDENT" if is_conf else "NEEDS_AI",
+                            "best_score": best_sc,
+                            "best_LAMAS_id": lid,
+                            "best_LAMAS_name": display_name_by_id.get(lid, ""),
+                        }
+                continue
+
+            # 3. Latin-transliterated Arabic OSM -> LAMAS Hebrew.
+            if is_latin_only(raw_name):
+                sk = latin_arabic_to_hebrew_skeleton(raw_name)
+                if sk and len(sk.replace(" ", "")) >= 3:
+                    best_sc = 0.0
+                    best_lids = set()
+                    for lsk, entries in skel_items:
+                        sc = float(fuzz.ratio(sk, lsk))
+                        if sc < max(best_sc - 1e-9, 80.0):
+                            continue
+                        valid_lids = {
+                            lid for lid, _lcore, l_digs in entries if l_digs == osm_digs
+                        }
+                        if not valid_lids:
+                            continue
+                        if sc > best_sc + 1e-9:
+                            best_sc = sc
+                            best_lids = valid_lids
+                        elif abs(sc - best_sc) <= 1e-9:
+                            best_lids |= valid_lids
+                    if best_lids and best_sc > street_name_results[osm_name]["best_score"]:
+                        lid = _pick_best_lid(best_lids)
+                        is_conf = (
+                            best_sc >= LATIN_ARABIC_CONFIDENT_THRESHOLD
+                            and len(best_lids) == 1
+                        )
+                        street_name_results[osm_name] = {
+                            "status": "CONFIDENT" if is_conf else "NEEDS_AI",
+                            "best_score": best_sc,
+                            "best_LAMAS_id": lid,
+                            "best_LAMAS_name": display_name_by_id.get(lid, ""),
+                        }
+                continue
+
+            # 4. Hebrew-script Arabic definite-article normalization (strict exact;
+            #    no vowel stripping; only fires when at least one side has an Arabic
+            #    definite article אל-/א-).
+            if has_hebrew(osm_core):
+                osm_has_ar_art = has_arabic_article_in_hebrew(
+                    osm_core, allow_attached_al=is_arab_city
+                )
+                matched_lids: set[str] = set()
+                # 4a. Spaced Arabic article normalization (works in every city, incl. mixed cities).
+                af_s = hebrew_arabic_article_form(osm_core, strip_attached_al=False)
+                if af_s and len(af_s.replace(" ", "")) >= 3 and af_s in art_strict:
+                    lit_osm = re.sub(r"(?:^|\s)(?:אל|א)(?=\s)", " ", osm_core).strip()
+                    lit_osm = re.sub(r"\s+", " ", lit_osm)
+                    for lid, l_has_ar, l_digs, lit_lcore in art_strict[af_s]:
+                        if l_digs != osm_digs or not (osm_has_ar_art or l_has_ar):
+                            continue
+                        # In mixed/Jewish cities, if OSM has no Arabic article (e.g. "דרך תקוה"),
+                        # require literal match after article removal so it won't fold into "אלתקווא".
+                        if not is_arab_city and not osm_has_ar_art and lit_osm != lit_lcore:
+                            continue
+                        matched_lids.add(lid)
+                # 4b. Attached אל / Hebrew ה<->אל article normalization in Arab-style cities.
+                if not matched_lids and is_arab_city:
+                    af_a = hebrew_arabic_article_form(
+                        osm_core, strip_attached_al=True, strip_he_prefix=True
+                    )
+                    if af_a and len(af_a.replace(" ", "")) >= 3 and af_a in art_attached:
+                        matched_lids.update(
+                            lid for lid, l_has_ar, l_digs in art_attached[af_a]
+                            if l_digs == osm_digs and (osm_has_ar_art or l_has_ar)
+                        )
+                if len(matched_lids) == 1:
+                    lid = next(iter(matched_lids))
+                    street_name_results[osm_name] = {
+                        "status": "CONFIDENT",
+                        "best_score": 100.0,
+                        "best_LAMAS_id": lid,
+                        "best_LAMAS_name": display_name_by_id.get(lid, ""),
+                    }
 
     results = []
     for osm_id, osm_name in zip(osm_gdf["osm_id"], osm_gdf["normalized_name"]):

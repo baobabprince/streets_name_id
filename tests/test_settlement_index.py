@@ -17,7 +17,7 @@ from settlement_index import (
     write_match_report,
 )
 from settlement_matcher import SettlementMatch
-from settlement_names import canonical_key, load_aliases
+from settlement_names import canonical_key, load_aliases, load_osm_id_overrides
 
 
 def boundaries_frame(rows):
@@ -383,6 +383,179 @@ class TestSettlementIndex(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "matched")
         self.assertEqual(rows[0]["validation_message"], "ignored 1 suburb")
         self.assertEqual(rows[1]["reason"], "no local match")
+
+    def test_separates_kibbutz_gat_from_jatt_and_tel_zafit_locality(self):
+        boundaries = boundaries_frame([{
+            "osm_id": "r10072527", "name:he": "ג'ת", "name:en": "Jatt",
+            "name:ar": "جت", "admin_level": "8",
+            "geometry": box(35.02, 32.39, 35.04, 32.41),
+        }])
+        places = boundaries_frame([
+            {
+                "osm_id": "w82627620", "osm_type": "w", "name:he": "גת",
+                "name:en": "Gat", "place": "village",
+                "geometry": box(34.79, 31.62, 34.80, 31.63),
+            },
+            {
+                "osm_id": "w611987391", "osm_type": "w", "name:he": "גת",
+                "name:en": "Gath", "place": "locality",
+                "geometry": box(34.84, 31.69, 34.86, 31.71),
+            },
+        ])
+        index = SettlementNameIndex(build_osm_places(boundaries, places))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_path = os.path.join(temp_dir, "store.json")
+            resolver = SettlementResolver(
+                store=SettlementMatchStore(store_path),
+                offline_index=index, use_pbf=False, allow_nominatim=False,
+                centers=load_settlement_centers(), aliases=load_aliases(),
+            )
+            result = resolver.resolve(["ג'ת", "גת )קיבוץ("])
+
+            self.assertEqual(set(result.matches), {"ג'ת", "גת )קיבוץ("})
+            self.assertEqual(result.matches["ג'ת"]["osm_id"], "10072527")
+            self.assertEqual(result.matches["גת )קיבוץ("]["osm_id"], "82627620")
+            self.assertEqual(result.unresolved, {})
+
+            # Both entries stay distinct in the persisted store on reload.
+            reloaded = SettlementMatchStore(store_path)
+            self.assertEqual(reloaded.get("ג'ת")["match"]["osm_id"], "10072527")
+            self.assertEqual(reloaded.get("גת )קיבוץ(")["match"]["osm_id"], "82627620")
+
+    def test_separates_twin_settlements_by_qualifier_and_center(self):
+        boundaries = boundaries_frame([
+            {
+                "osm_id": "r1386851", "name:he": "טמרה", "admin_level": "8",
+                "geometry": box(35.18, 32.84, 35.20, 32.86),
+            },
+        ])
+        places = boundaries_frame([
+            {
+                "osm_id": "w21251828", "osm_type": "w", "name:he": "טמרה",
+                "place": "village", "geometry": box(35.40, 32.63, 35.41, 32.64),
+            },
+            {
+                "osm_id": "w80420577", "osm_type": "w", "name:he": "גבעת חיים (איחוד)",
+                "place": "village", "geometry": box(34.93, 32.398, 34.94, 32.402),
+            },
+            {
+                "osm_id": "w83149836", "osm_type": "w", "name:he": "גבעת חיים (מאוחד)",
+                "place": "village", "geometry": box(34.93, 32.388, 34.94, 32.393),
+            },
+            {
+                "osm_id": "w85788557", "osm_type": "w", "name:he": "מושב מרחביה",
+                "place": "village", "geometry": box(35.314, 32.603, 35.317, 32.606),
+            },
+            {
+                "osm_id": "w770589968", "osm_type": "w", "name:he": "קיבוץ מרחביה",
+                "place": "village", "geometry": box(35.308, 32.603, 35.312, 32.606),
+            },
+        ])
+        index = SettlementNameIndex(build_osm_places(boundaries, places))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = SettlementResolver(
+                store=SettlementMatchStore(os.path.join(temp_dir, "store.json")),
+                offline_index=index, use_pbf=False, allow_nominatim=False,
+                centers=load_settlement_centers(), aliases=load_aliases(),
+            ).resolve([
+                "טמרה", "טמרה )יזרעאל(",
+                "גבעת חיים )איחוד(", "גבעת חיים )מאוחד(",
+                "מרחביה )מושב(", "מרחביה )קיבוץ(",
+            ])
+        self.assertEqual(result.matches["טמרה"]["osm_id"], "1386851")
+        self.assertEqual(result.matches["טמרה )יזרעאל("]["osm_id"], "21251828")
+        self.assertEqual(result.matches["גבעת חיים )איחוד("]["osm_id"], "80420577")
+        self.assertEqual(result.matches["גבעת חיים )מאוחד("]["osm_id"], "83149836")
+        self.assertEqual(result.matches["מרחביה )מושב("]["osm_id"], "85788557")
+        self.assertEqual(result.matches["מרחביה )קיבוץ("]["osm_id"], "770589968")
+
+    def test_ktiv_haser_matches_ofra_and_rejects_substring_false_positives(self):
+        places = boundaries_frame([
+            {
+                "osm_id": "w1", "osm_type": "w", "name:he": "עפרה",
+                "place": "village", "geometry": box(35.25, 31.95, 35.27, 31.96),
+            },
+            {
+                "osm_id": "w2", "osm_type": "w", "name:he": "עופר",
+                "place": "village", "geometry": box(34.97, 32.62, 34.98, 32.63),
+            },
+            {
+                "osm_id": "w3", "osm_type": "w", "name:he": "קלחים",
+                "place": "village", "geometry": box(34.67, 31.45, 34.68, 31.46),
+            },
+            {
+                "osm_id": "n4", "osm_type": "n", "name:he": "א'",
+                "place": "neighbourhood", "geometry": Point(34.84, 31.20),
+            },
+        ])
+        index = SettlementNameIndex(build_osm_places(places=places))
+        matches = match_settlements_offline(
+            ["עופרה", 'לח"י', "יישוב אקראי"], index, centers={}, aliases={}, pinned={}
+        )
+        self.assertIn("עופרה", matches)
+        self.assertEqual(matches["עופרה"].osm_id, "1")
+        # Substring "לחי" inside "קלחים" must NOT match
+        self.assertNotIn('לח"י', matches)
+        # 1-letter neighbourhood "א'" must not be reported as a candidate
+        rejections: dict = {}
+        match_settlements_offline(
+            ["יישוב אקראי"], index, centers={}, aliases={}, pinned={}, rejections=rejections
+        )
+        self.assertEqual(rejections["יישוב אקראי"], "No OSM settlement name candidate found")
+
+    def test_composite_multi_id_pin_combines_merged_settlement_polygons(self):
+        places = boundaries_frame([
+            {
+                "osm_id": "w499961728", "osm_type": "w", "name:he": "שערי תקוה",
+                "place": "village", "geometry": box(35.02, 32.115, 35.035, 32.125),
+            },
+            {
+                "osm_id": "w500944692", "osm_type": "w", "name:he": "עץ אפרים",
+                "place": "village", "geometry": box(35.04, 32.115, 35.055, 32.125),
+            },
+        ])
+        index = SettlementNameIndex(build_osm_places(places=places))
+        matches = match_settlements_offline(
+            ["שער שומרון"], index,
+            centers=load_settlement_centers(), aliases=load_aliases(),
+            pinned=load_osm_id_overrides(),
+        )
+        self.assertIn("שער שומרון", matches)
+        match = matches["שער שומרון"]
+        self.assertEqual(match.match_source, "pinned")
+        self.assertEqual(match.osm_ids, ("w499961728", "w500944692"))
+        self.assertEqual(match.to_place_dict()["osm_ids"], ["w499961728", "w500944692"])
+
+    def test_duplicate_osm_id_drops_loser_even_without_centers(self):
+        places = boundaries_frame([{
+            "osm_id": "w9", "osm_type": "w", "name:he": "קריית ענבים",
+            "name": "ענב", "place": "village",
+            "geometry": box(35.11, 31.81, 35.12, 31.82),
+        }])
+        index = SettlementNameIndex(build_osm_places(places=places))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = SettlementResolver(
+                store=SettlementMatchStore(os.path.join(temp_dir, "store.json")),
+                offline_index=index, use_pbf=False, allow_nominatim=False,
+                centers={}, aliases={},
+            ).resolve(["קריית ענבים", "ענב"])
+        self.assertEqual(result.stats["matched"], 1)
+        self.assertEqual(result.stats["unresolved"], 1)
+
+    def test_placeholder_and_out_of_bounds_centers_are_filtered_and_overridden(self):
+        centers = load_settlement_centers()
+        # Placeholder (31.0, 35.0) entries now have verified override centres in Galilee/Beit She'an
+        kaabiya = centers.get(canonical_key("כעביה-טבאש-חג'אג'רה"))
+        # identity key preserves geresh
+        from settlement_names import settlement_identity_key
+        kaabiya = centers.get(settlement_identity_key("כעביה-טבאש-חג'אג'רה"))
+        self.assertIsNotNone(kaabiya)
+        self.assertGreater(kaabiya[1], 32.5)
+        # Out-of-Israel Syria coordinate for נווה was replaced by real Naveh in Halutza
+        naveh = centers.get(settlement_identity_key("נווה"))
+        self.assertIsNotNone(naveh)
+        self.assertLess(naveh[0], 34.5)
+        self.assertLess(naveh[1], 31.5)
 
 
 if __name__ == "__main__":

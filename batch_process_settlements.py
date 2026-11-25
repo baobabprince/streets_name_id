@@ -38,7 +38,7 @@ from settlement_index import (
     write_match_report,
 )
 from settlement_matcher import SettlementMatcher
-from settlement_names import canonical_key
+from settlement_names import canonical_key, settlement_identity_key
 from pipeline import NO_DATA_STATUSES, PipelineStatus, run_pipeline
 
 REPORTS_DIR = os.path.join(os.path.dirname(__file__), "batch_reports")
@@ -627,15 +627,15 @@ Examples:
 
 
 def _official_city_keys() -> set[str]:
-    """Canonical names of the 83 official cities, used by --non-cities."""
+    """Identity keys of the 83 official cities, used by --non-cities."""
     with open(OFFICIAL_CITIES_FILE, "r", encoding="utf-8") as file:
         payload = json.load(file)
     cities = payload.get("cities", [])
-    return {canonical_key(city) for city in cities if city}
+    return {settlement_identity_key(city) for city in cities if city}
 
 
 def _requested_name_keys(args) -> set[str]:
-    """Union of --only and --only-file names, canonicalized."""
+    """Union of --only and --only-file names, using settlement identity keys."""
     parts: List[str] = []
     only = getattr(args, "only", None)
     if only:
@@ -649,7 +649,7 @@ def _requested_name_keys(args) -> set[str]:
                     continue
                 parts.extend(line.split(","))
     return {
-        canonical_key(part) for part in parts if part and part.strip()
+        settlement_identity_key(part) for part in parts if part and part.strip()
     }
 
 
@@ -666,7 +666,7 @@ def _select_settlements(lamas_df: pd.DataFrame, args) -> List[str]:
         before = len(settlements)
         official = _official_city_keys()
         settlements = [
-            name for name in settlements if canonical_key(name) not in official
+            name for name in settlements if settlement_identity_key(name) not in official
         ]
         print(
             f"Excluded {before - len(settlements)} official cities; "
@@ -675,7 +675,7 @@ def _select_settlements(lamas_df: pd.DataFrame, args) -> List[str]:
     requested = _requested_name_keys(args)
     if requested:
         settlements = [
-            name for name in settlements if canonical_key(name) in requested
+            name for name in settlements if settlement_identity_key(name) in requested
         ]
         print(f"Filtered to {len(settlements)} requested settlements.")
     limit = getattr(args, "limit", None)

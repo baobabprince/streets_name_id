@@ -41,6 +41,15 @@ class TestDataLoaderCaches(unittest.TestCase):
         ).tolist()
         self.assertEqual(keys, ["תלאביביפו", "אבוקרינאת", "קרייתגת"])
 
+    def test_osm_cache_path_uses_settlement_name_to_avoid_twin_collisions(self):
+        tamra_city = data_loader.osm_cache_path(
+            {"settlement_name": "טמרה", "display_name": "טמרה, Israel"}
+        )
+        tamra_jezreel = data_loader.osm_cache_path(
+            {"settlement_name": "טמרה )יזרעאל(", "display_name": "טמרה, Israel"}
+        )
+        self.assertNotEqual(tamra_city, tamra_jezreel)
+
 
 if __name__ == "__main__":
     unittest.main()

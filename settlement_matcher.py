@@ -27,8 +27,12 @@ from settlement_names import (
     NON_SETTLEMENT_PLACE_TYPES,
     admin_level,
     canonical_key,
+    has_geresh_conflict,
+    has_qualifier_conflict,
+    is_regional_boundary_name,
     load_aliases,
     load_osm_id_overrides,
+    lookup_by_settlement_key,
 )
 
 # Geographic bounds for Israel/Palestine (min_lat, min_lon, max_lat, max_lon)
@@ -56,8 +60,8 @@ SETTLEMENT_ALIASES = {
     'אביה': ('חוות אביה',),
     'אבורובייעה': ('أبو ربيعة', 'أبو ربية'),
 }
-# v5: address-hierarchy guard; invalidate matches accepted inside another city.
-MATCH_CACHE_VERSION = 'v5'
+# v6: allow regional-council address fields, pinned institutions, and geresh/qualifier guards.
+MATCH_CACHE_VERSION = 'v6'
 MIN_NAME_MATCH_SCORE = 92
 # Negative results are cached too, but for a shorter period: OSM is updated often.
 UNRESOLVED_CACHE_TTL_DAYS = 7
@@ -93,10 +97,11 @@ class SettlementMatch:
     match_source: str = "nominatim"
     name_score: float = 0.0
     center_distance_m: Optional[float] = None
+    osm_ids: Tuple[str, ...] = ()
 
     def to_place_dict(self) -> Dict[str, Any]:
         """Dict consumed by ``run_pipeline`` / ``fetch_pbf_street_data``."""
-        return {
+        payload: Dict[str, Any] = {
             "settlement_name": self.settlement_name,
             "display_name": self.display_name,
             "lat": self.lat,
@@ -112,6 +117,9 @@ class SettlementMatch:
             "center_distance_m": self.center_distance_m,
             "validation_message": self.validation_message,
         }
+        if self.osm_ids:
+            payload["osm_ids"] = list(self.osm_ids)
+        return payload
 
 
 class NominatimCache:
@@ -293,7 +301,9 @@ class SettlementMatcher:
         key = canonical_key(normalized)
         aliases = list(SETTLEMENT_ALIASES.get(normalized, ()))
         aliases.extend(SETTLEMENT_ALIASES.get(key, ()))
-        aliases.extend(load_aliases().get(key, []))
+        curated = lookup_by_settlement_key(load_aliases(), settlement_name)
+        if curated:
+            aliases.extend(curated)
         variants = [normalized]
         seen = {key}
         for alias in aliases:
@@ -305,19 +315,21 @@ class SettlementMatcher:
 
     @staticmethod
     def _pinned_id_matches(result: Dict[str, Any], original_name: str) -> bool:
-        """A verified config pin may override the suburb guard for one id."""
-        pinned = load_osm_id_overrides().get(canonical_key(original_name))
+        """A verified config pin may override the suburb/class guard for one id."""
+        pinned = lookup_by_settlement_key(load_osm_id_overrides(), original_name)
         if not pinned:
             return False
-        value = str(pinned).strip().lower()
-        prefix = value[0] if value[:1] in {"n", "w", "r"} else ""
-        raw = value[1:] if prefix else value
+        pin_list = pinned if isinstance(pinned, (list, tuple)) else [pinned]
+        result_id = str(result.get("osm_id") or "")
         result_type = str(result.get("osm_type") or "").strip().lower()
-        expected_type = {"n": "node", "w": "way", "r": "relation"}.get(prefix)
-        return (
-            str(result.get("osm_id") or "") == raw
-            and (expected_type is None or result_type == expected_type)
-        )
+        for item in pin_list:
+            value = str(item).strip().lower()
+            prefix = value[0] if value[:1] in {"n", "w", "r"} else ""
+            raw = value[1:] if prefix else value
+            expected_type = {"n": "node", "w": "way", "r": "relation"}.get(prefix)
+            if result_id == raw and (expected_type is None or result_type == expected_type):
+                return True
+        return False
 
     @classmethod
     def _other_settlement_in_address(
@@ -327,6 +339,8 @@ class SettlementMatcher:
 
         Returns the offending ``(address key, value)``.  Fuzzy comparison is
         used so legitimate spelling variants (כאוכב/כווכב) are not rejected.
+        Regional councils (``מועצה אזורית ...``) are enclosing administrative
+        jurisdictions, not competing cities, so they are ignored here.
         """
         address = result.get('address', {})
         if not isinstance(address, dict):
@@ -346,6 +360,8 @@ class SettlementMatcher:
         for key in ADDRESS_SETTLEMENT_KEYS:
             value = address.get(key)
             if not value:
+                continue
+            if is_regional_boundary_name(value):
                 continue
             parent_key = canonical_key(value)
             if not parent_key or parent_key in query_keys:
@@ -454,6 +470,15 @@ class SettlementMatcher:
 
             query_names = accepted_names or [original_name]
             if not pinned:
+                candidate_names = self._candidate_names(result)
+                if has_geresh_conflict(original_name, candidate_names):
+                    return False, (
+                        f"Geresh mismatch for '{original_name}': {display_name}"
+                    )
+                if has_qualifier_conflict(original_name, candidate_names):
+                    return False, (
+                        f"Settlement qualifier mismatch for '{original_name}': {display_name}"
+                    )
                 parent = self._other_settlement_in_address(result, query_names)
                 if parent:
                     return False, (
@@ -461,7 +486,7 @@ class SettlementMatcher:
                         f"(address {parent[0]}={parent[1]}): {display_name}"
                     )
             name_score = self._name_match_score(result, query_names)
-            if name_score < MIN_NAME_MATCH_SCORE:
+            if not pinned and name_score < MIN_NAME_MATCH_SCORE:
                 return False, f"OSM name does not match '{original_name}' (score {name_score:.1f})"
 
             exact_name = name_score == 100
@@ -469,7 +494,7 @@ class SettlementMatcher:
             valid_residential_alias = (
                 category == 'landuse' and place_type == 'residential' and exact_name
             )
-            if not (valid_place_class or valid_residential_alias):
+            if not pinned and not (valid_place_class or valid_residential_alias):
                 return False, f"Not a settlement feature ({category}/{place_type}): {display_name}"
 
             if not result.get('osm_id') or result.get('osm_type') not in {'node', 'way', 'relation'}:
@@ -532,7 +557,7 @@ class SettlementMatcher:
             print(f"  ⚠ Empty settlement name after normalization: '{settlement_name}'")
             return None
         
-        query_variants = self._query_variants(normalized_name)
+        query_variants = self._query_variants(settlement_name)
 
         match = None
         for q in query_variants:

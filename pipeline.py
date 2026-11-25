@@ -19,6 +19,17 @@ from enum import Enum
 import pandas as pd
 from rapidfuzz import fuzz
 
+from arabic_matching import (
+    arabic_hebrew_skeleton,
+    arabic_long_vowels_compatible,
+    has_arabic,
+    has_arabic_article_in_hebrew,
+    has_hebrew,
+    hebrew_arabic_article_form,
+    is_latin_only,
+    latin_arabic_to_hebrew_skeleton,
+    transliterate_arabic_to_hebrew,
+)
 from data_loader import (
     city_key,
     load_or_fetch_LAMAS,
@@ -36,7 +47,7 @@ from normalization import (
     strip_street_prefix,
 )
 from OSM_streets import place_name as OSM_PLACE_NAME
-from settlement_names import canonical_key
+from settlement_names import canonical_key, settlement_identity_key
 
 logger = logging.getLogger(__name__)
 
@@ -67,8 +78,22 @@ def _save_step(
     save_intermediate_df(df, step_name, identifier)
 
 
-def _filter_lamas_by_city(LAMAS_df: pd.DataFrame, target_key: str) -> pd.DataFrame:
-    """Join LAMAS streets to a settlement using canonical city keys."""
+def _filter_lamas_by_city(
+    LAMAS_df: pd.DataFrame,
+    target_key: str,
+    target_identity_key: str | None = None,
+) -> pd.DataFrame:
+    """Join LAMAS streets to a settlement without merging colliding twin names.
+
+    Matches on ``city_identity_key`` first (keeping ``גת )קיבוץ(`` separate from
+    ``ג'ת``, ``טמרה )יזרעאל(`` separate from ``טמרה``, ``איחוד`` from ``מאוחד``),
+    falling back to ``city_key`` (canonical key) only when no identity-key row
+    matches.
+    """
+    if target_identity_key and "city_identity_key" in LAMAS_df.columns:
+        exact_rows = LAMAS_df[LAMAS_df["city_identity_key"] == target_identity_key]
+        if not exact_rows.empty:
+            return exact_rows
     rows = LAMAS_df[LAMAS_df["city_key"] == target_key]
     if not rows.empty or not target_key:
         return rows
@@ -150,14 +175,46 @@ def _digits_compatible(osm_name: str, lamas_name: str) -> bool:
 
 
 def _core_wratio(osm_name: str, lamas_name: str) -> float:
-    """Compute WRatio between normalized prefix-stripped OSM and LAMAS names."""
+    """Compute WRatio between normalized prefix-stripped OSM and LAMAS names.
+
+    Cross-script Arabic or Latin-Arabic OSM names are also compared via Hebrew
+    transliteration / Semitic consonantal skeletons so valid multilingual Laya
+    matches are not rejected with 0.0 script-mismatch scores.
+    """
     norm_osm = normalize_street_name(osm_name) or ""
     norm_lamas = normalize_street_name(lamas_name) or ""
     core_osm = strip_street_prefix(norm_osm)
     core_lamas = strip_street_prefix(norm_lamas)
     if not core_osm or not core_lamas:
         return 0.0
-    return float(fuzz.WRatio(core_osm, core_lamas))
+    score = float(fuzz.WRatio(core_osm, core_lamas))
+
+    if has_arabic(osm_name):
+        he_translit = transliterate_arabic_to_hebrew(osm_name, strip_prefix=True)
+        if he_translit:
+            score = max(score, float(fuzz.WRatio(he_translit, core_lamas)))
+            if arabic_long_vowels_compatible(he_translit, core_lamas):
+                sk_osm = arabic_hebrew_skeleton(he_translit)
+                sk_lam = arabic_hebrew_skeleton(core_lamas)
+                if len(sk_osm.replace(" ", "")) >= 3 and len(sk_lam.replace(" ", "")) >= 3:
+                    score = max(score, float(fuzz.ratio(sk_osm, sk_lam)))
+    elif is_latin_only(osm_name):
+        sk_osm = latin_arabic_to_hebrew_skeleton(osm_name)
+        sk_lam = arabic_hebrew_skeleton(core_lamas)
+        if len(sk_osm.replace(" ", "")) >= 3 and len(sk_lam.replace(" ", "")) >= 3:
+            score = max(score, float(fuzz.ratio(sk_osm, sk_lam)))
+    elif has_hebrew(core_osm) and (
+        has_arabic_article_in_hebrew(core_osm, allow_attached_al=True)
+        or has_arabic_article_in_hebrew(core_lamas, allow_attached_al=True)
+    ):
+        af_osm = hebrew_arabic_article_form(core_osm, strip_attached_al=True, strip_he_prefix=True)
+        af_lam = hebrew_arabic_article_form(core_lamas, strip_attached_al=True, strip_he_prefix=True)
+        if len(af_osm.replace(" ", "")) >= 3 and len(af_lam.replace(" ", "")) >= 3:
+            af_ratio = float(fuzz.ratio(af_osm, af_lam))
+            if af_ratio >= 80.0:
+                score = max(score, af_ratio)
+
+    return score
 
 
 def _finalize_mappings(
@@ -493,7 +550,10 @@ def run_pipeline(
         if lamas_city:
             osm_gdf["city"] = lamas_city
         LAMAS_df["city_key"] = city_key(LAMAS_df["city"])
-        target_city_key = canonical_key(lamas_city or osm_gdf["city"].iloc[0])
+        LAMAS_df["city_identity_key"] = LAMAS_df["city"].map(settlement_identity_key)
+        target_city_raw = lamas_city or osm_gdf["city"].iloc[0]
+        target_city_key = canonical_key(target_city_raw)
+        target_city_identity_key = settlement_identity_key(target_city_raw)
 
         _save_step(LAMAS_df, "step1_lamas_raw", file_identifier, save_intermediates)
         _save_step(osm_gdf, "step1_osm_raw", file_identifier, save_intermediates)
@@ -529,7 +589,9 @@ def run_pipeline(
 
     logger.info("[Step 3/5] Running Fuzzy Matching (threshold=%.1f%%)...", confident_threshold)
     osm_city_label = osm_gdf["city"].iloc[0]
-    lamas_city_df = _filter_lamas_by_city(LAMAS_df, target_city_key).copy()
+    lamas_city_df = _filter_lamas_by_city(
+        LAMAS_df, target_city_key, target_identity_key=target_city_identity_key
+    ).copy()
     settlement_record_mask = lamas_city_df["LAMAS_name"].map(
         lambda name: bool(target_city_key)
         and pd.notna(name)
@@ -578,9 +640,10 @@ def run_pipeline(
     logger.info("[Step 4/5] (Optional) Running whole-city Laya AI matching for <%.0f%% streets...", confident_threshold)
     ai_results: list[dict] = []
     lamas_aliases = build_lamas_aliases(lamas_city_df)
+    laya_lamas_aliases = build_lamas_aliases(lamas_street_df)
     lamas_name_by_id = {lid: names[0] for lid, names in lamas_aliases.items() if names}
 
-    if use_ai and lamas_aliases:
+    if use_ai and laya_lamas_aliases:
         osm_gdf_in_city = osm_gdf[osm_gdf["city"] == osm_city_label]
         unmatched_rows = candidates_df[
             (candidates_df["status"] != "CONFIDENT")
@@ -611,12 +674,12 @@ def run_pipeline(
                     "and %d city LAMAS street ids to Laya...",
                     len(unmatched_names),
                     int(osm_gdf_in_city["normalized_name"].nunique()),
-                    len(lamas_aliases),
+                    len(laya_lamas_aliases),
                 )
                 city_decisions = resolver.resolve_city(
-                    osm_city_label, unmatched_names, lamas_aliases
+                    osm_city_label, unmatched_names, laya_lamas_aliases
                 )
-                valid_ids = set(lamas_aliases)
+                valid_ids = set(laya_lamas_aliases)
                 for row in unmatched_rows.itertuples(index=False):
                     decision = city_decisions.get(row.normalized_name)
                     if not decision:

@@ -101,11 +101,21 @@ class TestBatchOrchestration(unittest.TestCase):
     def test_non_cities_excludes_the_83_official_cities(self):
         args = batch.build_cli_parser().parse_args(["--non-cities"])
         lamas_df = pd.DataFrame({"city": [
-            "חיפה", "תל אביב - יפו", "אבו עמאר )שבט(", "אבו קרינאת )יישוב(",
+            "חיפה", "תל אביב - יפו", "טמרה", "טמרה )יזרעאל(",
+            "טייבה", "טייבה )בעמק(", "אבו עמאר )שבט(", "אבו קרינאת )יישוב(",
         ]})
         selected = batch._select_settlements(lamas_df, args)
-        self.assertEqual(selected, ["אבו עמאר )שבט(", "אבו קרינאת )יישוב("])
+        self.assertEqual(selected, [
+            "אבו עמאר )שבט(", "אבו קרינאת )יישוב(", "טייבה )בעמק(", "טמרה )יזרעאל(",
+        ])
         self.assertNotIn("חיפה", selected)
+        self.assertNotIn("טמרה", selected)
+        self.assertNotIn("טייבה", selected)
+
+    def test_only_keeps_kibbutz_gat_and_jatt_distinct(self):
+        lamas_df = pd.DataFrame({"city": ["ג'ת", "גת )קיבוץ("]})
+        args = batch.build_cli_parser().parse_args(["--only", "גת )קיבוץ("])
+        self.assertEqual(batch._select_settlements(lamas_df, args), ["גת )קיבוץ("])
 
     def test_only_file_and_only_combine_by_canonical_name(self):
         lamas_df = pd.DataFrame({"city": [
