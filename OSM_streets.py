@@ -122,12 +122,34 @@ def _limited_overpass():
             setattr(ox.settings, key, value)
 
 
+def _first_scalar(value):
+    """Unwrap list/tuple/ndarray OSM tag values into their first non-empty scalar."""
+    if isinstance(value, (list, tuple)) or hasattr(value, "__array__"):
+        for item in value:
+            if item is None:
+                continue
+            try:
+                if pd.isna(item):
+                    continue
+            except (TypeError, ValueError):
+                pass
+            return item
+        return pd.NA
+    return value
+
+
 def is_hebrew(text):
     """
     בדיקה אם טקסט מכיל תווים עבריים.
     מחזיר True אם יש לפחות תו עברי אחד בטקסט.
     """
-    if pd.isna(text) or text is None:
+    text = _first_scalar(text)
+    if text is None:
+        return False
+    try:
+        if pd.isna(text):
+            return False
+    except (TypeError, ValueError):
         return False
     text = str(text)
     # טווח תווים עבריים ב-Unicode: U+0590 to U+05FF
@@ -278,6 +300,12 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
                     place,
                 )
                 return pbf_gdf
+            if pbf_gdf is not None and pbf_gdf.attrs.get("pbf_no_named_streets"):
+                logger.info(
+                    "Local PBF covers %s but contains 0 named road segments; skipping Overpass fallback.",
+                    place,
+                )
+                return pbf_gdf
             if os.environ.get("OSM_PBF_ONLY") == "1":
                 logger.info(
                     "Local PBF returned no named streets for %s (OSM_PBF_ONLY=1; skipping Overpass).",
@@ -342,15 +370,13 @@ def fetch_osm_street_data(place, use_pbf: bool = True):
     # נוודא ששם העמודה הוא 'osm_name' ונוסיף 'city' (שנצטרך לחשב בהמשך)
     osm_gdf = osm_gdf.rename(columns={'name': 'osm_name'})
     
-    # ב-OSM, שם הרחוב (name) יכול להיות מחרוזת בודדת או רשימה של שמות.
+    # ב-OSM, שם הרחוב (name) או סוג הדרך (highway) יכולים להיות מחרוזת בודדת או רשימה.
     # נטפל בכך כדי לקבל מחרוזת אחידה
-    osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(
-        lambda value: value[0] if isinstance(value, list) and value else value
-    )
+    osm_gdf['osm_name'] = osm_gdf['osm_name'].apply(_first_scalar)
     if 'name:he' in osm_gdf.columns:
-        osm_gdf['name:he'] = osm_gdf['name:he'].apply(
-            lambda value: value[0] if isinstance(value, list) and value else value
-        )
+        osm_gdf['name:he'] = osm_gdf['name:he'].apply(_first_scalar)
+    if 'highway' in osm_gdf.columns:
+        osm_gdf['highway'] = osm_gdf['highway'].apply(_first_scalar)
     
     # 4. עדיפות לשם העברי: אם השם הראשי אינו בעברית ויש name:he, נשתמש בו
     # שמירת השם המקורי לצורך דיאגנוסטיקה

@@ -246,6 +246,8 @@ def load_or_fetch_osm(
     logger.info("Fetching OSM street data for %s...", place_str_for_cache)
     try:
         gdf = fetch_osm_street_data(place, use_pbf=use_pbf)
+        if isinstance(gdf, pd.DataFrame) and gdf.empty and gdf.attrs.get("pbf_no_named_streets"):
+            return gdf
         if not _is_valid_osm_data(gdf):
             raise ValueError("OSM fetch returned no usable street data")
     except Exception as fetch_error:

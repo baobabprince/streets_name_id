@@ -3,8 +3,8 @@
 Categories:
   unresolved       - no usable OSM settlement match (reason from match report)
   no_osm_streets   - matched, but OSM has no street data at all (no cache / empty)
-  no_named_streets - matched, OSM has street segments but none carry a name
-  pending          - matched but not processed / no page generated yet
+  no_named_streets - matched, OSM has no named road segments in the settlement
+  pending          - matched and has named OSM streets (or PBF unavailable), but not processed yet
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from settlement_names import canonical_key, settlement_identity_key
 REASONS = {
     "unresolved": "לא נמצא יישוב מתאים ב-OSM",
     "no_osm_streets": "ביישוב אין נתוני רחובות ב-OSM",
-    "no_named_streets": "ב-OSM יש כבישים אך ללא שמות",
+    "no_named_streets": "אין רחובות בעלי שם ב-OSM",
     "pending": "טרם עובד",
 }
 
@@ -108,6 +108,7 @@ def _load_match_rows(
                         or entry.get("validation_message")
                         or ""
                     ),
+                    "match": entry.get("match") if isinstance(entry.get("match"), dict) else None,
                 }
         except (OSError, ValueError):
             pass
@@ -120,13 +121,35 @@ def _load_match_rows(
                 continue
             ik = settlement_identity_key(name)
             reason = r.get("reason")
+            existing_match = by_ik.get(ik, {}).get("match")
             by_ik[ik] = {
                 "settlement": name,
                 "status": str(r.get("status") or ""),
                 "reason": "" if pd.isna(reason) else str(reason),
+                "match": existing_match,
             }
 
     return list(by_ik.values())
+
+
+def _pbf_has_no_named_streets(match_obj: dict | None) -> bool:
+    """Return True if the local national OSM PBF cache definitively has 0 named roads here."""
+    if not match_obj:
+        return False
+    try:
+        import osm_pbf_loader
+
+        if not os.path.exists(osm_pbf_loader.DEFAULT_STREETS_PKL):
+            return False
+        gdf = osm_pbf_loader.fetch_pbf_street_data(match_obj)
+        return (
+            gdf is not None
+            and isinstance(gdf, pd.DataFrame)
+            and gdf.empty
+            and bool(gdf.attrs.get("pbf_no_named_streets"))
+        )
+    except Exception:
+        return False
 
 
 def main(
@@ -138,6 +161,7 @@ def main(
     lamas_csv_path: str = LAMAS_CSV_PATH,
     no_data_path: str = NO_DATA_PATH,
     retry_pending_path: str = RETRY_PENDING_PATH,
+    check_pbf: bool = True,
 ) -> list[dict]:
     pages = {c["name"] for c in scan_settlements(html_dir)}
     page_iks = {settlement_identity_key(name) for name in pages}
@@ -171,11 +195,11 @@ def main(
         if r["status"] != "matched":
             cat, detail = "unresolved", r.get("reason") or ""
         elif name in nodata or name in retried:
-            # Processed (or retried) and still no page: OSM has no named streets
-            # inside the settlement area.
             has_cache = os.path.exists(osm_cache_path(name))
-            cat = "no_named_streets" if (has_cache or name in retried) else "no_osm_streets"
+            cat = "no_named_streets" if (has_cache or name in retried or (check_pbf and _pbf_has_no_named_streets(r.get("match")))) else "no_osm_streets"
             detail = ""
+        elif check_pbf and _pbf_has_no_named_streets(r.get("match")):
+            cat, detail = "no_named_streets", ""
         else:
             cat, detail = "pending", ""
         items.append(

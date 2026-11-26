@@ -22,6 +22,39 @@ NON_ADDRESSABLE_HIGHWAY_TYPES = {
 }
 
 
+def _highway_tags(value: Any) -> list[str]:
+    """Normalize an OSM ``highway`` cell (scalar, list, tuple, or ndarray) to lowercase tags."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)) or hasattr(value, "__array__"):
+        tags: list[str] = []
+        for item in value:
+            if item is None:
+                continue
+            try:
+                if pd.isna(item):
+                    continue
+            except (TypeError, ValueError):
+                pass
+            tag = str(item).strip().lower()
+            if tag:
+                tags.append(tag)
+        return tags
+    try:
+        if pd.isna(value):
+            return []
+    except (TypeError, ValueError):
+        return []
+    tag = str(value).strip().lower()
+    return [tag] if tag else []
+
+
+def _is_non_addressable_highway(value: Any) -> bool:
+    """Return True when every OSM highway tag on a segment is non-addressable."""
+    tags = _highway_tags(value)
+    return bool(tags) and all(tag in NON_ADDRESSABLE_HIGHWAY_TYPES for tag in tags)
+
+
 def _non_addressable_osm_names(osm_gdf: pd.DataFrame) -> set[str]:
     """Named streets whose every segment is a non-addressable OSM way type.
 
@@ -37,15 +70,13 @@ def _non_addressable_osm_names(osm_gdf: pd.DataFrame) -> set[str]:
     frame = pd.DataFrame(
         {
             "name": named["normalized_name"].astype(str),
-            "highway": named["highway"].map(
-                lambda value: str(value).strip().lower() if pd.notna(value) else ""
-            ),
+            "non_addressable": named["highway"].map(_is_non_addressable_highway),
         }
     )
     return {
         name
-        for name, highways in frame.groupby("name")["highway"]
-        if highways.isin(NON_ADDRESSABLE_HIGHWAY_TYPES).all()
+        for name, flags in frame.groupby("name")["non_addressable"]
+        if flags.all()
     }
 
 

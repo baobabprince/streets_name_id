@@ -1129,8 +1129,16 @@ def fetch_pbf_street_data(
         precise_matches = streets_gdf[streets_gdf.intersects(query_geom)].copy()
 
     if precise_matches.empty:
-        logger.warning("No OSM road segments found within geometry for: %s", place)
-        return None
+        logger.info("Local PBF contains 0 named OSM road segments within geometry for: %s", place)
+        empty = precise_matches.copy()
+        if "city" not in empty.columns:
+            empty["city"] = pd.Series(dtype="object")
+        empty.attrs["pbf_no_named_streets"] = True
+        try:
+            empty.attrs["provenance"] = national_streets_provenance()
+        except Exception:
+            pass
+        return empty
 
     # Ensure required fields and formatting matching OSM_streets.py
     if "city" not in precise_matches.columns:
