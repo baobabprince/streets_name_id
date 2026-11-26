@@ -131,6 +131,7 @@ _PAGE_TEMPLATE = """<!DOCTYPE html>
 #m{{height:420px;border-radius:12px;margin:1rem 0}}.card{{border:1px solid #8884;border-radius:12px;padding:1rem 1.25rem}}
 .note{{background:#fff7e6;border:1px solid #e0b25233;border-radius:10px;padding:.8rem 1rem;margin:.5rem 0}}
 dt{{opacity:.65}}dd{{margin:0 0 .6rem}}</style>
+<script defer src="https://cloud.umami.is/script.js" data-website-id="8a1cdf38-6dc5-43bd-a1a2-33a011889403"></script>
 </head>
 <body>
 <p><a href="../index.html">← חזרה לאינדקס</a></p>
