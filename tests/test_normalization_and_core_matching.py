@@ -52,6 +52,10 @@ class TestBareAbbreviations(unittest.TestCase):
     def test_rechov_and_kikar_bare_expansion(self):
         self.assertEqual(normalize_street_name("רח הרצל"), "רחוב הרצל")
         self.assertEqual(normalize_street_name("כי המדינה"), "כיכר המדינה")
+        self.assertEqual(normalize_street_name("ככר המדינה"), "כיכר המדינה")
+        self.assertEqual(normalize_street_name("פרופ' שור"), "פרופסור שור")
+        self.assertEqual(normalize_street_name("א.ד.גורדון"), "אד גורדון")
+        self.assertEqual(normalize_street_name("ש.י. עגנון"), "שי עגנון")
 
     def test_re_and_dar_are_not_expanded(self):
         # "ר" may mean רבי and "דר" may mean ד"ר — never force-expand them.
@@ -223,6 +227,52 @@ class TestCoreNameMatching(unittest.TestCase):
         row = result.iloc[0]
         self.assertEqual(row["status"], "CONFIDENT")
         self.assertEqual(row["best_LAMAS_id"], "20")
+
+    def test_word_reorder_honorific_ktiv_semicolon_and_feature_guard(self):
+        # Exact reversed word order, honorific+ktiv differences, and semicolon dual
+        # names match confidently, while squares/parks do NOT match plain streets.
+        osm = pd.DataFrame(
+            {
+                "osm_id": ["1", "2", "3", "4", "5", "6", "7"],
+                "osm_name": [
+                    "דוד רמז",
+                    "הרב גד מכלוף",
+                    "הרב חיי טייב",
+                    "שדרות ויצמן;ויצמן",
+                    "כיכר יוסף גרינוולד",
+                    "כיכר מארק שאגאל",
+                    "פארק גילה",
+                ],
+                "normalized_name": [
+                    normalize_street_name(n)
+                    for n in [
+                        "דוד רמז",
+                        "הרב גד מכלוף",
+                        "הרב חיי טייב",
+                        "שדרות ויצמן;ויצמן",
+                        "כיכר יוסף גרינוולד",
+                        "כיכר מארק שאגאל",
+                        "פארק גילה",
+                    ]
+                ],
+                "city": ["נתניה"] * 7,
+            }
+        )
+        lamas = pd.DataFrame(
+            [
+                {"LAMAS_id": "10", "LAMAS_name": "רמז דוד", "normalized_name": normalize_street_name("רמז דוד")},
+                {"LAMAS_id": "20", "LAMAS_name": "מכלוף גד", "normalized_name": normalize_street_name("מכלוף גד")},
+                {"LAMAS_id": "30", "LAMAS_name": "הרב טייב חי", "normalized_name": normalize_street_name("הרב טייב חי")},
+                {"LAMAS_id": "40", "LAMAS_name": "שד ויצמן", "normalized_name": normalize_street_name("שד ויצמן")},
+                {"LAMAS_id": "50", "LAMAS_name": "יוסי גרינוולד", "normalized_name": normalize_street_name("יוסי גרינוולד")},
+                {"LAMAS_id": "60", "LAMAS_name": "מארק שאגל", "normalized_name": normalize_street_name("מארק שאגל")},
+                {"LAMAS_id": "70", "LAMAS_name": "שכון גילה", "normalized_name": normalize_street_name("שכון גילה")},
+            ]
+        )
+        res = find_fuzzy_candidates(osm, lamas)
+        self.assertEqual(list(res["status"])[:4], ["CONFIDENT"] * 4)
+        self.assertEqual(list(res["best_LAMAS_id"])[:4], ["10", "20", "30", "40"])
+        self.assertEqual(list(res["status"])[4:], ["NEEDS_AI", "NEEDS_AI", "NEEDS_AI"])
 
 
 class TestSettlementNameGuard(unittest.TestCase):

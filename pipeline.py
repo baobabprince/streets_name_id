@@ -47,6 +47,7 @@ from diagnostics import calculate_diagnostics
 from laya_ai_resolver import LayaAIResolver
 from normalization import (
     DEFAULT_CONFIDENT_THRESHOLD,
+    NON_STREET_FEATURE_PREFIX_RE,
     build_lamas_aliases,
     find_fuzzy_candidates,
     normalize_street_name,
@@ -73,6 +74,63 @@ AI_OVERRIDE_MIN_CONFIDENCE = 0.80
 AI_OVERRIDE_MIN_CORE_WRATIO = 80.0
 
 _DIGIT_RE = re.compile(r"\d+")
+
+_FEATURE_FAMILY = {
+    "כיכר": "square",
+    "ככר": "square",
+    "פארק": "park",
+    "גן": "park",
+    "גשר": "bridge",
+    "טיילת": "promenade",
+    "חניון": "parking",
+    "צומת": "junction",
+    "מחלף": "junction",
+}
+
+# Common Hebrew given / biblical / tribe names that frequently appear as
+# standalone LAMAS street names ("נפתלי", "שמואל", "יחזקאל", "אבשלום", "ראובן")
+# and must not be matched by AI to a full person name ("נפתלי הרץ אימבר",
+# "יחזקאל קויפמן", "אבשלום פיינברג") solely via the first word.
+_COMMON_HEBREW_GIVEN_NAMES = frozenset({
+    "אברהם", "יצחק", "יעקב", "משה", "אהרן", "אהרון", "דוד", "שלמה",
+    "שמואל", "נפתלי", "יחזקאל", "אבשלום", "ראובן", "שמעון", "לוי",
+    "יהודה", "דן", "גד", "אשר", "זבולון", "יששכר", "יוסף", "בנימין",
+    "אליהו", "יונה", "ישעיהו", "ירמיהו", "דניאל", "חיים", "מנחם",
+    "רחל", "שרה", "רבקה", "לאה", "מרים", "אסתר", "דבורה", "רות",
+})
+
+
+def _feature_family(name: str) -> str | None:
+    m = NON_STREET_FEATURE_PREFIX_RE.match(name or "")
+    return _FEATURE_FAMILY.get(m.group(1)) if m else None
+
+
+def _feature_type_compatible(osm_label: str, lamas_candidates: list[str]) -> bool:
+    """Require squares, bridges, parks, etc. in OSM to match the same feature family."""
+    osm_fam = _feature_family(osm_label)
+    if not osm_fam:
+        return True
+    return any(_feature_family(cand) == osm_fam for cand in lamas_candidates if cand)
+
+
+def _is_given_name_only_collision(osm_label: str, lamas_candidates: list[str]) -> bool:
+    """Reject AI matches that collapse a full person name to an unrelated first-name street."""
+    osm_core = strip_street_prefix(normalize_street_name(osm_label) or "")
+    o_words = osm_core.split()
+    if len(o_words) < 2 or o_words[1] == "בן":
+        return False
+    first_word, last_word = o_words[0], o_words[-1]
+    if first_word == last_word or first_word not in _COMMON_HEBREW_GIVEN_NAMES:
+        return False
+    lam_cores = [
+        strip_street_prefix(normalize_street_name(c) or "")
+        for c in lamas_candidates
+        if c
+    ]
+    lam_cores = [lc for lc in lam_cores if lc]
+    if not lam_cores or not all(len(lc.split()) == 1 for lc in lam_cores):
+        return False
+    return any(lc == first_word for lc in lam_cores) and not any(lc == last_word for lc in lam_cores)
 
 
 def _save_step(
@@ -347,6 +405,14 @@ def _finalize_mappings(
             reject_reasons[idx] = "settlement_name_street"
         elif osm_label and not _digits_compatible(osm_label, matched_lamas_name):
             reject_reasons[idx] = "digit_mismatch"
+        elif osm_label and not _feature_type_compatible(
+            osm_label, [matched_lamas_name, *aliases_lookup.get(ai_id, [])]
+        ):
+            reject_reasons[idx] = "feature_type_mismatch"
+        elif osm_label and _is_given_name_only_collision(
+            osm_label, [matched_lamas_name, *aliases_lookup.get(ai_id, [])]
+        ):
+            reject_reasons[idx] = "given_name_only_match"
         elif osm_label:
             score = _best_core_score(osm_label, ai_id, matched_lamas_name)
             if score < wratio_threshold:

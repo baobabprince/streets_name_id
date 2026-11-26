@@ -305,6 +305,53 @@ class TestArabicFuzzyMatching(unittest.TestCase):
         self.assertEqual(list(res["status"])[1:], ["CONFIDENT", "CONFIDENT", "CONFIDENT"])
         self.assertEqual(list(res["best_LAMAS_id"])[1:], ["5268", "4710", "4012"])
 
+    def test_fused_alley_abbreviation_and_spaced_arabic_article_in_mixed_city(self):
+        # East Jerusalem LAMAS writes fused "סמ1"/"סמ2" (1,401 rows nationally) while
+        # OSM writes "סמטה 1"/"סמטה 2", often combined with א-/אל- article variants.
+        self.assertEqual(normalize_street_name("אל-תווחיד סמ1"), "אל תווחיד סמטה 1")
+        self.assertEqual(normalize_street_name("אל-תווחיד סמ 2"), "אל תווחיד סמטה 2")
+        self.assertEqual(normalize_street_name("רח114"), "רחוב 114")
+
+        osm = _make_osm(
+            [
+                "א-תווחיד סמטה 1",
+                "ביר אבו ח'שבה סמטה 3",
+                "א-נור סמטה 4",
+                "סבאח אל-מג'ד סמטה 1",
+                "אל-מדינה אל-מנורה סמטה 8",
+                "דרך חיזמא סמטה 4",
+                "אל ח'אלידיה",
+            ],
+            city="ירושלים",
+        )
+        lamas = _make_lamas(
+            [
+                ("101", "הרצל"),
+                ("102", "ביאליק"),
+                ("103", "ז'בוטינסקי"),
+                ("104", "בן גוריון"),
+                ("105", "דרך חברון"),
+                ("106", "יפו"),
+                ("107", "המלך ג'ורג'"),
+                ("108", "עמק רפאים"),
+                ("5484", "אל-תווחיד סמ1"),
+                ("5642", "ביר אבו ח'שבה סמ3"),
+                ("5090", "אלנור סמ4"),
+                ("5991", "צבאח אל-מג'ד סמ1"),
+                ("5372", "אלמדינה מונורה סמ8"),
+                ("5091", "דרך חיזמא סמ4"),
+                ("4067", "אל חוואלידה"),
+            ]
+        )
+        res = find_fuzzy_candidates(osm, lamas)
+        self.assertEqual(list(res["status"])[:6], ["CONFIDENT"] * 6)
+        self.assertEqual(
+            list(res["best_LAMAS_id"])[:6],
+            ["5484", "5642", "5090", "5991", "5372", "5091"],
+        )
+        # Single-word vowel collision in mixed city must NOT match
+        self.assertEqual(res.loc[6, "status"], "NEEDS_AI")
+
     def test_osm_name_original_arabic_fallback_and_phonetic_matching(self):
         osm = pd.DataFrame(
             {

@@ -69,7 +69,7 @@ class TestPipelineApproval(unittest.TestCase):
                     "צומת יודפת",
                     "סמטת האלון",
                     "דרך האלון",
-                    "כיכר האלון",
+                    "שביל האלון",
                     "סמטת אורן",
                     "סמטת אורן",
                     "סמטת אורן",
@@ -462,6 +462,57 @@ class TestPipelineApproval(unittest.TestCase):
         sources = render.call_args.kwargs["provenance"]
         self.assertEqual(sources["osm"]["osm_snapshot_at"], "2026-11-19T20:21:00+00:00")
         self.assertEqual(sources["lamas"]["retrieved_at"], "2026-11-20T08:00:00+00:00")
+
+    def test_finalize_rejects_feature_type_mismatch_and_given_name_only_collisions(self):
+        candidates = pd.DataFrame(
+            {
+                "osm_id": ["sq-1", "sq-2", "br-1", "gn-1", "pat-1", "sur-1"],
+                "normalized_name": [
+                    "כיכר חנוך לוין",
+                    "כיכר מנחם גולן",
+                    "גשר יצחק נבון",
+                    "נפתלי הרץ אימבר",
+                    "יחזקאל בן בוזי",
+                    "מנדלסון משה",
+                ],
+                "status": ["NEEDS_AI"] * 6,
+                "best_score": [70.0] * 6,
+                "best_LAMAS_id": ["101", "102", "103", "104", "105", "106"],
+                "best_LAMAS_name": ["לויתן", "הגולן", "יצחק שדה", "נפתלי", "יחזקאל", "מנדלסון"],
+            }
+        )
+        ai_decisions = pd.DataFrame(
+            {
+                "osm_id": candidates["osm_id"].tolist(),
+                "ai_suggested_LAMAS_id": ["101", "102", "103", "104", "105", "106"],
+                "ai_confidence": [0.97, 1.0, 0.95, 1.0, 1.0, 1.0],
+                "ai_reasoning": ["Laya"] * 6,
+                "ai_method": ["local_laya"] * 6,
+            }
+        )
+        lamas_names = {
+            "101": "לויתן",
+            "102": "הגולן",
+            "103": "יצחק שדה",
+            "104": "נפתלי",
+            "105": "יחזקאל",
+            "106": "מנדלסון",
+        }
+        merged, approved = _finalize_mappings(
+            candidates,
+            ai_decisions,
+            lamas_name_by_id=lamas_names,
+            city_name="נתניה",
+        )
+        by_id = merged.set_index("osm_id")
+        for bad in ("sq-1", "sq-2", "br-1"):
+            self.assertEqual(by_id.loc[bad, "mapping_status"], "UNMATCHED", bad)
+            self.assertIn("feature_type_mismatch", by_id.loc[bad, "ai_reasoning"])
+        self.assertEqual(by_id.loc["gn-1", "mapping_status"], "UNMATCHED")
+        self.assertIn("given_name_only_match", by_id.loc["gn-1", "ai_reasoning"])
+        self.assertEqual(by_id.loc["pat-1", "mapping_status"], "APPROVED_AI")
+        self.assertEqual(by_id.loc["sur-1", "mapping_status"], "APPROVED_AI")
+        self.assertEqual(set(approved["osm_id"]), {"pat-1", "sur-1"})
 
 
 if __name__ == "__main__":

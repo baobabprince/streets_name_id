@@ -74,26 +74,43 @@ _PUNCTUATION_RE = re.compile(
 # Every dash variant, including the Hebrew maqaf (א־סלאם), becomes a space.
 _HYPHENS_RE = re.compile(r"[\u05be\u2010\u2011\u2012\u2013\u2014\u2015-]")
 
-# Leading generic street-type prefixes, stripped (repeatedly) for core-name
-# comparison.  "שכונת" is included because LAMAS records neighborhoods that
-# carry a street-like name ("שכ נתיב האבות").
+# Leading generic interchangeable road-type prefixes, stripped (repeatedly) for
+# core-name comparison.  Distinct non-street feature types (כיכר, גשר, פארק, גן,
+# טיילת, חניון, צומת, מחלף) are deliberately NOT stripped here so a square,
+# bridge, or park never gets matched to an unrelated street of a similar name.
 STREET_PREFIX_RE = re.compile(
-    r"^(?:רחוב|רח|שדרות|שדרת|שד|דרך|דר|סמטת|סמטה|סמ|משעול|כיכר|ככר|שביל|"
-    r"מעלה|מעלות|טיילת|גשר|רחבת|נתיב|מדרגות|צומת|מחלף|מעבר(?:\s+לרחוב|\s+ל)?|"
-    r"חניון|פארק|גן|שכונת)\s+"
+    r"^(?:רחוב|רח|שדרות|שדרת|שד|דרך|דר|סמטת|סמטה|סמ|משעול|שביל|"
+    r"מעלה|מעלות|רחבת|נתיב|מדרגות|מעבר(?:\s+לרחוב|\s+ל)?|שכונת)\s+"
 )
 
+# Distinct non-street feature prefixes that must match the same feature family
+# on the LAMAS side rather than being stripped onto plain streets.
+NON_STREET_FEATURE_PREFIX_RE = re.compile(
+    r"^\s*(כיכר|ככר|גשר|פארק|גן|טיילת|חניון|צומת|מחלף)\b"
+)
+
+# Honorific / title tokens optional when comparing multi-word person names
+# (e.g. "הרב גד מכלוף" <-> "מכלוף גד", "פרופ' אברהם אמיר" <-> "אמיר אברהם").
+_HONORIFIC_RE = re.compile(r"\b(?:הרב|רבי|דר|פרופ|פרופסור|ראל)\b")
+
 # Abbreviations applied AFTER punctuation removal, so geresh/period variants
-# ("סמ'", "סמ.", "שכ'") are covered by the bare-word patterns below.
+# ("סמ'", "סמ.", "שכ'", "פרופ'") are covered by the bare-word patterns below.
 # "ר" and "דר" are deliberately NOT expanded: they may mean רבי/ד"ר rather
 # than רחוב/דרך (e.g. "ר' אליעזר בן יעקב").
 _ABBREVIATIONS = [
+    (r"\bרח(\d+)\b", r"רחוב \1"),
     (r"\bרח\b", "רחוב"),
     (r"\bשד\b", "שדרות"),
+    # Fused or numbered alley abbreviations in LAMAS ("אל-תווחיד סמ1" / "סמ 1" -> "סמטה 1").
+    (r"\bסמט?(\d+)\b", r"סמטה \1"),
+    (r"\bסמטת\s+(?=\d+\b)", "סמטה "),
+    (r"\bסמט?\s+(?=\d+\b)", "סמטה "),
     (r"\bסמט\s+", "סמטת "),
     (r"\bסמ\s+", "סמטת "),
     (r"\bשכ\s+", "שכונת "),
     (r"\bכי\s+", "כיכר "),
+    (r"\bככר\b", "כיכר"),
+    (r"\bפרופ\b", "פרופסור"),
 ]
 
 
@@ -143,10 +160,13 @@ def normalize_street_name(name):
     for pattern, replacement in typo_fixes:
         name = re.sub(pattern, replacement, name)
 
-    # 2. Dashes become spaces; quote-like punctuation is removed.  This must
-    #    run before abbreviation expansion so "רח'"/"שד." collapse to bare
-    #    words first ("אלג׳בל" and "אלג'בל" both become "אלגבל").
+    # 2. Dashes and dots between a Hebrew letter and a multi-letter Hebrew word
+    #    ("א.ד.גורדון" -> "אד גורדון", preserving fused initials like "ש.י. עגנון" -> "שי עגנון")
+    #    become spaces; quote-like punctuation is removed.  This must run before
+    #    abbreviation expansion so "רח'"/"שד." collapse to bare words first
+    #    ("אלג׳בל" and "אלג'בל" both become "אלגבל").
     name = _HYPHENS_RE.sub(" ", name)
+    name = re.sub(r"(?<=[\u0590-\u05FF])\.(?=[\u0590-\u05FF]{2,})", " ", name)
     name = _PUNCTUATION_RE.sub("", name)
 
     # 3. Abbreviation expansion (see _ABBREVIATIONS above).
@@ -383,6 +403,9 @@ def find_fuzzy_candidates(
         is_arab_city = is_arab_style_lamas_city([name for name, _ in non_settlement_lamas])
 
         # Precompute LAMAS lookup structures once per city.
+        exact_core_to_ids: Dict[str, set[str]] = {}
+        sorted_toks_to_ids: Dict[tuple[str, ...], set[str]] = {}
+        hon_ktiv_toks_to_ids: Dict[tuple[str, ...], set[str]] = {}
         num_to_ids: Dict[str, set[str]] = {}
         skel_entries: Dict[str, List[tuple[str, str, List[str]]]] = {}
         phon_entries: Dict[str, List[tuple[str, str, List[str], bool]]] = {}
@@ -392,9 +415,22 @@ def find_fuzzy_candidates(
         art_attached: Dict[str, List[tuple[str, bool, List[str]]]] = {}
         lcores_by_id: Dict[str, List[str]] = {}
         lnames_by_id: Dict[str, List[str]] = {}
+
+        def _hon_ktiv_tokens(text: str) -> tuple[str, ...]:
+            cleaned = re.sub(r"\s+", " ", _HONORIFIC_RE.sub("", text)).strip()
+            cleaned = cleaned.replace("יי", "י").replace("וו", "ו")
+            return tuple(sorted(cleaned.split()))
+
         for lname, lcore in non_settlement_lamas:
             lids = unique_name_to_ids[lname]
             l_digs = _DIGIT_RE.findall(lcore)
+            exact_core_to_ids.setdefault(lcore, set()).update(lids)
+            l_toks = tuple(sorted(lcore.split()))
+            if len(l_toks) >= 2:
+                sorted_toks_to_ids.setdefault(l_toks, set()).update(lids)
+            l_hk = _hon_ktiv_tokens(lcore)
+            if len(l_hk) >= 2:
+                hon_ktiv_toks_to_ids.setdefault(l_hk, set()).update(lids)
             for lid in lids:
                 lcores_by_id.setdefault(lid, []).append(lcore)
                 lnames_by_id.setdefault(lid, []).append(lname)
@@ -411,6 +447,14 @@ def find_fuzzy_candidates(
                 if llsk and len(llsk.replace(" ", "")) >= 3:
                     for lid in lids:
                         lat_skel_entries.setdefault(llsk, []).append((lid, l_digs))
+            # For Arabic square/roundabout names ("ساحة ترشيحا" -> "כיכר תרשיחא"),
+            # also index the כיכר-stripped skeleton in skel_entries.
+            lcore_no_sq = re.sub(r"^(?:כיכר|ככר)\s+", "", lcore).strip()
+            if lcore_no_sq != lcore:
+                lsk_sq = arabic_hebrew_skeleton(lcore_no_sq)
+                if lsk_sq and len(lsk_sq.replace(" ", "")) >= 3:
+                    for lid in lids:
+                        skel_entries.setdefault(lsk_sq, []).append((lid, lcore_no_sq, l_digs))
             lph = arabic_phonetic_skeleton(lcore)
             if lph and len(lph.replace(" ", "")) >= 3:
                 for lid in lids:
@@ -665,6 +709,54 @@ def find_fuzzy_candidates(
             osm_core = strip_street_prefix(osm_name)
             osm_digs = _DIGIT_RE.findall(osm_name)
 
+            # 0a. Semicolon-delimited dual OSM names (e.g. "שדרות ויצמן;ויצמן" -> "שד ויצמן").
+            if ";" in raw_name:
+                semi_lids: set[str] = set()
+                for part in raw_name.split(";"):
+                    part_norm = normalize_street_name(part)
+                    if not part_norm:
+                        continue
+                    part_core = strip_street_prefix(part_norm)
+                    if part_core in exact_core_to_ids:
+                        semi_lids |= exact_core_to_ids[part_core]
+                if len(semi_lids) == 1:
+                    lid = next(iter(semi_lids))
+                    street_name_results[osm_name] = {
+                        "status": "CONFIDENT",
+                        "best_score": 100.0,
+                        "best_LAMAS_id": lid,
+                        "best_LAMAS_name": display_name_by_id.get(lid, ""),
+                    }
+                    continue
+
+            # 0b. Exact multi-word reorder ("דוד רמז" <-> "רמז דוד", "יוסף ספיר" <-> "ספיר יוסף")
+            #     and honorific + ktiv (יי/וו) exact multi-word reorder ("הרב גד מכלוף" <-> "מכלוף גד").
+            if has_hebrew(osm_core):
+                o_toks = tuple(sorted(osm_core.split()))
+                if len(o_toks) >= 2 and o_toks in sorted_toks_to_ids:
+                    cand_ids = sorted_toks_to_ids[o_toks]
+                    if len(cand_ids) == 1:
+                        lid = next(iter(cand_ids))
+                        street_name_results[osm_name] = {
+                            "status": "CONFIDENT",
+                            "best_score": 100.0,
+                            "best_LAMAS_id": lid,
+                            "best_LAMAS_name": display_name_by_id.get(lid, ""),
+                        }
+                        continue
+                o_hk = _hon_ktiv_tokens(osm_core)
+                if len(o_hk) >= 2 and o_hk in hon_ktiv_toks_to_ids:
+                    cand_ids = hon_ktiv_toks_to_ids[o_hk]
+                    if len(cand_ids) == 1:
+                        lid = next(iter(cand_ids))
+                        street_name_results[osm_name] = {
+                            "status": "CONFIDENT",
+                            "best_score": 100.0,
+                            "best_LAMAS_id": lid,
+                            "best_LAMAS_name": display_name_by_id.get(lid, ""),
+                        }
+                        continue
+
             # 1. Unique embedded 3-4 digit street number (e.g. "المدينة القديمة - 6171" -> "רח 6171").
             embedded_num = extract_embedded_street_number(raw_name)
             if embedded_num and embedded_num in num_to_ids:
@@ -732,6 +824,26 @@ def find_fuzzy_candidates(
                         matched_lids.update(
                             lid for lid, l_has_ar, l_digs in art_attached[af_a]
                             if l_digs == osm_digs and (osm_has_ar_art or l_has_ar)
+                        )
+                # 4b2. In mixed cities (e.g. East Jerusalem), when OSM carries an explicit
+                #      spaced Arabic article ("א-נור סמטה 4", "סבאח אל-מג'ד סמטה 1",
+                #      "אל-מדינה אל-מנורה סמטה 8"), allow exact Semitic skeleton matching
+                #      against LAMAS (unifying attached אל, צ<->ס, and short vowels).
+                if not matched_lids and not is_arab_city and has_arabic_article_in_hebrew(
+                    osm_core, allow_attached_al=False
+                ):
+                    sk_he = arabic_hebrew_skeleton(osm_core)
+                    if (
+                        sk_he
+                        and " " in sk_he
+                        and len(sk_he.replace(" ", "")) >= 4
+                        and sk_he in skel_entries
+                    ):
+                        matched_lids.update(
+                            lid
+                            for lid, lcore, l_digs in skel_entries[sk_he]
+                            if l_digs == osm_digs
+                            and arabic_long_vowels_compatible(osm_core, lcore)
                         )
                 if len(matched_lids) == 1:
                     lid = next(iter(matched_lids))
