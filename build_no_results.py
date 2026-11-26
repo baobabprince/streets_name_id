@@ -24,6 +24,8 @@ REASONS = {
     "unresolved": "לא נמצא יישוב מתאים ב-OSM",
     "no_osm_streets": "ביישוב אין נתוני רחובות ב-OSM",
     "no_named_streets": "אין רחובות בעלי שם ב-OSM",
+    "no_lamas_streets": "אין רשימת רחובות בלמ״ס",
+    "single_street": "רחוב אחד — שם היישוב עצמו",
     "pending": "טרם עובד",
 }
 
@@ -80,6 +82,32 @@ def _load_lamas_street_counts(
         k: int(v)
         for k, v in street_df.groupby("_ik")["LAMAS_id"].nunique().items()
     }
+
+
+def _load_single_street_keys(lamas_csv_path: str = LAMAS_CSV_PATH) -> set[str]:
+    """Settlement identity keys whose ONLY LAMAS record is the settlement's own name.
+
+    These have no real streets to match against, so they get a dedicated
+    single-street info page (see ``generate_single_street_pages``) instead of a
+    street-matching page, and are reported under their own ``single_street``
+    category rather than the generic "no CBS streets" bucket.
+    """
+    if os.path.exists(lamas_csv_path):
+        lam = pd.read_csv(lamas_csv_path, dtype=str)
+    else:
+        lam = load_or_fetch_LAMAS()
+    if lam.empty or "city" not in lam.columns or "LAMAS_name" not in lam.columns:
+        return set()
+    per_city = lam.groupby("city")["LAMAS_name"].apply(
+        lambda s: sorted({str(n).strip() for n in s.dropna() if str(n).strip()})
+    )
+    keys: set[str] = set()
+    for city, names in per_city.items():
+        if not isinstance(city, str) or not names:
+            continue
+        if len(names) == 1 and names[0] == city.strip():
+            keys.add(settlement_identity_key(city))
+    return keys
 
 
 def _load_match_rows(
@@ -169,6 +197,7 @@ def main(
     if not match_rows:
         return []
     counts = _load_lamas_street_counts(lamas_csv_path=lamas_csv_path)
+    single_keys = _load_single_street_keys(lamas_csv_path=lamas_csv_path)
 
     nodata: set[str] = set()
     if os.path.exists(no_data_path):
@@ -192,8 +221,18 @@ def main(
         ik = settlement_identity_key(name)
         if name in pages or ik in page_iks:
             continue
+        lamas_count = int(counts.get(ik, 0))
         if r["status"] != "matched":
             cat, detail = "unresolved", r.get("reason") or ""
+        elif lamas_count == 0 and ik in single_keys:
+            # Only the settlement's own name is registered in CBS — no real
+            # streets to match, but worth a dedicated info page instead of a
+            # misleading "no CBS streets" entry.
+            cat, detail = "single_street", ""
+        elif lamas_count == 0:
+            # CBS has no street-level records at all: structurally cannot yield a
+            # street page, so it is not a matching failure.
+            cat, detail = "no_lamas_streets", ""
         elif name in nodata or name in retried:
             has_cache = os.path.exists(osm_cache_path(name))
             cat = "no_named_streets" if (has_cache or name in retried or (check_pbf and _pbf_has_no_named_streets(r.get("match")))) else "no_osm_streets"
@@ -208,11 +247,16 @@ def main(
                 "category": cat,
                 "reason": REASONS[cat],
                 "detail": re.sub(r"\s+", " ", detail)[:120],
-                "lamas": int(counts.get(ik, 0)),
+                "lamas": lamas_count,
+                "has_lamas_streets": lamas_count > 0,
             }
         )
 
-    items.sort(key=lambda i: (i["category"], -i["lamas"], i["name"]))
+    # Keep the two logical groups together: settlements that DO have a CBS street
+    # list first (actionable gaps), then those without any CBS streets.
+    items.sort(
+        key=lambda i: (0 if i["has_lamas_streets"] else 1, i["category"], -i["lamas"], i["name"])
+    )
     with open(out, "w", encoding="utf-8") as handle:
         json.dump(items, handle, ensure_ascii=False, indent=1)
     print(len(items), pd.Series([i["category"] for i in items]).value_counts().to_dict())

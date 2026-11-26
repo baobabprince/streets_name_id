@@ -40,6 +40,7 @@ from data_loader import (
     load_or_fetch_LAMAS,
     load_or_fetch_osm,
     normalize_city,
+    safe_place_name,
     save_intermediate_df,
 )
 from diagnostics import calculate_diagnostics
@@ -417,6 +418,13 @@ def _finalize_no_lamas_streets(
     Writes a marked diagnostic report (``status`` column = NO_LAMAS_STREETS)
     so the settlement stays auditable, and returns the dedicated
     NO_LAMAS_STREETS status instead of a misleading "100% unmatched" run.
+
+    No HTML page is produced: with no CBS streets there is nothing to match
+    against, so a page would only show a misleading 0% coverage. These
+    settlements are surfaced instead in the "settlements without results"
+    dashboard (``build_no_results``), grouped under "no CBS street list". The
+    single special case — a settlement whose only CBS record is its own name —
+    gets a dedicated info page from ``generate_single_street_pages``.
     """
     marked_diagnostic_cols = {
         "status": PipelineStatus.NO_LAMAS_STREETS.value,
@@ -468,18 +476,27 @@ def _finalize_no_lamas_streets(
     }
 
     if not skip_html:
-        try:
-            from generate_html import create_html_from_gdf
+        # Intentionally do NOT render an HTML page here. With no CBS street
+        # records there is nothing to match against, so a page would only show a
+        # misleading 0% coverage. These settlements are reported via
+        # ``build_no_results`` (category "no_lamas_streets" / "single_street")
+        # and — for the single-name case — get a dedicated info page from
+        # ``generate_single_street_pages``.
+        logger.info(
+            "Skipping HTML page for %s: no CBS street records to map.", city_label
+        )
 
-            os.makedirs("HTML", exist_ok=True)
-            create_html_from_gdf(
-                diagnostic_df,
-                file_identifier,
-                diagnostics,
-                provenance=source_provenance,
-            )
-        except Exception as e:
-            logger.warning("Failed to generate HTML visualization: %s", e)
+    # Remove any stale street page left over from a previous run, so this
+    # settlement does not linger in the dashboard as a misleading 0% page
+    # (the single-name case gets a dedicated info page from
+    # ``generate_single_street_pages`` instead).
+    try:
+        stale = os.path.join("HTML", f"{safe_place_name(city_label)}_roads.html")
+        if os.path.exists(stale):
+            os.remove(stale)
+            logger.info("Removed stale page %s", stale)
+    except Exception as exc:  # cleanup must never fail the run
+        logger.warning("Could not remove stale page for %s: %s", city_label, exc)
 
     return PipelineStatus.NO_LAMAS_STREETS
 

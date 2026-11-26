@@ -338,7 +338,13 @@ NO_RESULTS_FILE = "no_results.json"
 
 
 def _no_results_section() -> str:
-    """Collapsible list of settlements that have no street page at all."""
+    """Collapsible list of settlements that have no street page at all.
+
+    Items are split into two logically distinct buckets: settlements that DO have
+    a CBS street list (real coverage gaps worth investigating) and settlements
+    that have no CBS streets at all (so a street page can never exist). Within
+    each bucket the existing per-reason categories are preserved as sub-groups.
+    """
     try:
         with open(NO_RESULTS_FILE, encoding="utf-8") as handle:
             items = json.load(handle)
@@ -346,31 +352,66 @@ def _no_results_section() -> str:
         return ""
     if not items:
         return ""
-    order = ["unresolved", "no_osm_streets", "no_named_streets", "pending"]
-    groups = {key: [i for i in items if i["category"] == key] for key in order}
+    order = [
+        "unresolved",
+        "no_osm_streets",
+        "no_named_streets",
+        "no_lamas_streets",
+        "single_street",
+        "pending",
+    ]
+    # True  -> has a CBS street list but no page (actionable gaps)
+    # False -> no CBS streets at all (a page can never be produced)
+    groups_order = [True, False]
+    group_labels = {
+        True: "עם רשימת רחובות בלמ״ס — ללא עמוד",
+        False: "ללא רשימת רחובות בלמ״ס",
+    }
+
+    def _in_bucket(item: dict, has: bool) -> bool:
+        return bool(item.get("has_lamas_streets", item.get("lamas", 0) > 0)) == has
+
     blocks = []
-    for key in order:
-        rows = groups[key]
-        if not rows:
+    for has in groups_order:
+        sub = [i for i in items if _in_bucket(i, has)]
+        if not sub:
             continue
-        lis = "".join(
-            f'<li><span>{escape(i["name"])}</span>'
-            f'<small>{_fmt(i["lamas"])} רחובות בלמ״ס</small></li>'
-            for i in rows
-        )
+        sub_groups = {key: [i for i in sub if i["category"] == key] for key in order}
+        inner = ""
+        for key in order:
+            rows = sub_groups[key]
+            if not rows:
+                continue
+            lis = "".join(
+                f'<li><span>{escape(i["name"])}</span>'
+                f'<small>{_fmt(i["lamas"])} רחובות בלמ״ס</small></li>'
+                for i in rows
+            )
+            inner += (
+                f'<details class="nr-group"><summary>{escape(rows[0]["reason"])} '
+                f'<b>({_fmt(len(rows))})</b></summary>'
+                f'<ul class="nr-list">{lis}</ul></details>'
+            )
         blocks.append(
-            f'<details class="nr-group"><summary>{escape(rows[0]["reason"])} '
-            f'<b>({_fmt(len(rows))})</b></summary><ul class="nr-list">{lis}</ul></details>'
+            f'<div class="nr-bucket"><h3>{escape(group_labels[has])} '
+            f'<b>({_fmt(len(sub))})</b></h3>{inner}</div>'
         )
+    if not blocks:
+        return ""
     return (
         '<section class="no-results" id="no-results">'
         '<div class="shell"><h2>יישובים ללא תוצאות</h2>'
-        f'<p>{_fmt(len(items))} יישובים ללא עמוד מפה. המספר לצד כל יישוב הוא '
-        'הרחובות הרשומים בלמ״ס.</p>'
+        f'<p>{_fmt(len(items))} יישובים ללא עמוד מפה, מחולקים לשתי קבוצות: '
+        'בקבוצה הראשונה יש רשימת רחובות בלמ״ס אך טרם נוצר עמוד; '
+        'בשנייה אין בכלל רחובות בלמ״ס, ולכן לא ניתן ליצור עמוד התאמה. '
+        'המספר לצד כל יישוב הוא הרחובות הרשומים בלמ״ס.</p>'
         + "".join(blocks) + "</div></section>"
-        '<style>.no-results{margin:3rem 0}.no-results details{margin:.5rem 0;'
-        'border:1px solid var(--line-strong,#ccc);border-radius:10px;padding:.6rem 1rem}'
+        '<style>.no-results{margin:3rem 0}'
+        '.no-results details{margin:.5rem 0;border:1px solid var(--line-strong,#ccc);'
+        'border-radius:10px;padding:.6rem 1rem}'
         '.no-results summary{cursor:pointer;font-weight:600}'
+        '.nr-bucket{margin:1.5rem 0}'
+        '.nr-bucket h3{margin:0 0 .4rem;font-size:1.05rem}'
         '.nr-list{columns:3 220px;list-style:none;padding:0;margin:.8rem 0 0}'
         '.nr-list li{display:flex;justify-content:space-between;gap:.5rem;padding:.15rem 0;break-inside:avoid}'
         '.nr-list small{opacity:.65}</style>'
