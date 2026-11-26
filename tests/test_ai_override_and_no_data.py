@@ -180,7 +180,7 @@ class TestNoLamasStreetsStatus(unittest.TestCase):
         self.assertTrue((diagnostic["mapping_status"] == "UNMATCHED").all())
         self.assertIn("settlement-name record", diagnostic["ai_reasoning"].iloc[0])
 
-    def test_no_lamas_streets_generates_marked_page(self):
+    def test_no_lamas_streets_skips_html_page(self):
         with (
             patch.object(
                 pipeline, "load_or_fetch_LAMAS", return_value=self._only_pseudo_record_lamas()
@@ -192,11 +192,10 @@ class TestNoLamasStreetsStatus(unittest.TestCase):
             status = run_pipeline("יישוב קטן", use_ai=False)
 
         self.assertEqual(status, PipelineStatus.NO_LAMAS_STREETS)
-        diagnostics = render.call_args.args[2]
-        self.assertEqual(diagnostics["total_lamas_streets"], 0)
-        self.assertEqual(diagnostics["unmatched_lamas_count"], 0)
-        self.assertEqual(diagnostics["pipeline_status"], "NO_LAMAS_STREETS")
-        self.assertIn("no_lamas_reason", diagnostics)
+        # With no CBS streets there is nothing to match against, so the pipeline
+        # must NOT emit a misleading 0%-coverage HTML page. Such settlements are
+        # surfaced via build_no_results instead.
+        render.assert_not_called()
 
     def test_empty_city_slice_returns_no_lamas_streets(self):
         # LAMAS has no records at all for this settlement's key.

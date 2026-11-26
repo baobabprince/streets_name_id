@@ -82,10 +82,52 @@ class TestBuildNoResults(unittest.TestCase):
             by_name = {item["name"]: item for item in items}
             self.assertNotIn("טמרה", by_name)
             self.assertNotIn("ג'ת", by_name)
-            self.assertEqual(by_name["גת )קיבוץ("]["category"], "pending")
+            # גת )קיבוץ( has only its own-name pseudo-record (0 real streets) and
+            # no separate single-street own-name entry -> "no_lamas_streets".
+            self.assertEqual(by_name["גת )קיבוץ("]["category"], "no_lamas_streets")
             self.assertEqual(by_name["גת )קיבוץ("]["lamas"], 0)
+            self.assertFalse(by_name["גת )קיבוץ("]["has_lamas_streets"])
             self.assertEqual(by_name["יישוב חסר"]["category"], "unresolved")
             self.assertEqual(by_name["יישוב חסר"]["lamas"], 1)
+
+    def test_own_name_only_settlement_gets_single_street_category(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html_dir = os.path.join(tmp, "HTML")
+            os.makedirs(html_dir)
+            report_path = os.path.join(tmp, "settlement_match_report.csv")
+            store_path = os.path.join(tmp, "settlement_matches.json")
+            lamas_csv = os.path.join(tmp, "lamas_data.csv")
+            out_path = os.path.join(tmp, "no_results.json")
+
+            pd.DataFrame(
+                [{"settlement": "יישוב יחיד", "status": "matched", "reason": ""}]
+            ).to_csv(report_path, index=False, encoding="utf-8-sig")
+
+            pd.DataFrame(
+                [
+                    # Only the settlement's own name is registered -> single street.
+                    {"city": "יישוב יחיד", "LAMAS_id": "9000", "LAMAS_name": "יישוב יחיד"},
+                ]
+            ).to_csv(lamas_csv, index=False)
+
+            with patch.object(
+                build_no_results, "scan_settlements", return_value=[]
+            ):
+                items = build_no_results.main(
+                    out=out_path,
+                    html_dir=html_dir,
+                    report_path=report_path,
+                    store_path=store_path,
+                    lamas_csv_path=lamas_csv,
+                    no_data_path=os.path.join(tmp, "missing_nodata.txt"),
+                    retry_pending_path=os.path.join(tmp, "missing_retry.txt"),
+                    check_pbf=False,
+                )
+
+            by_name = {item["name"]: item for item in items}
+            self.assertEqual(by_name["יישוב יחיד"]["category"], "single_street")
+            self.assertFalse(by_name["יישוב יחיד"]["has_lamas_streets"])
+            self.assertEqual(by_name["יישוב יחיד"]["lamas"], 0)
 
     def test_pbf_empty_settlements_categorized_as_no_named_streets_not_pending(self):
         with tempfile.TemporaryDirectory() as tmp:

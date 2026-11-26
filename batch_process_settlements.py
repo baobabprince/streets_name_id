@@ -701,6 +701,16 @@ def _prepare_osm_caches(args) -> None:
 
 def _refresh_dashboard() -> None:
     try:
+        # Single-street info pages first, so their pages exist (and are therefore
+        # excluded from no_results.json) before the no-results report is built.
+        try:
+            from generate_single_street_pages import main as gen_single_main
+
+            print("Generating single-street info pages…")
+            gen_single_main()
+        except Exception as exc:  # info pages are best-effort, never fatal
+            print(f"Warning: single-street pages generation failed: {exc}")
+
         from build_no_results import main as build_no_results_main
         from generate_index import generate_index_html
 
