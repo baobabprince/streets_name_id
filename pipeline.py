@@ -9,6 +9,7 @@ for everything below 90%.
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import os
 import re
@@ -25,6 +26,7 @@ from arabic_matching import (
     arabic_phonetic_skeleton,
     arabic_skeleton_to_hebrew_nouns,
     bare_hebrew_street_noun,
+    cross_script_comparison_skeleton,
     has_arabic,
     has_arabic_article_in_hebrew,
     has_hebrew,
@@ -33,6 +35,7 @@ from arabic_matching import (
     is_latin_only,
     latin_arabic_to_hebrew_skeleton,
     latin_comparison_skeleton,
+    latin_to_hebrew_skeleton,
     transliterate_arabic_to_hebrew,
 )
 from data_loader import (
@@ -45,9 +48,11 @@ from data_loader import (
 )
 from diagnostics import calculate_diagnostics
 from laya_ai_resolver import LayaAIResolver
+from openrouter_ai_resolver import HybridAIResolver
 from normalization import (
     DEFAULT_CONFIDENT_THRESHOLD,
     NON_STREET_FEATURE_PREFIX_RE,
+    _HONORIFIC_RE,
     build_lamas_aliases,
     find_fuzzy_candidates,
     normalize_street_name,
@@ -60,6 +65,8 @@ logger = logging.getLogger(__name__)
 
 ISRAEL_BOUNDS = (29.0, 34.0, 33.7, 36.0)
 _LAYA_RESOLVER: LayaAIResolver | None = None
+_AI_RESOLVER: object | None = None
+_AI_RESOLVER_KEY: tuple[str, str | None] | None = None
 ESSENTIAL_STEPS = {"diagnostic_report"}
 
 # Conservative AI approval guardrails (Option 3: ~95-96% precision, zero magnets)
@@ -72,6 +79,13 @@ AI_MAX_APPROVED_HITS_PER_ID = 2
 # stronger evidence than an agreement with the fuzzy candidate requires.
 AI_OVERRIDE_MIN_CONFIDENCE = 0.80
 AI_OVERRIDE_MIN_CORE_WRATIO = 80.0
+
+# High-confidence OpenRouter Decisions thresholds for genuine cross-script
+# translations (Arabic/Latin -> Hebrew) and semantic/acronym equivalences.
+OPENROUTER_CROSS_SCRIPT_MIN_CONFIDENCE = 0.90
+OPENROUTER_CROSS_SCRIPT_MIN_CORE_WRATIO = 50.0
+OPENROUTER_SEMANTIC_MIN_CONFIDENCE = 0.92
+OPENROUTER_SEMANTIC_MIN_CORE_WRATIO = 60.0
 
 _DIGIT_RE = re.compile(r"\d+")
 
@@ -100,9 +114,16 @@ _COMMON_HEBREW_GIVEN_NAMES = frozenset({
 })
 
 
+_ARABIC_SQUARE_PREFIX_RE = re.compile(r"^\s*(?:دوار|الدوار)\b")
+
+
 def _feature_family(name: str) -> str | None:
     m = NON_STREET_FEATURE_PREFIX_RE.match(name or "")
-    return _FEATURE_FAMILY.get(m.group(1)) if m else None
+    if m:
+        return _FEATURE_FAMILY.get(m.group(1))
+    if _ARABIC_SQUARE_PREFIX_RE.match(name or ""):
+        return "square"
+    return None
 
 
 def _feature_type_compatible(osm_label: str, lamas_candidates: list[str]) -> bool:
@@ -215,6 +236,38 @@ def _get_laya_resolver() -> LayaAIResolver | None:
     return None
 
 
+def _get_ai_resolver(backend: str = "auto", model: str | None = None):
+    """Return the configured AI resolver (OpenRouter+fallback by default, or local Laya)."""
+    global _AI_RESOLVER, _AI_RESOLVER_KEY
+    selected = (backend or os.environ.get("AI_BACKEND", "auto") or "auto").strip().lower()
+    if selected in {"local", "laya"}:
+        return _get_laya_resolver()
+
+    has_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+    if selected == "auto" and not has_key:
+        logger.warning(
+            "OPENROUTER_API_KEY not set; falling back automatically to local Laya resolver."
+        )
+        return _get_laya_resolver()
+
+    cache_key = (selected, model)
+    if _AI_RESOLVER is not None and _AI_RESOLVER_KEY == cache_key:
+        return _AI_RESOLVER
+
+    if selected == "openrouter" and not has_key:
+        logger.warning(
+            "AI backend 'openrouter' requested without OPENROUTER_API_KEY; "
+            "using HybridAIResolver with automatic fallback to local Laya."
+        )
+
+    resolver = HybridAIResolver(local_factory=_get_laya_resolver, model=model)
+    if resolver.is_available():
+        _AI_RESOLVER = resolver
+        _AI_RESOLVER_KEY = cache_key
+        return resolver
+    return None
+
+
 def _clean_id(value: object) -> str:
     """Normalize an ID value to a clean string (handling None/NaN and float '.0')."""
     if value is None:
@@ -283,7 +336,26 @@ def _core_wratio(osm_name: str, lamas_name: str) -> float:
             lsk_lam = latin_comparison_skeleton(sk_lam)
             if len(lsk_osm.replace(" ", "")) >= 3 and len(lsk_lam.replace(" ", "")) >= 3:
                 score = max(score, float(fuzz.ratio(lsk_osm, lsk_lam)))
+        else:
+            sk_gen = latin_to_hebrew_skeleton(osm_name)
+            csk_osm = cross_script_comparison_skeleton(sk_gen)
+            csk_lam = cross_script_comparison_skeleton(sk_lam)
+            if len(csk_osm.replace(" ", "")) >= 3 and len(csk_lam.replace(" ", "")) >= 3:
+                score = max(
+                    score,
+                    float(fuzz.ratio(csk_osm, csk_lam)),
+                    float(fuzz.WRatio(csk_osm, csk_lam)),
+                )
     elif has_hebrew(core_osm):
+        if has_hebrew(core_lamas):
+            hon_osm = " ".join(_HONORIFIC_RE.sub("", core_osm).split())
+            hon_lam = " ".join(_HONORIFIC_RE.sub("", core_lamas).split())
+            if (
+                (hon_osm != core_osm or hon_lam != core_lamas)
+                and len(hon_osm.split()) >= 2
+                and len(hon_lam.split()) >= 2
+            ):
+                score = max(score, float(fuzz.WRatio(hon_osm, hon_lam)))
         if (
             has_arabic_article_in_hebrew(core_osm, allow_attached_al=True)
             or has_arabic_article_in_hebrew(core_lamas, allow_attached_al=True)
@@ -366,6 +438,11 @@ def _finalize_mappings(
 
     target_city_key = canonical_key(city_name) if city_name else ""
     confs = pd.to_numeric(merged["ai_confidence"], errors="coerce").fillna(0.0)
+    ai_methods = (
+        merged["ai_method"].fillna("").astype(str)
+        if "ai_method" in merged.columns
+        else pd.Series("", index=merged.index, dtype=str)
+    )
     lamas_lookup = {_clean_id(k): v for k, v in (lamas_name_by_id or {}).items()}
     if lamas_aliases_by_id:
         aliases_lookup = {
@@ -389,12 +466,16 @@ def _finalize_mappings(
         conf = float(confs.at[idx])
         osm_label = street_keys.at[idx]
         matched_lamas_name = lamas_lookup.get(ai_id) or str(merged.at[idx, "best_LAMAS_name"] or "")
+        is_openrouter = ai_methods.at[idx].startswith("openrouter:")
+        is_cross_script = bool(osm_label) and (has_arabic(osm_label) or is_latin_only(osm_label))
 
         agrees = bool(best_id) and ai_id == best_id
         conf_threshold = min_ai_confidence if agrees else min_override_confidence
         wratio_threshold = min_core_wratio if agrees else min_override_core_wratio
 
-        if not best_id:
+        if not best_id and not (
+            is_openrouter and is_cross_script and conf >= OPENROUTER_SEMANTIC_MIN_CONFIDENCE
+        ):
             reject_reasons[idx] = "no_fuzzy_candidate"
         elif conf < conf_threshold:
             kind = "" if agrees else "override_"
@@ -415,7 +496,24 @@ def _finalize_mappings(
             reject_reasons[idx] = "given_name_only_match"
         elif osm_label:
             score = _best_core_score(osm_label, ai_id, matched_lamas_name)
-            if score < wratio_threshold:
+            allow_openrouter_semantic = is_openrouter and (
+                (
+                    is_cross_script
+                    and (
+                        conf >= OPENROUTER_SEMANTIC_MIN_CONFIDENCE
+                        or (
+                            conf >= OPENROUTER_CROSS_SCRIPT_MIN_CONFIDENCE
+                            and score >= OPENROUTER_CROSS_SCRIPT_MIN_CORE_WRATIO
+                        )
+                    )
+                )
+                or (
+                    not is_cross_script
+                    and conf >= OPENROUTER_SEMANTIC_MIN_CONFIDENCE
+                    and score >= OPENROUTER_SEMANTIC_MIN_CORE_WRATIO
+                )
+            )
+            if score < wratio_threshold and not allow_openrouter_semantic:
                 kind = "" if agrees else "override_"
                 reject_reasons[idx] = f"{kind}low_core_wratio({score:.1f}<{wratio_threshold:.1f})"
             else:
@@ -578,6 +676,8 @@ def run_pipeline(
     lamas_city: str | None = None,
     save_intermediates: bool = True,
     confident_threshold: float = DEFAULT_CONFIDENT_THRESHOLD,
+    ai_backend: str = "auto",
+    ai_model: str | None = None,
 ) -> PipelineStatus:
     """Run the street-mapping pipeline for a settlement."""
     _setup_logging()
@@ -750,7 +850,11 @@ def run_pipeline(
     )
     _save_step(candidates_df, "step3_candidates", file_identifier, save_intermediates)
 
-    logger.info("[Step 4/5] (Optional) Running whole-city Laya AI matching for <%.0f%% streets...", confident_threshold)
+    logger.info(
+        "[Step 4/5] (Optional) Running AI street matching (%s) for <%.0f%% streets...",
+        ai_backend,
+        confident_threshold,
+    )
     ai_results: list[dict] = []
     lamas_aliases = build_lamas_aliases(lamas_city_df)
     laya_lamas_aliases = build_lamas_aliases(lamas_street_df)
@@ -765,7 +869,7 @@ def run_pipeline(
         unique_unmatched = unmatched_rows.dropna(
             subset=["normalized_name"]
         ).drop_duplicates(subset=["normalized_name"])
-        # Every unmatched street goes to Laya: the hardest cases are exactly
+        # Every unmatched street goes to AI: the hardest cases are exactly
         # the ones the fuzzy stage cannot propose a usable candidate for, so
         # pre-filtering by similarity would hide them from the AI forever.
         # Precision is protected by the output gates in _finalize_mappings.
@@ -773,25 +877,44 @@ def run_pipeline(
             row.normalized_name
             for row in unique_unmatched.itertuples(index=False)
         ]
+        preferred_ids = {
+            str(row.normalized_name): _clean_id(getattr(row, "best_LAMAS_id", ""))
+            for row in unique_unmatched.itertuples(index=False)
+            if _clean_id(getattr(row, "best_LAMAS_id", ""))
+        }
 
         if unmatched_names:
             try:
-                resolver = _get_laya_resolver()
+                resolver = _get_ai_resolver(backend=ai_backend, model=ai_model)
             except Exception as exc:
-                logger.warning("Failed to initialize Laya AI: %s", exc)
+                logger.warning("Failed to initialize AI resolver (%s): %s", ai_backend, exc)
                 resolver = None
 
             if resolver is not None:
                 logger.info(
                     "Sending %d unmatched OSM street names (%d named streets in city) "
-                    "and %d city LAMAS street ids to Laya...",
+                    "and %d city LAMAS street ids to AI (%s)...",
                     len(unmatched_names),
                     int(osm_gdf_in_city["normalized_name"].nunique()),
                     len(laya_lamas_aliases),
+                    type(resolver).__name__,
                 )
-                city_decisions = resolver.resolve_city(
-                    osm_city_label, unmatched_names, laya_lamas_aliases
-                )
+                try:
+                    sig = inspect.signature(resolver.resolve_city)
+                    supports_pref = "preferred_ids" in sig.parameters
+                except (TypeError, ValueError):
+                    supports_pref = False
+                if supports_pref:
+                    city_decisions = resolver.resolve_city(
+                        osm_city_label,
+                        unmatched_names,
+                        laya_lamas_aliases,
+                        preferred_ids=preferred_ids,
+                    )
+                else:
+                    city_decisions = resolver.resolve_city(
+                        osm_city_label, unmatched_names, laya_lamas_aliases
+                    )
                 valid_ids = set(laya_lamas_aliases)
                 for row in unmatched_rows.itertuples(index=False):
                     decision = city_decisions.get(row.normalized_name)
@@ -805,7 +928,7 @@ def run_pipeline(
                             lamas_id = None
                         elif lamas_id not in valid_ids:
                             logger.warning(
-                                "Laya returned LAMAS ID %s not in city '%s'; discarding.",
+                                "AI returned LAMAS ID %s not in city '%s'; discarding.",
                                 lamas_id,
                                 osm_city_label,
                             )
@@ -934,7 +1057,7 @@ def run_pipeline(
     ].nunique()
     unmatched_count = named_osm_count - matched_count
     logger.info(
-        "PIPELINE COMPLETED | Fuzzy (>=%.0f%%): %s | Laya AI: %s | Total matched: %s | Unmatched: %s",
+        "PIPELINE COMPLETED | Fuzzy (>=%.0f%%): %s | AI: %s | Total matched: %s | Unmatched: %s",
         confident_threshold,
         fuzzy_matched_count,
         ai_matched_count,
@@ -966,7 +1089,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Map OSM street names to LAMAS IDs.")
     parser.add_argument("place", nargs="?", help="Settlement name")
     parser.add_argument("--refresh", action="store_true", help="Refresh downloaded data")
-    parser.add_argument("--no-ai", action="store_true", help="Disable Laya AI resolution")
+    parser.add_argument("--no-ai", action="store_true", help="Disable AI street resolution")
+    parser.add_argument(
+        "--ai-backend",
+        choices=["auto", "openrouter", "local"],
+        default="auto",
+        help="AI resolver backend (default: auto = OpenRouter with local Laya fallback)",
+    )
+    parser.add_argument(
+        "--ai-model",
+        default=None,
+        help="Override OpenRouter Decisions model ID (default: perplexity/pplx-decider-v1.3:free)",
+    )
     parser.add_argument(
         "--no-pbf",
         action="store_true",
@@ -995,6 +1129,8 @@ if __name__ == "__main__":
         output_name=args.output_name,
         lamas_city=args.lamas_city,
         save_intermediates=not args.no_intermediates,
+        ai_backend=args.ai_backend,
+        ai_model=args.ai_model,
     )
     # "Nothing to map" outcomes completed correctly — not failures.
     sys.exit(0 if status in (PipelineStatus.SUCCESS, *NO_DATA_STATUSES) else 1)

@@ -511,6 +511,117 @@ def latin_arabic_to_hebrew_skeleton(text: str) -> str:
     return " ".join(out_tokens).strip()
 
 
+_LATIN_HEBREW_ROAD_PREFIX_RE = re.compile(
+    r"^(?:street|st|road|rd|avenue|ave|boulevard|blvd|lane|ln|way|drive|dr|"
+    r"alley|path|sderot|sderoth|derech|derekh|rechov|rehov|simtat|simta|"
+    r"mevo|shvil|sharia|shari|tariq|duwar|sahat|harah|haret)\s+"
+)
+_LATIN_ROAD_SUFFIX_RE = re.compile(
+    r"\s+(?:street|st|road|rd|avenue|ave|boulevard|blvd|lane|ln|way|drive|dr|alley|path)$"
+)
+
+
+def _latin_token_to_hebrew_skeleton(bare: str) -> str:
+    """Transliterate one ASCII token to consonant-skeleton Hebrew form."""
+    # Collapse doubled transliteration consonants (e.g. Siddiq -> Sidiq, Hassan -> Hasan)
+    # before vowel removal so C+vowel+C roots (e.g. Gedud -> גדד) stay distinct.
+    bare = re.sub(r"([bcdfgjklmnpqrstvwxz])\1+", r"\1", bare)
+    chars: list[str] = []
+    i = 0
+    while i < len(bare):
+        two = bare[i : i + 2]
+        if two == "sh":
+            chars.append("ש"); i += 2; continue
+        if two in ("kh", "ch"):
+            chars.append("ח"); i += 2; continue
+        if two in ("tz", "ts"):
+            chars.append("צ"); i += 2; continue
+        if two == "gh":
+            chars.append("ע"); i += 2; continue
+        if two == "th":
+            chars.append("ת"); i += 2; continue
+        if two == "dh":
+            chars.append("ד"); i += 2; continue
+        if two == "ph":
+            chars.append("פ"); i += 2; continue
+        if two in ("oo", "ou", "uu"):
+            chars.append("ו"); i += 2; continue
+        if two in ("ee", "ii", "ey", "ay"):
+            chars.append("י"); i += 2; continue
+        ch = bare[i]
+        if ch in "ae":
+            chars.append("א" if i == 0 else ("ה" if i == len(bare) - 1 else ""))
+        elif ch == "i":
+            chars.append("א" if i == 0 else ("י" if i == len(bare) - 1 else ""))
+        elif ch in "ou":
+            chars.append("א" if i == 0 else ("ו" if i == len(bare) - 1 else ""))
+        else:
+            chars.append(_LATIN_SINGLE_TO_HEBREW.get(ch, ch))
+        i += 1
+    return "".join(chars)
+
+
+def cross_script_comparison_skeleton(skeleton_text: str) -> str:
+    """Fold gutturals/emphatics/kaph-qoph for AI cross-script shortlist and gate checks."""
+    base = latin_comparison_skeleton(skeleton_text)
+    return base.replace("ק", "כ") if base else ""
+
+
+def latin_to_hebrew_skeleton(text: str) -> str:
+    """Transliterate any Latin-script Hebrew/Arabic street name into Hebrew skeleton space.
+
+    Unlike :func:`latin_arabic_to_hebrew_skeleton`, this accepts Latin Hebrew
+    street names (e.g. ``haRav Shach``, ``Gedud 68``, ``Oren``,
+    ``ramat hagolan road``) and is intended for candidate shortlisting and
+    verifying OpenRouter cross-script matches.
+    """
+    if not is_latin_only(text):
+        return ""
+    cleaned = str(text).lower().strip()
+    cleaned = re.sub(r"[^a-z0-9'\s-]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    while True:
+        updated = _LATIN_HEBREW_ROAD_PREFIX_RE.sub("", cleaned).strip()
+        updated = _LATIN_ROAD_SUFFIX_RE.sub("", updated).strip()
+        if updated == cleaned:
+            break
+        cleaned = updated
+
+    raw_tokens = [tok for tok in re.split(r"[\s-]+", cleaned) if tok]
+    if not raw_tokens:
+        return ""
+
+    out_tokens: list[str] = []
+    for tok in raw_tokens:
+        if tok in _LATIN_ARTICLE_TOKENS:
+            continue
+        if tok in ("ibn", "bin", "ben"):
+            out_tokens.append("בנ")
+            continue
+        if tok == "abu":
+            out_tokens.append("אבו")
+            continue
+        if tok in ("abd", "abed", "abdul"):
+            out_tokens.append("עבד")
+            continue
+        if tok in ("wadi", "wady"):
+            out_tokens.append("ואדי")
+            continue
+        if tok == "harav":
+            out_tokens.append("הרב")
+            continue
+        if tok in ("rav", "rabbi"):
+            out_tokens.append("רב")
+            continue
+        bare = tok.replace("'", "")
+        if bare.startswith("ha") and len(bare) >= 5:
+            bare = bare[2:]
+        mapped = _latin_token_to_hebrew_skeleton(bare)
+        if mapped:
+            out_tokens.append(mapped)
+    return " ".join(out_tokens).strip()
+
+
 def extract_embedded_street_number(text: str) -> Optional[str]:
     """Return a unique 3–4 digit street number (e.g. ``المدينة القديمة - 6171`` -> ``"6171"``).
 

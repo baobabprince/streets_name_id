@@ -95,6 +95,8 @@ def worker_wrapper(
     save_intermediates: bool = True,
     lamas_df: Optional[pd.DataFrame] = None,
     force_refresh: bool = False,
+    ai_backend: str = "auto",
+    ai_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one settlement pipeline and return a structured result record."""
     start_time = time.time()
@@ -120,6 +122,8 @@ def worker_wrapper(
             lamas_df=lamas_df,
             lamas_city=settlement_name,
             save_intermediates=save_intermediates,
+            ai_backend=ai_backend,
+            ai_model=ai_model,
         )
 
         result["pipeline_success"] = pipeline_result == PipelineStatus.SUCCESS
@@ -170,6 +174,8 @@ class BatchProcessor:
         matching_stats: Optional[Dict[str, Any]] = None,
         lamas_df: Optional[pd.DataFrame] = None,
         force_refresh: bool = False,
+        ai_backend: str = "auto",
+        ai_model: Optional[str] = None,
     ):
         self.use_ai = use_ai
         self.skip_html = skip_html
@@ -182,6 +188,8 @@ class BatchProcessor:
         self.matching_stats = matching_stats or {}
         self.lamas_df = lamas_df
         self.force_refresh = force_refresh
+        self.ai_backend = ai_backend
+        self.ai_model = ai_model
         self.matcher = SettlementMatcher()
 
         self.stats = {
@@ -290,6 +298,8 @@ class BatchProcessor:
             use_pbf=self.use_pbf,
             save_intermediates=self.save_intermediates,
             force_refresh=self.force_refresh,
+            ai_backend=self.ai_backend,
+            ai_model=self.ai_model,
         )
 
     def _update_no_data_file(
@@ -432,6 +442,137 @@ class BatchProcessor:
                         if result.get("match"):
                             f.write(f"  → Match: {result['match']['display_name']}\n")
 
+    def _prefetch_openrouter_batch(
+        self, tasks: List[tuple[str, Dict[str, Any]]]
+    ) -> None:
+        """Warm OpenRouter Decisions cache across all batch settlements together."""
+        if (
+            not self.use_ai
+            or len(tasks) <= 1
+            or self.lamas_df is None
+            or self.ai_backend not in {"auto", "openrouter"}
+            or not os.environ.get("OPENROUTER_API_KEY", "").strip()
+        ):
+            return
+
+        from data_loader import city_key, load_or_fetch_osm
+        from normalization import (
+            build_lamas_aliases,
+            find_fuzzy_candidates,
+            normalize_street_name,
+        )
+        from openrouter_ai_resolver import HybridAIResolver
+        from pipeline import _clean_id, _filter_lamas_by_city, _get_laya_resolver
+
+        print(
+            f"\nPre-fetching OpenRouter AI decisions across {len(tasks)} settlements "
+            "(150 questions/request)..."
+        )
+        t0 = time.time()
+        lamas_norm = self.lamas_df.copy()
+        if "city" in lamas_norm.columns:
+            lamas_norm["city"] = normalize_city(lamas_norm["city"])
+        lamas_norm["city_key"] = city_key(lamas_norm["city"])
+        lamas_norm["city_identity_key"] = lamas_norm["city"].map(settlement_identity_key)
+        lamas_norm["normalized_name"] = lamas_norm["LAMAS_name"].apply(normalize_street_name)
+        lamas_norm = lamas_norm.dropna(subset=["normalized_name"]).copy()
+
+        city_tasks: List[tuple[str, List[str], Dict[str, List[str]]]] = []
+        preferred_by_city: Dict[str, Dict[str, str]] = {}
+
+        for settlement, resolve_result in tasks:
+            place = resolve_result.get("match")
+            if not place:
+                continue
+            target_key = canonical_key(settlement)
+            target_id_key = settlement_identity_key(settlement)
+            lamas_city_df = _filter_lamas_by_city(
+                lamas_norm, target_key, target_identity_key=target_id_key
+            ).copy()
+            settlement_mask = lamas_city_df["LAMAS_name"].map(
+                lambda name: bool(target_key)
+                and pd.notna(name)
+                and canonical_key(name) == target_key
+            )
+            settlement_ids = set(
+                lamas_city_df.loc[settlement_mask, "LAMAS_id"].astype(str)
+            )
+            lamas_street_df = lamas_city_df[
+                ~lamas_city_df["LAMAS_id"].astype(str).isin(settlement_ids)
+            ]
+            if lamas_street_df.empty:
+                continue
+
+            osm_gdf = load_or_fetch_osm(
+                place, force_refresh=self.force_refresh, use_pbf=self.use_pbf
+            )
+            if osm_gdf is None or len(osm_gdf) == 0:
+                continue
+            osm_gdf = osm_gdf.copy()
+            osm_gdf["city"] = settlement
+            osm_gdf["normalized_name"] = osm_gdf["osm_name"].apply(normalize_street_name)
+            if "osm_name_original" in osm_gdf.columns:
+                osm_gdf["normalized_original"] = osm_gdf["osm_name_original"].apply(
+                    normalize_street_name
+                )
+            if "name:he" in osm_gdf.columns:
+                osm_gdf["normalized_name:he"] = osm_gdf["name:he"].apply(
+                    normalize_street_name
+                )
+            osm_gdf = osm_gdf.dropna(subset=["normalized_name"]).copy()
+            if osm_gdf.empty:
+                continue
+
+            candidates_df = find_fuzzy_candidates(osm_gdf, lamas_city_df)
+            unmatched_rows = candidates_df[
+                (candidates_df["status"] != "CONFIDENT")
+                & (candidates_df["osm_id"].isin(osm_gdf["osm_id"]))
+            ].merge(osm_gdf[["osm_id", "normalized_name"]], on="osm_id")
+            unique_unmatched = unmatched_rows.dropna(
+                subset=["normalized_name"]
+            ).drop_duplicates(subset=["normalized_name"])
+            if unique_unmatched.empty:
+                continue
+
+            ai_aliases = build_lamas_aliases(lamas_street_df)
+            if not ai_aliases:
+                continue
+            unmatched_names = [
+                str(r.normalized_name) for r in unique_unmatched.itertuples(index=False)
+            ]
+            preferred_ids = {
+                str(r.normalized_name): _clean_id(getattr(r, "best_LAMAS_id", ""))
+                for r in unique_unmatched.itertuples(index=False)
+                if _clean_id(getattr(r, "best_LAMAS_id", ""))
+            }
+            city_tasks.append((settlement, unmatched_names, ai_aliases))
+            preferred_by_city[settlement] = preferred_ids
+
+        if not city_tasks:
+            print("  No unmatched streets requiring AI prefetch.")
+            return
+
+        total_streets = sum(len(names) for _, names, _ in city_tasks)
+        print(
+            f"  Collected {total_streets} unmatched street names across "
+            f"{len(city_tasks)} settlements in {time.time() - t0:.1f}s."
+        )
+        resolver = HybridAIResolver(
+            model=self.ai_model,
+            questions_per_request=150,
+            local_factory=_get_laya_resolver,
+        )
+        resolver.resolve_multi_city(
+            city_tasks, preferred_ids_by_city=preferred_by_city
+        )
+        print(
+            f"  AI prefetch finished in {time.time() - t0:.1f}s: "
+            f"api_calls={resolver.primary.stats['api_requests']}, "
+            f"cache_hits={resolver.primary.stats['cache_hits']}, "
+            f"fallback={resolver.stats['local_fallback_resolved']}, "
+            f"errors={resolver.stats['errors']}"
+        )
+
     def run_batch(
         self,
         settlements: List[str],
@@ -462,7 +603,11 @@ class BatchProcessor:
         print(f"\n{'=' * 70}")
         print(f"Starting batch processing of {len(settlements)} settlements")
         print(f"Workers: {self.workers}")
-        print(f"AI Resolution: {'ENABLED' if self.use_ai else 'DISABLED'}")
+        if self.use_ai:
+            model_note = f", model={self.ai_model}" if self.ai_model else ""
+            print(f"AI Resolution: ENABLED (backend={self.ai_backend}{model_note})")
+        else:
+            print("AI Resolution: DISABLED")
         print(f"{'=' * 70}")
 
         tasks: List[tuple[str, Dict[str, Any]]] = []
@@ -489,6 +634,14 @@ class BatchProcessor:
 
             self.stats["matched"] += 1
             tasks.append((settlement, resolve_result))
+
+        try:
+            self._prefetch_openrouter_batch(tasks)
+        except Exception as exc:
+            print(
+                f"  Warning: cross-settlement OpenRouter prefetch failed ({exc}); "
+                "continuing with per-settlement resolution and automatic fallback."
+            )
 
         def execute(settlement: str, resolve_result: Dict[str, Any]) -> Dict[str, Any]:
             kwargs = self._worker_kwargs()
@@ -586,7 +739,11 @@ Examples:
         **kwargs,
     )
     parser.add_argument("--use-ai", action="store_true",
-                        help="Enable Laya AI resolution for streets below 90%% fuzzy match")
+                        help="Enable AI resolution for streets below 90%% fuzzy match")
+    parser.add_argument("--ai-backend", choices=["auto", "openrouter", "local"], default="auto",
+                        help="AI resolver backend when --use-ai is enabled (default: auto = OpenRouter with local Laya fallback)")
+    parser.add_argument("--ai-model", default=None,
+                        help="Override OpenRouter Decisions model ID (default: perplexity/pplx-decider-v1.3:free)")
     parser.add_argument("--limit", type=int, metavar="N",
                         help="Limit processing to first N settlements (for testing)")
     parser.add_argument("--force", action="store_true",
@@ -728,9 +885,9 @@ def run_everything(args) -> Dict[str, Any]:
         _refresh_dashboard()
         return {"dashboard_only": True}
 
-    # Laya model is loaded in-process: keep workers=1 so it is reused once.
+    # Keep workers=1 when AI is enabled so OpenRouter rate-limiting / fallback model share one process.
     if getattr(args, "use_ai", False) and getattr(args, "workers", 1) > 1:
-        print("WARNING: Forcing workers=1 because Laya AI is enabled.")
+        print("WARNING: Forcing workers=1 because AI resolution is enabled.")
         args.workers = 1
 
     print("Fetching LAMAS data (cached after the first run)...")
@@ -783,6 +940,8 @@ def run_everything(args) -> Dict[str, Any]:
         matching_stats=resolution.stats,
         lamas_df=lamas_df,
         force_refresh=getattr(args, "refresh", False),
+        ai_backend=getattr(args, "ai_backend", "auto"),
+        ai_model=getattr(args, "ai_model", None),
     )
     summary = processor.run_batch(
         settlements=settlements,
